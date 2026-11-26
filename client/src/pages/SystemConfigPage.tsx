@@ -145,7 +145,6 @@ export function SystemConfigPage() {
   const [fParentId, setFParentId] = useState<number>(0);
   const [fCategory, setFCategory] = useState('ADMIN');
   const [fLevel, setFLevel] = useState<'HQ' | 'REGION' | 'STORE'>('HQ');
-  const [fSort, setFSort] = useState(1);
   const [fActive, setFActive] = useState(true);
 
   const loadAll = useCallback(async () => {
@@ -211,7 +210,6 @@ export function SystemConfigPage() {
     setEditingId(item?.id ?? null);
     setFCode(item?.code || '');
     setFName(item?.name || item?.label || '');
-    setFSort(item?.sort_order ?? 1);
     setFActive(item ? Boolean(item.is_active ?? 1) : true);
     if (kind === 'city') {
       setFParentId(item?.region_id || regions.find((r) => r.code !== 'HQ')?.id || regions[0]?.id || 0);
@@ -904,28 +902,17 @@ export function SystemConfigPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <div className="text-xs text-stone-500">
-              {editingId ? (
-                <span>
-                  当前序号：<span className="font-mono font-semibold text-stone-800">#{fSort}</span>（系统自动分配，不可修改）
-                </span>
-              ) : (
-                <span>序号将按当前最大值自动递增分配，删除后不重用</span>
-              )}
-            </div>
-            {modalKind !== 'region' && (
-              <label className="flex items-center gap-2 text-sm text-stone-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={fActive}
-                  onChange={(e) => setFActive(e.target.checked)}
-                  className="rounded text-brand-600"
-                />
-                <span>启用状态</span>
-              </label>
-            )}
-          </div>
+          {modalKind !== 'region' && (
+            <label className="flex items-center gap-2 text-sm text-stone-700 cursor-pointer pt-1">
+              <input
+                type="checkbox"
+                checked={fActive}
+                onChange={(e) => setFActive(e.target.checked)}
+                className="rounded text-brand-600"
+              />
+              <span>启用状态</span>
+            </label>
+          )}
 
           <div className="flex justify-end gap-2 pt-2">
             <button
