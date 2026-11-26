@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { getDb } from '../../db';
 import { asyncHandler, authenticate, getScopeFilter } from '../middleware/auth';
-import { canUserActOnStep } from '../services/workflowEngine';
+import { canUserActOnStep, isUserReturnTarget } from '../services/workflowEngine';
 import { UserRole } from '../types';
 import { addDays, currentYearMonth, offsetYearMonth, roundMoney, todayStr } from '../utils/numbers';
 
@@ -246,6 +246,48 @@ router.get(
             created_at: hc.created_at,
           });
         }
+      }
+    }
+
+    // 5b. Returned reimbursements waiting for current user to edit & resubmit
+    const returnedClaims = await db.query<{
+      id: number;
+      claim_no: string;
+      title: string;
+      hotel_id: number;
+      applicant_id: number;
+      total_amount: number;
+      risk_flags: string;
+      status: string;
+      returned_to_step: number | null;
+      returned_to_user_id: number | null;
+      returned_to_role: string | null;
+      created_at: string;
+      hotel_name: string;
+      applicant_name: string;
+    }>(
+      `SELECT r.id, r.claim_no, r.title, r.hotel_id, r.applicant_id, r.total_amount, r.risk_flags, r.status,
+              r.returned_to_step, r.returned_to_user_id, r.returned_to_role, r.created_at,
+              h.name AS hotel_name, u.display_name AS applicant_name
+       FROM reimbursements r
+       JOIN hotels h ON h.id = r.hotel_id
+       JOIN users u ON u.id = r.applicant_id
+       WHERE r.status = 'RETURNED'`
+    );
+    for (const rc of returnedClaims) {
+      if (await isUserReturnTarget(db, user, rc)) {
+        inbox.push({
+          biz_type: 'REIMBURSEMENT',
+          biz_id: rc.id,
+          code: rc.claim_no,
+          title: rc.title,
+          hotel_name: rc.hotel_name,
+          applicant_name: rc.applicant_name,
+          amount: Number(rc.total_amount),
+          step_name: '退回待修改',
+          risk_flags: rc.risk_flags || '',
+          created_at: rc.created_at,
+        });
       }
     }
 

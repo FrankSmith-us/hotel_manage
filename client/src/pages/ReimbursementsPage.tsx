@@ -41,7 +41,11 @@ interface ReimbursementRow {
   current_step_name: string | null;
   risk_flags: string;
   risk_summary: string | null;
+  returned_to_step?: number | null;
+  returned_to_name?: string | null;
+  return_reason?: string | null;
   canApprove: boolean;
+  canEdit?: boolean;
   created_at: string;
 }
 
@@ -112,6 +116,8 @@ interface ClaimDetail {
   approvalSteps: ApprovalStepView[];
   approvalLogs: ApprovalLogView[];
   cashAdvance: { advance_no: string; purpose: string; amount: number } | null;
+  returnTargets?: Array<{ stepOrder: number; label: string; role: string; userId: number | null }>;
+  returnedToLabel?: string | null;
   permissions: { canApprove: boolean; canEdit: boolean; canWithdraw: boolean; canPay: boolean };
 }
 
@@ -132,6 +138,7 @@ export function ReimbursementsPage() {
   // Detail Drawer
   const [detail, setDetail] = useState<ClaimDetail | null>(null);
   const [comment, setComment] = useState('');
+  const [returnToStep, setReturnToStep] = useState<number>(0);
   const [acting, setActing] = useState(false);
   const [payChannel, setPayChannel] = useState('BANK_TRANSFER');
   const [payRef, setPayRef] = useState('');
@@ -309,6 +316,7 @@ export function ReimbursementsPage() {
       const data = await apiFetch<ClaimDetail>(`/api/reimbursements/${id}`);
       setDetail(data);
       setComment('');
+      setReturnToStep(0);
       setPayRef(`TXN-${Date.now().toString().slice(-8)}`);
     } catch (err) {
       showToast(err instanceof Error ? err.message : '加载详情失败', 'error');
@@ -403,7 +411,11 @@ export function ReimbursementsPage() {
     try {
       await apiFetch(`/api/reimbursements/${detail.claim.id}/action`, {
         method: 'POST',
-        body: JSON.stringify({ action, comment }),
+        body: JSON.stringify({
+          action,
+          comment,
+          return_to_step: action === 'RETURN' ? returnToStep : undefined,
+        }),
       });
       showToast(
         action === 'APPROVE' ? '审批已通过' : action === 'RETURN' ? '已退回申请人修改' : '已驳回'
@@ -493,7 +505,7 @@ export function ReimbursementsPage() {
       <div className="bg-white rounded-2xl border border-stone-200/90 p-4 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div className="flex items-center gap-1.5 bg-stone-100 p-1 rounded-xl w-fit">
           {[
-            { key: 'pending', label: '待我审批' },
+            { key: 'pending', label: '待我处理' },
             { key: 'mine', label: '我的报销' },
             { key: 'all', label: '全部报销单' },
           ].map((t) => (
@@ -639,6 +651,11 @@ export function ReimbursementsPage() {
                           第{r.current_step}/{r.total_steps}步：{r.current_step_name}
                         </div>
                       )}
+                      {r.status === 'RETURNED' && (
+                        <div className="text-[11px] text-orange-700 font-medium mt-1">
+                          已退回至：{r.returned_to_name || '申请人'}
+                        </div>
+                      )}
                       {r.status === 'APPROVED' && (
                         <div className="text-[11px] text-emerald-700 font-medium mt-1">
                           总经理已审 · 待财务付款
@@ -651,9 +668,17 @@ export function ReimbursementsPage() {
                           e.stopPropagation();
                           openDetail(r.id);
                         }}
-                        className="px-3 py-1.5 rounded-lg text-xs font-medium bg-stone-100 hover:bg-brand-50 hover:text-brand-800 text-stone-700 transition-colors"
+                        className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                          r.status === 'RETURNED' && r.canEdit
+                            ? 'bg-orange-500 hover:bg-orange-600 text-white'
+                            : 'bg-stone-100 hover:bg-brand-50 hover:text-brand-800 text-stone-700'
+                        }`}
                       >
-                        {r.canApprove ? '去审批' : '查看详情'}
+                        {r.status === 'RETURNED' && r.canEdit
+                          ? '修改重提'
+                          : r.canApprove
+                            ? '去审批'
+                            : '查看详情'}
                       </button>
                     </td>
                   </tr>
@@ -1132,6 +1157,20 @@ export function ReimbursementsPage() {
               </div>
             </div>
 
+            {detail.claim.status === 'RETURNED' && (
+              <div className="p-3.5 rounded-xl bg-orange-50 border border-orange-200 text-xs text-orange-900 space-y-1">
+                <div className="font-semibold flex items-center gap-1.5">
+                  <RotateCcw className="w-4 h-4 text-orange-600" />
+                  <span>
+                    已退回修改 · 当前等待处理人：{detail.returnedToLabel || '申请人'}
+                  </span>
+                </div>
+                {detail.claim.return_reason && (
+                  <div className="text-orange-800">退回原因：{detail.claim.return_reason}</div>
+                )}
+              </div>
+            )}
+
             {detail.claim.risk_summary && (
               <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 flex items-start gap-2">
                 <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
@@ -1294,6 +1333,24 @@ export function ReimbursementsPage() {
                 )}
                 {detail.permissions.canApprove && (
                   <>
+                    {detail.returnTargets && detail.returnTargets.length > 0 && (
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-xl bg-orange-50/50 border border-orange-200/80">
+                        <label className="text-xs font-medium text-orange-900 shrink-0">
+                          退回目标（点击“退回修改”时生效）：
+                        </label>
+                        <select
+                          value={returnToStep}
+                          onChange={(e) => setReturnToStep(Number(e.target.value))}
+                          className="flex-1 px-3 py-1.5 rounded-lg border border-orange-200 bg-white text-xs text-stone-800"
+                        >
+                          {detail.returnTargets.map((t) => (
+                            <option key={t.stepOrder} value={t.stepOrder}>
+                              {t.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <textarea
                       rows={2}
                       value={comment}

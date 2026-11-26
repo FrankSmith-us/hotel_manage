@@ -275,6 +275,37 @@ export async function canUserActOnStep(
   return true;
 }
 
+export async function isUserReturnTarget(
+  db: DbQueryRunner,
+  user: AuthUser,
+  claim: {
+    status: string;
+    applicant_id: number;
+    hotel_id: number;
+    returned_to_step: number | null;
+    returned_to_user_id: number | null;
+    returned_to_role: string | null;
+  }
+): Promise<boolean> {
+  if (claim.status !== 'RETURNED') return false;
+  if (claim.returned_to_step === null || Number(claim.returned_to_step) === 0) {
+    return Number(user.id) === Number(claim.applicant_id);
+  }
+  if (claim.returned_to_user_id) {
+    return Number(user.id) === Number(claim.returned_to_user_id);
+  }
+  if (claim.returned_to_role && claim.returned_to_role !== 'APPLICANT') {
+    return canUserActOnStep(
+      db,
+      user,
+      claim.returned_to_role as UserRole,
+      claim.hotel_id,
+      claim.applicant_id
+    );
+  }
+  return false;
+}
+
 export async function getAvailableAdvanceBalance(
   db: DbQueryRunner,
   advanceId: number,

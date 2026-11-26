@@ -22,8 +22,20 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id INTEGER');
     }
     const rCols = await db.query<{ name: string }>('PRAGMA table_info(reimbursements)');
-    if (!rCols.some((c) => c.name === 'payment_type')) {
+    const rColNames = new Set(rCols.map((c) => c.name));
+    if (!rColNames.has('payment_type')) {
       await db.execute(`ALTER TABLE reimbursements ADD COLUMN payment_type TEXT NOT NULL DEFAULT 'PERSONAL'`);
+    }
+    for (const [colName, colDef] of [
+      ['returned_to_step', 'INTEGER'],
+      ['returned_to_user_id', 'INTEGER'],
+      ['returned_to_role', 'TEXT'],
+      ['returned_from_step', 'INTEGER'],
+      ['return_reason', 'TEXT'],
+    ] as const) {
+      if (!rColNames.has(colName)) {
+        await db.execute(`ALTER TABLE reimbursements ADD COLUMN ${colName} ${colDef}`);
+      }
     }
   } else {
     const col = await db.queryOne<{ cnt: number }>(
@@ -34,15 +46,23 @@ export async function initSchema(db: DbAdapter): Promise<void> {
     if (!col || Number(col.cnt) === 0) {
       await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id BIGINT NULL AFTER name');
     }
-    const rCol = await db.queryOne<{ cnt: number }>(
-      `SELECT COUNT(*) AS cnt
-       FROM INFORMATION_SCHEMA.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'reimbursements' AND COLUMN_NAME = 'payment_type'`
-    );
-    if (!rCol || Number(rCol.cnt) === 0) {
-      await db.execute(
-        `ALTER TABLE reimbursements ADD COLUMN payment_type VARCHAR(24) NOT NULL DEFAULT 'PERSONAL' AFTER remarks`
+    for (const [colName, colDef] of [
+      ['payment_type', `VARCHAR(24) NOT NULL DEFAULT 'PERSONAL'`],
+      ['returned_to_step', 'INT NULL'],
+      ['returned_to_user_id', 'BIGINT NULL'],
+      ['returned_to_role', 'VARCHAR(32) NULL'],
+      ['returned_from_step', 'INT NULL'],
+      ['return_reason', 'VARCHAR(500) NULL'],
+    ] as const) {
+      const c = await db.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'reimbursements' AND COLUMN_NAME = ?`,
+        [colName]
       );
+      if (!c || Number(c.cnt) === 0) {
+        await db.execute(`ALTER TABLE reimbursements ADD COLUMN ${colName} ${colDef}`);
+      }
     }
   }
 }

@@ -16,6 +16,7 @@ import {
   buildReimbursementRoute,
   canUserActOnStep,
   getAvailableAdvanceBalance,
+  isUserReturnTarget,
   replaceApprovalSteps,
   resolveApprovalRoute,
 } from '../services/workflowEngine';
@@ -166,8 +167,8 @@ router.get(
     const params: unknown[] = [];
 
     if (tab === 'mine') {
-      conditions.push('r.applicant_id = ?');
-      params.push(user.id);
+      conditions.push(`(r.applicant_id = ? OR (r.status = 'RETURNED' AND r.returned_to_user_id = ?))`);
+      params.push(user.id, user.id);
     } else if (tab === 'payout_queue') {
       if (!['HQ_ADMIN', 'FINANCE'].includes(user.role)) {
         throw new AppError(403, '仅财务与管理员可查看待打款核销队列');
@@ -232,16 +233,24 @@ router.get(
       payment_ref: string | null;
       paid_at: string | null;
       created_at: string;
+      returned_to_step: number | null;
+      returned_to_user_id: number | null;
+      returned_to_role: string | null;
+      returned_from_step: number | null;
+      return_reason: string | null;
+      returned_to_name: string | null;
       hotel_name: string;
       hotel_code: string;
       applicant_name: string;
       department_name: string | null;
     }>(
-      `SELECT r.*, h.name AS hotel_name, h.code AS hotel_code, u.display_name AS applicant_name, d.name AS department_name
+      `SELECT r.*, h.name AS hotel_name, h.code AS hotel_code, u.display_name AS applicant_name,
+              d.name AS department_name, rt.display_name AS returned_to_name
        FROM reimbursements r
        JOIN hotels h ON h.id = r.hotel_id
        JOIN users u ON u.id = r.applicant_id
        LEFT JOIN departments d ON d.id = r.department_id
+       LEFT JOIN users rt ON rt.id = r.returned_to_user_id
        WHERE ${conditions.join(' AND ')}
        ORDER BY r.id DESC`,
       params
@@ -262,13 +271,17 @@ router.get(
       const canApprove = pendingStep
         ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id)
         : false;
+      const canEdit =
+        (r.status === 'DRAFT' && Number(r.applicant_id) === Number(user.id)) ||
+        (await isUserReturnTarget(db, user, r));
 
-      if (tab === 'pending' && !canApprove) continue;
+      if (tab === 'pending' && !canApprove && !(r.status === 'RETURNED' && canEdit)) continue;
 
       enriched.push({
         ...r,
         current_step_name: pendingStep?.step_name ?? null,
         canApprove,
+        canEdit,
       });
     }
 
@@ -362,6 +375,7 @@ router.get(
       id: number;
       claim_no: string;
       applicant_id: number;
+      applicant_name: string;
       hotel_id: number;
       expense_month: string;
       cash_advance_id: number | null;
@@ -372,21 +386,29 @@ router.get(
       net_pay_amount: number;
       risk_flags: string;
       risk_summary: string | null;
+      returned_to_step: number | null;
+      returned_to_user_id: number | null;
+      returned_to_role: string | null;
+      returned_from_step: number | null;
+      return_reason: string | null;
+      returned_to_name: string | null;
     }>(
       `SELECT r.*, h.name AS hotel_name, h.code AS hotel_code, u.display_name AS applicant_name,
-              u.role AS applicant_role, d.name AS department_name
+              u.role AS applicant_role, d.name AS department_name, rt.display_name AS returned_to_name
        FROM reimbursements r
        JOIN hotels h ON h.id = r.hotel_id
        JOIN users u ON u.id = r.applicant_id
        LEFT JOIN departments d ON d.id = r.department_id
+       LEFT JOIN users rt ON rt.id = r.returned_to_user_id
        WHERE r.id = ?`,
       [id]
     );
     if (!claim) throw new AppError(404, '报销单不存在');
 
     const isOwner = claim.applicant_id === user.id;
+    const isReturnTarget = await isUserReturnTarget(db, user, claim);
     const hasHotelAccess = await canAccessHotel(user, claim.hotel_id);
-    if (!isOwner && !hasHotelAccess && user.role !== 'FINANCE' && user.role !== 'HQ_ADMIN' && user.role !== 'GENERAL_MANAGER') {
+    if (!isOwner && !isReturnTarget && !hasHotelAccess && user.role !== 'FINANCE' && user.role !== 'HQ_ADMIN' && user.role !== 'GENERAL_MANAGER') {
       throw new AppError(403, '无权查看此报销单');
     }
 
@@ -433,9 +455,40 @@ router.get(
       claim.status === 'PENDING_APPROVAL' && pendingStep
         ? await canUserActOnStep(db, user, pendingStep.approver_role, claim.hotel_id, claim.applicant_id)
         : false;
-    const canEdit = isOwner && (claim.status === 'DRAFT' || claim.status === 'RETURNED');
+    const canEdit = (isOwner && claim.status === 'DRAFT') || (claim.status === 'RETURNED' && isReturnTarget);
     const canWithdraw = isOwner && claim.status === 'PENDING_APPROVAL' && claim.current_step === 1;
     const canPay = claim.status === 'APPROVED' && ['HQ_ADMIN', 'FINANCE'].includes(user.role);
+
+    const returnTargets: Array<{ stepOrder: number; label: string; role: string; userId: number | null }> = [];
+    if (canApprove && pendingStep) {
+      returnTargets.push({
+        stepOrder: 0,
+        label: `申请人（${claim.applicant_name}）`,
+        role: 'APPLICANT',
+        userId: claim.applicant_id,
+      });
+      for (const s of approvalSteps) {
+        if (s.step_order < pendingStep.step_order && s.status === 'APPROVED') {
+          returnTargets.push({
+            stepOrder: s.step_order,
+            label: `第${s.step_order}步：${s.step_name}${s.actor_name ? `（${s.actor_name}）` : ''}`,
+            role: s.approver_role,
+            userId: s.acted_by,
+          });
+        }
+      }
+    }
+
+    let returnedToLabel: string | null = null;
+    if (claim.status === 'RETURNED') {
+      if (!claim.returned_to_step || Number(claim.returned_to_step) === 0) {
+        returnedToLabel = `申请人（${claim.applicant_name}）`;
+      } else {
+        const targetStep = approvalSteps.find((s) => s.step_order === Number(claim.returned_to_step));
+        const roleName = targetStep?.step_name || ROLE_LABELS[claim.returned_to_role as UserRole] || '审批人';
+        returnedToLabel = `第${claim.returned_to_step}步：${roleName}${claim.returned_to_name ? `（${claim.returned_to_name}）` : ''}`;
+      }
+    }
 
     res.json({
       claim,
@@ -450,6 +503,8 @@ router.get(
       approvalLogs,
       cashAdvance,
       budgetImpact,
+      returnTargets,
+      returnedToLabel,
       permissions: { canApprove, canEdit, canWithdraw, canPay },
     });
   })
@@ -623,12 +678,25 @@ router.put(
     const existing = await db.queryOne<{
       id: number;
       applicant_id: number;
+      hotel_id: number;
       status: string;
-    }>('SELECT id, applicant_id, status FROM reimbursements WHERE id = ?', [id]);
+      returned_to_step: number | null;
+      returned_to_user_id: number | null;
+      returned_to_role: string | null;
+    }>(
+      `SELECT id, applicant_id, hotel_id, status, returned_to_step, returned_to_user_id, returned_to_role
+       FROM reimbursements WHERE id = ?`,
+      [id]
+    );
     if (!existing) throw new AppError(404, '报销单不存在');
-    if (existing.applicant_id !== user.id) throw new AppError(403, '仅报销人本人可修改');
     if (existing.status !== 'DRAFT' && existing.status !== 'RETURNED') {
       throw new AppError(400, '仅草稿或已退回的报销单可编辑');
+    }
+    if (existing.status === 'DRAFT' && existing.applicant_id !== user.id) {
+      throw new AppError(403, '仅报销人本人可修改草稿');
+    }
+    if (existing.status === 'RETURNED' && !(await isUserReturnTarget(db, user, existing))) {
+      throw new AppError(403, '仅被退回的目标处理人可修改重提此报销单');
     }
 
     const totalAmount = roundMoney(body.items.reduce((s, it) => s + Number(it.amount), 0));
@@ -660,18 +728,54 @@ router.put(
         excludeReimbursementId: id,
       });
       const dupInvoiceSet = new Set(risks.duplicateInvoices.map((d) => d.invoiceNo));
+      const applicantUser = await tx.queryOne<{ role: UserRole }>('SELECT role FROM users WHERE id = ?', [
+        existing.applicant_id,
+      ]);
+      const applicantRole = applicantUser?.role || user.role;
+
       const resolved = body.submit
         ? await resolveApprovalRoute(
             tx,
             body.hotel_id,
             buildReimbursementRoute({
-              applicantRole: user.role,
+              applicantRole,
               totalAmount,
               hasOverBudget: risks.riskFlags.includes('OVER_BUDGET'),
             })
           )
         : { steps: [], skippedRegionalManager: false, skipReason: null };
       const route = resolved.steps;
+
+      // Snapshot prior approvals before replacing steps when returning to an intermediate node
+      const prevSteps =
+        body.submit && existing.status === 'RETURNED' && existing.returned_to_step && existing.returned_to_step >= 1
+          ? await tx.query<{
+              step_order: number;
+              approver_role: string;
+              acted_by: number | null;
+              acted_at: string | null;
+              comment: string | null;
+            }>(
+              `SELECT step_order, approver_role, acted_by, acted_at, comment
+               FROM approval_steps
+               WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ?
+               ORDER BY step_order ASC`,
+              [id]
+            )
+          : [];
+
+      let nextCurrentStep = body.submit ? 1 : 0;
+      let resumeStepIndex = -1;
+      if (body.submit && existing.status === 'RETURNED' && existing.returned_to_step && existing.returned_to_step >= 1) {
+        const idxByRole = existing.returned_to_role
+          ? route.findIndex((s) => s.approverRole === existing.returned_to_role)
+          : -1;
+        const k = idxByRole >= 0 ? idxByRole + 1 : Math.min(Number(existing.returned_to_step), route.length);
+        if (k >= 1 && k < route.length) {
+          resumeStepIndex = k;
+          nextCurrentStep = k + 1;
+        }
+      }
 
       const nextStatus = body.submit ? 'PENDING_APPROVAL' : existing.status;
 
@@ -681,6 +785,8 @@ router.put(
              cash_advance_id = ?, offset_amount = ?, net_pay_amount = ?, status = ?,
              current_step = ?, total_steps = ?, risk_flags = ?, risk_summary = ?, remarks = ?,
              payment_type = ?, payee_name = ?, payee_bank = ?, payee_account = ?,
+             returned_to_step = ?, returned_to_user_id = ?, returned_to_role = ?,
+             returned_from_step = ?, return_reason = ?,
              submitted_at = COALESCE(submitted_at, ?), updated_at = ?
          WHERE id = ?`,
         [
@@ -693,7 +799,7 @@ router.put(
           offsetAmount,
           netPayAmount,
           nextStatus,
-          body.submit ? 1 : 0,
+          nextCurrentStep,
           body.submit ? route.length : 0,
           risks.riskFlags.join(','),
           risks.riskSummary || null,
@@ -702,10 +808,15 @@ router.put(
           body.payee_name,
           body.payee_bank,
           body.payee_account,
+          body.submit ? null : existing.returned_to_step,
+          body.submit ? null : existing.returned_to_user_id,
+          body.submit ? null : existing.returned_to_role,
+          body.submit ? null : undefined,
+          body.submit ? null : undefined,
           body.submit ? ts : null,
           ts,
           id,
-        ]
+        ].map((v, i) => (v === undefined ? null : v))
       );
 
       await tx.execute('DELETE FROM reimbursement_items WHERE reimbursement_id = ?', [id]);
@@ -733,6 +844,30 @@ router.put(
 
       if (body.submit) {
         await replaceApprovalSteps(tx, 'REIMBURSEMENT', id, route);
+        if (resumeStepIndex >= 1) {
+          for (const s of route) {
+            if (s.stepOrder < resumeStepIndex) {
+              const prev = prevSteps.find((p) => p.approver_role === s.approverRole);
+              await tx.execute(
+                `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ?
+                 WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND step_order = ?`,
+                [prev?.acted_by ?? null, prev?.acted_at ?? ts, prev?.comment ?? '审核通过', id, s.stepOrder]
+              );
+            } else if (s.stepOrder === resumeStepIndex) {
+              await tx.execute(
+                `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '退回修改后重新提交'
+                 WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND step_order = ?`,
+                [user.id, ts, id, s.stepOrder]
+              );
+            } else if (s.stepOrder === resumeStepIndex + 1) {
+              await tx.execute(
+                `UPDATE approval_steps SET status = 'PENDING'
+                 WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND step_order = ?`,
+                [id, s.stepOrder]
+              );
+            }
+          }
+        }
         await logApprovalAction(tx, {
           bizType: 'REIMBURSEMENT',
           bizId: id,
@@ -815,10 +950,11 @@ router.post(
   '/:id/action',
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const { action, comment } = z
+    const { action, comment, return_to_step } = z
       .object({
         action: z.enum(['APPROVE', 'RETURN', 'REJECT']),
         comment: z.string().optional().default(''),
+        return_to_step: z.number().int().min(0).optional().default(0),
       })
       .parse(req.body);
 
@@ -853,12 +989,55 @@ router.post(
       if (!allowed) throw new AppError(403, '您无权审批当前节点');
 
       const ts = nowIso();
+      let logComment = comment || (action === 'APPROVE' ? '审核通过' : '');
       if (action === 'RETURN') {
+        if (return_to_step >= step.step_order) {
+          throw new AppError(400, '只能退回到当前节点之前的申请人或已审批节点');
+        }
+        let targetUserId = claim.applicant_id;
+        let targetRole = 'APPLICANT';
+        let targetLabel = '申请人';
+
+        if (return_to_step === 0) {
+          const appUser = await tx.queryOne<{ display_name: string }>(
+            'SELECT display_name FROM users WHERE id = ?',
+            [claim.applicant_id]
+          );
+          targetLabel = `申请人（${appUser?.display_name || ''}）`;
+        } else {
+          const targetStep = await tx.queryOne<{
+            step_name: string;
+            approver_role: string;
+            acted_by: number | null;
+          }>(
+            `SELECT step_name, approver_role, acted_by FROM approval_steps
+             WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND step_order = ?`,
+            [id, return_to_step]
+          );
+          if (!targetStep || !targetStep.acted_by) {
+            throw new AppError(400, '指定的退回节点不存在或尚未审批');
+          }
+          const targetUser = await tx.queryOne<{ display_name: string }>(
+            'SELECT display_name FROM users WHERE id = ?',
+            [targetStep.acted_by]
+          );
+          targetUserId = targetStep.acted_by;
+          targetRole = targetStep.approver_role;
+          targetLabel = `${targetStep.step_name}（${targetUser?.display_name || ''}）`;
+        }
+
         await tx.execute(
           `UPDATE approval_steps SET status = 'RETURNED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
           [user.id, ts, comment, step.id]
         );
-        await tx.execute(`UPDATE reimbursements SET status = 'RETURNED', updated_at = ? WHERE id = ?`, [ts, id]);
+        await tx.execute(
+          `UPDATE reimbursements
+           SET status = 'RETURNED', returned_to_step = ?, returned_to_user_id = ?, returned_to_role = ?,
+               returned_from_step = ?, return_reason = ?, updated_at = ?
+           WHERE id = ?`,
+          [return_to_step, targetUserId, targetRole, step.step_order, comment, ts, id]
+        );
+        logComment = `退回至 ${targetLabel}：${comment}`;
       } else if (action === 'REJECT') {
         await tx.execute(
           `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
@@ -893,7 +1072,7 @@ router.post(
         bizId: id,
         action,
         actor: user,
-        comment: comment || (action === 'APPROVE' ? '审核通过' : ''),
+        comment: logComment,
       });
     });
 

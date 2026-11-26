@@ -863,9 +863,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         `INSERT INTO reimbursements (
           claim_no, title, applicant_id, employee_id, hotel_id, department_id, expense_month,
           total_amount, cash_advance_id, offset_amount, net_pay_amount, status, current_step, total_steps,
-          risk_flags, risk_summary, payment_type, payee_name, payee_bank, payee_account, payment_channel, payment_ref,
+          risk_flags, risk_summary, returned_to_step, returned_to_user_id, returned_to_role, returned_from_step, return_reason,
+          payment_type, payee_name, payee_bank, payee_account, payment_channel, payment_ref,
           paid_by, paid_at, submitted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cfg.claim_no,
           cfg.title,
@@ -883,6 +884,11 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
           cfg.status === 'DRAFT' ? 0 : route.length,
           cfg.riskFlags || '',
           cfg.riskSummary ?? null,
+          cfg.status === 'RETURNED' ? 0 : null,
+          cfg.status === 'RETURNED' ? userIds[cfg.applicant] : null,
+          cfg.status === 'RETURNED' ? 'APPLICANT' : null,
+          cfg.status === 'RETURNED' ? cfg.currentStep : null,
+          cfg.status === 'RETURNED' ? '请补充电子客票截图附件后重新提交' : null,
           payeeType,
           payeeName,
           payeeBank,

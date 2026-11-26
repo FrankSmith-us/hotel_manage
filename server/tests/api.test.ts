@@ -515,4 +515,111 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const afterPayPers = await req('GET', '/api/reimbursements/payees?paymentType=PERSONAL', { token: mgrBjToken });
     assert.ok(!afterPayPers.data.payees.some((p: any) => p.account_number === newCorpAcc));
   });
+
+  it('Targeted return-for-edit surfaces claim in target user pending list & dashboard and resumes from target node', async () => {
+    const staffToken = await loginAs('staff_sh');
+    const mgrShToken = await loginAs('mgr_sh');
+    const regionToken = await loginAs('region_east');
+    const gmToken = await loginAs('gm');
+    const ym = currentYearMonth();
+
+    // 1. staff_sh submits a 3-tier claim (2000) -> mgr_sh approves -> region_east approves -> pending at gm
+    const createRes = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '定向退回修改测试单',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 2000 }],
+      },
+    });
+    assert.equal(createRes.status, 201);
+    const claimId = createRes.data.claim.id;
+
+    assert.equal((await req('POST', `/api/reimbursements/${claimId}/action`, { token: mgrShToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/reimbursements/${claimId}/action`, { token: regionToken, body: { action: 'APPROVE' } })).status, 200);
+
+    // 2. GM inspects returnTargets -> sees 申请人(0), 门店店长(1), 区域经理(2)
+    const gmDetail = await req('GET', `/api/reimbursements/${claimId}`, { token: gmToken });
+    assert.equal(gmDetail.data.returnTargets.length, 3);
+    assert.deepEqual(
+      gmDetail.data.returnTargets.map((t: any) => t.stepOrder),
+      [0, 1, 2]
+    );
+
+    // 3. GM returns to Step 1 (mgr_sh)
+    const retToMgr = await req('POST', `/api/reimbursements/${claimId}/action`, {
+      token: gmToken,
+      body: { action: 'RETURN', comment: '请店长核实单价后重提', return_to_step: 1 },
+    });
+    assert.equal(retToMgr.status, 200);
+
+    // mgr_sh sees it in pending list & dashboard inbox with canEdit: true; staff_sh cannot edit it
+    const mgrPending = await req('GET', '/api/reimbursements?tab=pending', { token: mgrShToken });
+    const foundMgr = mgrPending.data.reimbursements.find((r: any) => r.id === claimId);
+    assert.ok(foundMgr);
+    assert.equal(foundMgr.canEdit, true);
+
+    const mgrDash = await req('GET', '/api/dashboard/summary', { token: mgrShToken });
+    assert.ok(mgrDash.data.inbox.some((i: any) => i.biz_type === 'REIMBURSEMENT' && i.biz_id === claimId));
+
+    const staffForbiddenEdit = await req('PUT', `/api/reimbursements/${claimId}`, {
+      token: staffToken,
+      body: {
+        title: '越权修改',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 1800 }],
+      },
+    });
+    assert.equal(staffForbiddenEdit.status, 403);
+
+    // 4. mgr_sh edits & resubmits -> Step 1 is auto-approved and workflow resumes directly at Step 2 (REGIONAL_MANAGER)
+    const mgrResubmit = await req('PUT', `/api/reimbursements/${claimId}`, {
+      token: mgrShToken,
+      body: {
+        title: '定向退回修改测试单（店长已核减）',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 1800 }],
+      },
+    });
+    assert.equal(mgrResubmit.status, 200);
+    assert.equal(mgrResubmit.data.claim.current_step, 2);
+
+    const regPending = await req('GET', '/api/reimbursements?tab=pending', { token: regionToken });
+    assert.ok(regPending.data.reimbursements.some((r: any) => r.id === claimId && r.canApprove));
+
+    // 5. region_east approves -> GM returns to Step 0 (applicant staff_sh) -> staff_sh sees it in pending & dashboard
+    assert.equal((await req('POST', `/api/reimbursements/${claimId}/action`, { token: regionToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal(
+      (
+        await req('POST', `/api/reimbursements/${claimId}/action`, {
+          token: gmToken,
+          body: { action: 'RETURN', comment: '请申请人补充明细', return_to_step: 0 },
+        })
+      ).status,
+      200
+    );
+
+    const staffPending = await req('GET', '/api/reimbursements?tab=pending', { token: staffToken });
+    assert.ok(staffPending.data.reimbursements.some((r: any) => r.id === claimId && r.canEdit));
+    const staffDash = await req('GET', '/api/dashboard/summary', { token: staffToken });
+    assert.ok(staffDash.data.inbox.some((i: any) => i.biz_type === 'REIMBURSEMENT' && i.biz_id === claimId));
+  });
 });
