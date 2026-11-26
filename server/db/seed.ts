@@ -799,8 +799,8 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     await tx.execute(`UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ? WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ?`, [userIds['finance'], ts, adv2.insertId]);
 
     const adv3 = await tx.execute(
-      `INSERT INTO cash_advances (advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount, purpose, expected_settle_date, status, current_step, created_at, updated_at)
-       VALUES ('ADV-202611-003', ?, ?, ?, 'PETTY_CASH', 4500.00, 0.00, '北京国贸店冬季供暖设备应急备用金', ?, 'PENDING_APPROVAL', 1, ?, ?)`,
+      `INSERT INTO cash_advances (advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount, purpose, expected_settle_date, urgency, status, current_step, created_at, updated_at)
+       VALUES ('ADV-202611-003', ?, ?, ?, 'PETTY_CASH', 4500.00, 0.00, '北京国贸店冬季供暖设备应急备用金', ?, 'URGENT', 'PENDING_APPROVAL', 1, ?, ?)`,
       [userIds['mgr_bj'], empIds['YQ-3001'], hotelIds['BJ-GM'], addDays(today, 25), ts, ts]
     );
     const adv3Resolved = await resolveApprovalRoute(tx, hotelIds['BJ-GM'], buildCashAdvanceRoute({ applicantRole: 'STORE_MANAGER', amount: 4500 }));
@@ -827,6 +827,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       payeeName?: string;
       payeeBank?: string;
       payeeAccount?: string;
+      urgency?: 'NORMAL' | 'URGENT';
       items: Array<{
         category: string;
         date: string;
@@ -862,11 +863,11 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       const res = await tx.execute(
         `INSERT INTO reimbursements (
           claim_no, title, applicant_id, employee_id, hotel_id, department_id, expense_month,
-          total_amount, cash_advance_id, offset_amount, net_pay_amount, status, current_step, total_steps,
+          total_amount, cash_advance_id, offset_amount, net_pay_amount, urgency, status, current_step, total_steps,
           risk_flags, risk_summary, returned_to_step, returned_to_user_id, returned_to_role, returned_from_step, return_reason,
           payment_type, payee_name, payee_bank, payee_account, payment_channel, payment_ref,
           paid_by, paid_at, submitted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cfg.claim_no,
           cfg.title,
@@ -879,6 +880,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
           cfg.cashAdvanceId ?? null,
           offset,
           netPay,
+          cfg.urgency || 'NORMAL',
           cfg.status,
           cfg.status === 'DRAFT' ? 0 : cfg.currentStep,
           cfg.status === 'DRAFT' ? 0 : route.length,
@@ -1164,7 +1166,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
     });
 
-    // PENDING_APPROVAL at Step 1 (Store Manager mgr_sh)
+    // PENDING_APPROVAL at Step 1 (Store Manager mgr_sh) - marked URGENT
     await insertClaim({
       claim_no: 'BX-202611-003',
       title: '前厅迎宾耗材及应急充电宝采购',
@@ -1175,6 +1177,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       month: curYm,
       status: 'PENDING_APPROVAL',
       currentStep: 1,
+      urgency: 'URGENT',
       items: [
         {
           category: 'LINEN_SUPPLIES',
@@ -1252,6 +1255,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       month: curYm,
       status: 'PENDING_APPROVAL',
       currentStep: 1,
+      urgency: 'URGENT',
       riskFlags: 'OVER_BUDGET',
       riskSummary: '预算超标：工程维修与维保超预算 ¥1,800.00',
       items: [

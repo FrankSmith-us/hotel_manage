@@ -3,7 +3,7 @@ import React from 'react';
 interface KpiCardProps {
   title: string;
   value: string | number;
-  subtitle?: string;
+  subtitle?: React.ReactNode;
   icon: React.ReactNode;
   accent?: 'amber' | 'emerald' | 'rose' | 'stone';
   onClick?: () => void;

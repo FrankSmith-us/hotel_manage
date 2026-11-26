@@ -24,28 +24,37 @@ import { apiFetch } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { formatMoney } from '../lib/format';
 
+interface InboxItem {
+  biz_type: string;
+  biz_id: number;
+  code: string;
+  title: string;
+  hotel_name: string;
+  applicant_name: string;
+  amount: number | null;
+  step_name: string;
+  risk_flags: string;
+  urgency: 'NORMAL' | 'URGENT';
+  created_at: string;
+}
+
 interface DashboardSummary {
   yearMonth: string;
   kpis: {
     pendingApprovalsCount: number;
+    pendingExpenseCount: number;
+    urgentExpenseCount: number;
+    pendingOtherCount: number;
+    urgentOtherCount: number;
     monthlyExpense: number;
     monthlyBudget: number;
     budgetExecutionPct: number;
     activeHeadcount: number;
     complianceAlertsCount: number;
   };
-  inbox: Array<{
-    biz_type: string;
-    biz_id: number;
-    code: string;
-    title: string;
-    hotel_name: string;
-    applicant_name: string;
-    amount: number | null;
-    step_name: string;
-    risk_flags: string;
-    created_at: string;
-  }>;
+  expenseInbox: InboxItem[];
+  otherInbox: InboxItem[];
+  inbox: InboxItem[];
   complianceAlerts: Array<{
     id: number;
     emp_no: string;
@@ -121,12 +130,36 @@ export function DashboardPage() {
       {/* KPI Row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <KpiCard
-          title="待我审批事项"
-          value={data.kpis.pendingApprovalsCount}
-          subtitle="涵盖报销、备用金、请假、补编"
-          icon={<CheckSquare className="w-5 h-5" />}
-          accent="amber"
+          title="待办费用审批"
+          value={data.kpis.pendingExpenseCount}
+          subtitle={
+            data.kpis.urgentExpenseCount > 0 ? (
+              <span className="text-red-600 font-semibold">
+                含 {data.kpis.urgentExpenseCount} 项紧急费用审批
+              </span>
+            ) : (
+              '费用报销 / 备用金借款（优先处理）'
+            )
+          }
+          icon={<Receipt className="w-5 h-5" />}
+          accent={data.kpis.urgentExpenseCount > 0 ? 'rose' : 'amber'}
           onClick={() => navigate('/reimbursements')}
+        />
+        <KpiCard
+          title="待办其他业务审批"
+          value={data.kpis.pendingOtherCount}
+          subtitle={
+            data.kpis.urgentOtherCount > 0 ? (
+              <span className="text-red-600 font-semibold">
+                含 {data.kpis.urgentOtherCount} 项紧急人事/补编审批
+              </span>
+            ) : (
+              '请假加班 / 门店补编申请'
+            )
+          }
+          icon={<CheckSquare className="w-5 h-5" />}
+          accent={data.kpis.urgentOtherCount > 0 ? 'rose' : 'stone'}
+          onClick={() => navigate('/leaves')}
         />
         <KpiCard
           title="本月累计报销金额"
@@ -135,14 +168,6 @@ export function DashboardPage() {
           icon={<Wallet className="w-5 h-5" />}
           accent="emerald"
           onClick={() => navigate('/finance')}
-        />
-        <KpiCard
-          title="在职/试用期员工"
-          value={`${data.kpis.activeHeadcount} 人`}
-          subtitle="当前权限范围内门店人数"
-          icon={<Users className="w-5 h-5" />}
-          accent="stone"
-          onClick={() => navigate('/employees')}
         />
         <KpiCard
           title="证照与合同到期预警"
@@ -154,63 +179,154 @@ export function DashboardPage() {
         />
       </div>
 
-      {/* Action Inbox + Compliance Alerts */}
+      {/* Separated Approval Reminders: Expense Approvals FIRST, then Other Business Approvals */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-7 bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm">
+        <div className="lg:col-span-6 bg-white rounded-2xl border-2 border-brand-200/80 p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-base font-semibold text-stone-900">待我审批收件箱</h2>
-              <p className="text-xs text-stone-500">点击任意待办可直接前往对应流程处理</p>
+              <h2 className="text-base font-semibold text-stone-900 flex items-center gap-2">
+                <Receipt className="w-4 h-4 text-brand-600" />
+                <span>费用审批提醒（优先处理）</span>
+              </h2>
+              <p className="text-xs text-stone-500">费用报销、退回重提与备用金借款审批</p>
             </div>
-            <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
-              {data.inbox.length} 条待办
-            </span>
+            <div className="flex items-center gap-1.5">
+              {data.kpis.urgentExpenseCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-600 border border-red-200">
+                  {data.kpis.urgentExpenseCount} 紧急
+                </span>
+              )}
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-amber-50 text-amber-800 border border-amber-200">
+                {data.expenseInbox.length} 条待办
+              </span>
+            </div>
           </div>
 
-          {data.inbox.length === 0 ? (
-            <div className="py-12 text-center text-sm text-stone-400">
-              当前角色暂无待审批事项，切换其他演示角色可体验多级审批流
-            </div>
+          {data.expenseInbox.length === 0 ? (
+            <div className="py-10 text-center text-sm text-stone-400">暂无待处理费用审批</div>
           ) : (
             <div className="divide-y divide-stone-100">
-              {data.inbox.map((item) => (
-                <div
-                  key={`${item.biz_type}-${item.biz_id}`}
-                  onClick={() => navigate(BIZ_ROUTE[item.biz_type] || '/')}
-                  className="py-3.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-stone-50/80 px-2 -mx-2 rounded-xl transition-colors"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-brand-50 text-brand-800 border border-brand-200/60">
-                        {BIZ_LABEL[item.biz_type] || item.biz_type}
-                      </span>
-                      <span className="font-medium text-sm text-stone-900 truncate">{item.title}</span>
-                      {item.risk_flags && (
-                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 text-[11px] font-medium border border-rose-200">
-                          <AlertTriangle className="w-3 h-3" />
-                          风控预警
+              {data.expenseInbox.map((item) => {
+                const isUrgent = item.urgency === 'URGENT';
+                return (
+                  <div
+                    key={`${item.biz_type}-${item.biz_id}`}
+                    onClick={() => navigate(BIZ_ROUTE[item.biz_type] || '/')}
+                    className={`py-3.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-stone-50/80 px-2 -mx-2 rounded-xl transition-colors ${
+                      isUrgent ? 'bg-red-50/40' : ''
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-brand-50 text-brand-800 border border-brand-200/60">
+                          {BIZ_LABEL[item.biz_type] || item.biz_type}
+                        </span>
+                        {isUrgent && (
+                          <span className="text-xs font-bold text-red-600 shrink-0">【紧急】</span>
+                        )}
+                        <span
+                          className={`font-medium text-sm truncate ${
+                            isUrgent ? 'text-red-600 font-semibold' : 'text-stone-900'
+                          }`}
+                        >
+                          {item.title}
+                        </span>
+                        {item.risk_flags && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-50 text-rose-700 text-[11px] font-medium border border-rose-200">
+                            <AlertTriangle className="w-3 h-3" />
+                            风控预警
+                          </span>
+                        )}
+                      </div>
+                      <div className={`text-xs mt-1 ${isUrgent ? 'text-red-600' : 'text-stone-500'}`}>
+                        {item.code} · {item.hotel_name} · 申请人：{item.applicant_name} · 当前节点：{item.step_name}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3 shrink-0">
+                      {item.amount !== null && (
+                        <span
+                          className={`font-semibold text-sm tabular-nums ${
+                            isUrgent ? 'text-red-600' : 'text-stone-900'
+                          }`}
+                        >
+                          {formatMoney(item.amount)}
                         </span>
                       )}
-                    </div>
-                    <div className="text-xs text-stone-500 mt-1">
-                      {item.code} · {item.hotel_name} · 申请人：{item.applicant_name} · 当前节点：{item.step_name}
+                      <ArrowRight className={`w-4 h-4 ${isUrgent ? 'text-red-500' : 'text-stone-400'}`} />
                     </div>
                   </div>
-                  <div className="flex items-center gap-3 shrink-0">
-                    {item.amount !== null && (
-                      <span className="font-semibold text-sm text-stone-900 tabular-nums">
-                        {formatMoney(item.amount)}
-                      </span>
-                    )}
-                    <ArrowRight className="w-4 h-4 text-stone-400" />
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
 
-        {/* HR Compliance Alerts */}
+        <div className="lg:col-span-6 bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <h2 className="text-base font-semibold text-stone-900 flex items-center gap-2">
+                <Users className="w-4 h-4 text-stone-600" />
+                <span>其他业务审批提醒</span>
+              </h2>
+              <p className="text-xs text-stone-500">请假、调休、加班及门店补编审批</p>
+            </div>
+            <div className="flex items-center gap-1.5">
+              {data.kpis.urgentOtherCount > 0 && (
+                <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-red-50 text-red-600 border border-red-200">
+                  {data.kpis.urgentOtherCount} 紧急
+                </span>
+              )}
+              <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-stone-100 text-stone-700 border border-stone-200">
+                {data.otherInbox.length} 条待办
+              </span>
+            </div>
+          </div>
+
+          {data.otherInbox.length === 0 ? (
+            <div className="py-10 text-center text-sm text-stone-400">暂无待处理其他业务审批</div>
+          ) : (
+            <div className="divide-y divide-stone-100">
+              {data.otherInbox.map((item) => {
+                const isUrgent = item.urgency === 'URGENT';
+                return (
+                  <div
+                    key={`${item.biz_type}-${item.biz_id}`}
+                    onClick={() => navigate(BIZ_ROUTE[item.biz_type] || '/')}
+                    className={`py-3.5 flex items-center justify-between gap-3 cursor-pointer hover:bg-stone-50/80 px-2 -mx-2 rounded-xl transition-colors ${
+                      isUrgent ? 'bg-red-50/40' : ''
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded-md text-[11px] font-medium bg-stone-100 text-stone-700 border border-stone-200">
+                          {BIZ_LABEL[item.biz_type] || item.biz_type}
+                        </span>
+                        {isUrgent && (
+                          <span className="text-xs font-bold text-red-600 shrink-0">【紧急】</span>
+                        )}
+                        <span
+                          className={`font-medium text-sm truncate ${
+                            isUrgent ? 'text-red-600 font-semibold' : 'text-stone-900'
+                          }`}
+                        >
+                          {item.title}
+                        </span>
+                      </div>
+                      <div className={`text-xs mt-1 ${isUrgent ? 'text-red-600' : 'text-stone-500'}`}>
+                        {item.code} · {item.hotel_name} · 申请人：{item.applicant_name} · 当前节点：{item.step_name}
+                      </div>
+                    </div>
+                    <ArrowRight className={`w-4 h-4 shrink-0 ${isUrgent ? 'text-red-500' : 'text-stone-400'}`} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* HR Compliance Alerts + Expense Trend */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-5 bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -258,10 +374,8 @@ export function DashboardPage() {
             </div>
           )}
         </div>
-      </div>
 
-      {/* Expense Trend Chart */}
-      <div className="bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm">
+        <div className="lg:col-span-7 bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h2 className="text-base font-semibold text-stone-900">近 6 个月门店报销支出趋势</h2>
@@ -284,6 +398,7 @@ export function DashboardPage() {
             </BarChart>
           </ResponsiveContainer>
         </div>
+      </div>
       </div>
     </div>
   );

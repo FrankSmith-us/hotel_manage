@@ -91,7 +91,7 @@ router.get(
       approver_role: UserRole;
     }>(`SELECT biz_type, biz_id, step_order, step_name, approver_role FROM approval_steps WHERE status = 'PENDING'`);
 
-    const inbox: Array<{
+    type InboxItem = {
       biz_type: string;
       biz_id: number;
       code: string;
@@ -101,8 +101,12 @@ router.get(
       amount: number | null;
       step_name: string;
       risk_flags: string;
+      urgency: 'NORMAL' | 'URGENT';
       created_at: string;
-    }> = [];
+    };
+
+    const expenseInbox: InboxItem[] = [];
+    const otherInbox: InboxItem[] = [];
 
     for (const st of pendingSteps) {
       if (st.approver_role !== user.role) continue;
@@ -115,11 +119,12 @@ router.get(
           applicant_id: number;
           total_amount: number;
           risk_flags: string;
+          urgency: string;
           created_at: string;
           hotel_name: string;
           applicant_name: string;
         }>(
-          `SELECT r.id, r.claim_no, r.title, r.hotel_id, r.applicant_id, r.total_amount, r.risk_flags, r.created_at,
+          `SELECT r.id, r.claim_no, r.title, r.hotel_id, r.applicant_id, r.total_amount, r.risk_flags, r.urgency, r.created_at,
                   h.name AS hotel_name, u.display_name AS applicant_name
            FROM reimbursements r
            JOIN hotels h ON h.id = r.hotel_id
@@ -128,7 +133,7 @@ router.get(
           [st.biz_id]
         );
         if (r && (await canUserActOnStep(db, user, st.approver_role, r.hotel_id, r.applicant_id))) {
-          inbox.push({
+          expenseInbox.push({
             biz_type: 'REIMBURSEMENT',
             biz_id: r.id,
             code: r.claim_no,
@@ -138,6 +143,7 @@ router.get(
             amount: Number(r.total_amount),
             step_name: st.step_name,
             risk_flags: r.risk_flags || '',
+            urgency: r.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
             created_at: r.created_at,
           });
         }
@@ -149,11 +155,12 @@ router.get(
           hotel_id: number;
           applicant_id: number;
           amount: number;
+          urgency: string;
           created_at: string;
           hotel_name: string;
           applicant_name: string;
         }>(
-          `SELECT a.id, a.advance_no, a.purpose, a.hotel_id, a.applicant_id, a.amount, a.created_at,
+          `SELECT a.id, a.advance_no, a.purpose, a.hotel_id, a.applicant_id, a.amount, a.urgency, a.created_at,
                   h.name AS hotel_name, u.display_name AS applicant_name
            FROM cash_advances a
            JOIN hotels h ON h.id = a.hotel_id
@@ -162,7 +169,7 @@ router.get(
           [st.biz_id]
         );
         if (a && (await canUserActOnStep(db, user, st.approver_role, a.hotel_id, a.applicant_id))) {
-          inbox.push({
+          expenseInbox.push({
             biz_type: 'CASH_ADVANCE',
             biz_id: a.id,
             code: a.advance_no,
@@ -172,6 +179,7 @@ router.get(
             amount: Number(a.amount),
             step_name: st.step_name,
             risk_flags: '',
+            urgency: a.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
             created_at: a.created_at,
           });
         }
@@ -182,11 +190,12 @@ router.get(
           reason: string;
           hotel_id: number;
           applicant_user_id: number | null;
+          urgency: string;
           created_at: string;
           hotel_name: string;
           emp_name: string;
         }>(
-          `SELECT l.id, l.request_no, l.reason, l.hotel_id, u.id AS applicant_user_id, l.created_at,
+          `SELECT l.id, l.request_no, l.reason, l.hotel_id, u.id AS applicant_user_id, l.urgency, l.created_at,
                   h.name AS hotel_name, e.name AS emp_name
            FROM leave_requests l
            JOIN hotels h ON h.id = l.hotel_id
@@ -199,7 +208,7 @@ router.get(
           l &&
           (await canUserActOnStep(db, user, st.approver_role, l.hotel_id, l.applicant_user_id ?? -1))
         ) {
-          inbox.push({
+          otherInbox.push({
             biz_type: 'LEAVE',
             biz_id: l.id,
             code: l.request_no,
@@ -209,6 +218,7 @@ router.get(
             amount: null,
             step_name: st.step_name,
             risk_flags: '',
+            urgency: l.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
             created_at: l.created_at,
           });
         }
@@ -220,11 +230,12 @@ router.get(
           headcount: number;
           hotel_id: number;
           applicant_id: number;
+          urgency: string;
           created_at: string;
           hotel_name: string;
           applicant_name: string;
         }>(
-          `SELECT hc.id, hc.request_no, hc.position, hc.headcount, hc.hotel_id, hc.applicant_id, hc.created_at,
+          `SELECT hc.id, hc.request_no, hc.position, hc.headcount, hc.hotel_id, hc.applicant_id, hc.urgency, hc.created_at,
                   h.name AS hotel_name, u.display_name AS applicant_name
            FROM headcount_requests hc
            JOIN hotels h ON h.id = hc.hotel_id
@@ -233,7 +244,7 @@ router.get(
           [st.biz_id]
         );
         if (hc && (await canUserActOnStep(db, user, st.approver_role, hc.hotel_id, hc.applicant_id))) {
-          inbox.push({
+          otherInbox.push({
             biz_type: 'HEADCOUNT',
             biz_id: hc.id,
             code: hc.request_no,
@@ -243,6 +254,7 @@ router.get(
             amount: null,
             step_name: st.step_name,
             risk_flags: '',
+            urgency: hc.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
             created_at: hc.created_at,
           });
         }
@@ -258,6 +270,7 @@ router.get(
       applicant_id: number;
       total_amount: number;
       risk_flags: string;
+      urgency: string;
       status: string;
       returned_to_step: number | null;
       returned_to_user_id: number | null;
@@ -266,7 +279,7 @@ router.get(
       hotel_name: string;
       applicant_name: string;
     }>(
-      `SELECT r.id, r.claim_no, r.title, r.hotel_id, r.applicant_id, r.total_amount, r.risk_flags, r.status,
+      `SELECT r.id, r.claim_no, r.title, r.hotel_id, r.applicant_id, r.total_amount, r.risk_flags, r.urgency, r.status,
               r.returned_to_step, r.returned_to_user_id, r.returned_to_role, r.created_at,
               h.name AS hotel_name, u.display_name AS applicant_name
        FROM reimbursements r
@@ -276,7 +289,7 @@ router.get(
     );
     for (const rc of returnedClaims) {
       if (await isUserReturnTarget(db, user, rc)) {
-        inbox.push({
+        expenseInbox.push({
           biz_type: 'REIMBURSEMENT',
           biz_id: rc.id,
           code: rc.claim_no,
@@ -286,10 +299,19 @@ router.get(
           amount: Number(rc.total_amount),
           step_name: '退回待修改',
           risk_flags: rc.risk_flags || '',
+          urgency: rc.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
           created_at: rc.created_at,
         });
       }
     }
+
+    const sortByUrgencyThenNewest = (a: InboxItem, b: InboxItem) => {
+      if (a.urgency !== b.urgency) return a.urgency === 'URGENT' ? -1 : 1;
+      return b.biz_id - a.biz_id;
+    };
+    expenseInbox.sort(sortByUrgencyThenNewest);
+    otherInbox.sort(sortByUrgencyThenNewest);
+    const inbox = [...expenseInbox, ...otherInbox];
 
     // 6. 6-month expense trend
     const months = [-5, -4, -3, -2, -1, 0].map((d) => offsetYearMonth(curYm, d));
@@ -328,13 +350,19 @@ router.get(
       yearMonth: curYm,
       kpis: {
         pendingApprovalsCount: inbox.length,
+        pendingExpenseCount: expenseInbox.length,
+        urgentExpenseCount: expenseInbox.filter((i) => i.urgency === 'URGENT').length,
+        pendingOtherCount: otherInbox.length,
+        urgentOtherCount: otherInbox.filter((i) => i.urgency === 'URGENT').length,
         monthlyExpense,
         monthlyBudget,
         budgetExecutionPct,
         activeHeadcount: Number(empRow?.cnt || 0),
         complianceAlertsCount: alertEmployees.length,
       },
-      inbox: inbox.slice(0, 8),
+      expenseInbox: expenseInbox.slice(0, 8),
+      otherInbox: otherInbox.slice(0, 8),
+      inbox: inbox.slice(0, 10),
       complianceAlerts: alertEmployees,
       expenseTrend: trend,
       hotelBreakdown: hotelBreakdown.map((h) => ({

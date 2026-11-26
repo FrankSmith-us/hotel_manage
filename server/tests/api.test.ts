@@ -622,4 +622,68 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const staffDash = await req('GET', '/api/dashboard/summary', { token: staffToken });
     assert.ok(staffDash.data.inbox.some((i: any) => i.biz_type === 'REIMBURSEMENT' && i.biz_id === claimId));
   });
+
+  it('Dashboard separates expenseInbox ahead of otherInbox and marks URGENT items properly', async () => {
+    const staffToken = await loginAs('staff_sh');
+    const mgrShToken = await loginAs('mgr_sh');
+    const ym = currentYearMonth();
+
+    // Create an URGENT reimbursement and an URGENT leave for SH-JA
+    const urgClaim = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '加急空调主板抢修报销',
+        hotel_id: 2,
+        expense_month: ym,
+        urgency: 'URGENT',
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'MAINTENANCE', expense_date: todayStr(), description: '抢修', amount: 500 }],
+      },
+    });
+    assert.equal(urgClaim.status, 201);
+
+    const urgLeave = await req('POST', '/api/leaves', {
+      token: staffToken,
+      body: {
+        leave_type: 'SICK',
+        start_date: todayStr(),
+        end_date: todayStr(),
+        days: 1,
+        hours: 8,
+        reason: '加急病假申请',
+        urgency: 'URGENT',
+      },
+    });
+    assert.equal(urgLeave.status, 201);
+
+    const dash = await req('GET', '/api/dashboard/summary', { token: mgrShToken });
+    assert.equal(dash.status, 200);
+    assert.ok(dash.data.kpis.pendingExpenseCount >= 1);
+    assert.ok(dash.data.kpis.urgentExpenseCount >= 1);
+    assert.ok(dash.data.kpis.pendingOtherCount >= 1);
+    assert.ok(dash.data.kpis.urgentOtherCount >= 1);
+
+    // expenseInbox only contains REIMBURSEMENT / CASH_ADVANCE and starts with URGENT
+    assert.ok(dash.data.expenseInbox.every((i: any) => i.biz_type === 'REIMBURSEMENT' || i.biz_type === 'CASH_ADVANCE'));
+    assert.equal(dash.data.expenseInbox[0].urgency, 'URGENT');
+
+    // otherInbox only contains LEAVE / HEADCOUNT and starts with URGENT
+    assert.ok(dash.data.otherInbox.every((i: any) => i.biz_type === 'LEAVE' || i.biz_type === 'HEADCOUNT'));
+    assert.equal(dash.data.otherInbox[0].urgency, 'URGENT');
+
+    // Combined inbox puts all expense items strictly before any other items
+    const firstOtherIdx = dash.data.inbox.findIndex((i: any) => i.biz_type === 'LEAVE' || i.biz_type === 'HEADCOUNT');
+    const lastExpenseIdx = dash.data.inbox.reduce(
+      (acc: number, i: any, idx: number) =>
+        i.biz_type === 'REIMBURSEMENT' || i.biz_type === 'CASH_ADVANCE' ? idx : acc,
+      -1
+    );
+    if (firstOtherIdx !== -1 && lastExpenseIdx !== -1) {
+      assert.ok(lastExpenseIdx < firstOtherIdx);
+    }
+  });
 });

@@ -18,6 +18,7 @@ interface AdvanceRow {
   available_balance: number;
   purpose: string;
   expected_settle_date: string;
+  urgency?: 'NORMAL' | 'URGENT';
   status: string;
   current_step_name: string | null;
   payment_ref: string | null;
@@ -37,6 +38,7 @@ export function AdvancesPage() {
   const [amount, setAmount] = useState(1500);
   const [purpose, setPurpose] = useState('');
   const [settleDate, setSettleDate] = useState(todayStr());
+  const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT'>('NORMAL');
 
   const [disburseId, setDisburseId] = useState<number | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
@@ -69,11 +71,13 @@ export function AdvancesPage() {
           amount: Number(amount),
           purpose,
           expected_settle_date: settleDate,
+          urgency,
         }),
       });
       showToast('借款/备用金申请已提交');
       setOpen(false);
       setPurpose('');
+      setUrgency('NORMAL');
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '提交失败', 'error');
@@ -162,7 +166,16 @@ export function AdvancesPage() {
             {rows.map((r) => (
               <tr key={r.id} className="hover:bg-stone-50/70">
                 <td className="px-5 py-3.5">
-                  <div className="font-semibold text-stone-900">{r.purpose}</div>
+                  <div className="flex items-center gap-1.5">
+                    {r.urgency === 'URGENT' && (
+                      <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-200 text-[11px] font-bold">
+                        紧急
+                      </span>
+                    )}
+                    <span className={`font-semibold ${r.urgency === 'URGENT' ? 'text-red-600' : 'text-stone-900'}`}>
+                      {r.purpose}
+                    </span>
+                  </div>
                   <div className="text-xs text-stone-400 font-mono">{r.advance_no}</div>
                 </td>
                 <td className="px-4 py-3.5">
@@ -247,7 +260,7 @@ export function AdvancesPage() {
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium text-stone-700 mb-1">借款金额(元)</label>
               <input
@@ -269,6 +282,19 @@ export function AdvancesPage() {
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
                 required
               />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">紧急程度</label>
+              <select
+                value={urgency}
+                onChange={(e) => setUrgency(e.target.value as 'NORMAL' | 'URGENT')}
+                className={`w-full px-3 py-2 rounded-xl border text-sm bg-white ${
+                  urgency === 'URGENT' ? 'border-red-300 text-red-600 font-semibold' : 'border-stone-300'
+                }`}
+              >
+                <option value="NORMAL">常规</option>
+                <option value="URGENT">紧急</option>
+              </select>
             </div>
           </div>
           <div>

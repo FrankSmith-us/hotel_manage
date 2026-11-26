@@ -32,9 +32,16 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['returned_to_role', 'TEXT'],
       ['returned_from_step', 'INTEGER'],
       ['return_reason', 'TEXT'],
+      ['urgency', `TEXT NOT NULL DEFAULT 'NORMAL'`],
     ] as const) {
       if (!rColNames.has(colName)) {
         await db.execute(`ALTER TABLE reimbursements ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
+    for (const tbl of ['cash_advances', 'leave_requests'] as const) {
+      const tCols = await db.query<{ name: string }>(`PRAGMA table_info(${tbl})`);
+      if (!tCols.some((c) => c.name === 'urgency')) {
+        await db.execute(`ALTER TABLE ${tbl} ADD COLUMN urgency TEXT NOT NULL DEFAULT 'NORMAL'`);
       }
     }
   } else {
@@ -53,6 +60,7 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['returned_to_role', 'VARCHAR(32) NULL'],
       ['returned_from_step', 'INT NULL'],
       ['return_reason', 'VARCHAR(500) NULL'],
+      ['urgency', `VARCHAR(16) NOT NULL DEFAULT 'NORMAL'`],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt
@@ -62,6 +70,17 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       );
       if (!c || Number(c.cnt) === 0) {
         await db.execute(`ALTER TABLE reimbursements ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
+    for (const tbl of ['cash_advances', 'leave_requests'] as const) {
+      const c = await db.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = 'urgency'`,
+        [tbl]
+      );
+      if (!c || Number(c.cnt) === 0) {
+        await db.execute(`ALTER TABLE ${tbl} ADD COLUMN urgency VARCHAR(16) NOT NULL DEFAULT 'NORMAL'`);
       }
     }
   }

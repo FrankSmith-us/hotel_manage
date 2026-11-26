@@ -89,7 +89,7 @@ router.get(
        JOIN hotels h ON h.id = a.hotel_id
        JOIN users u ON u.id = a.applicant_id
        WHERE ${conditions.join(' AND ')}
-       ORDER BY a.id DESC`,
+       ORDER BY CASE WHEN a.urgency = 'URGENT' THEN 0 ELSE 1 END ASC, a.id DESC`,
       params
     );
 
@@ -132,6 +132,7 @@ const createAdvanceSchema = z.object({
   amount: z.number().positive('借款金额必须大于0'),
   purpose: z.string().min(2, '请填写借款用途'),
   expected_settle_date: z.string().min(8),
+  urgency: z.enum(['NORMAL', 'URGENT']).default('NORMAL'),
 });
 
 router.post(
@@ -160,8 +161,8 @@ router.post(
       const ins = await tx.execute(
         `INSERT INTO cash_advances (
           advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount,
-          purpose, expected_settle_date, status, current_step, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
+          purpose, expected_settle_date, urgency, status, current_step, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
         [
           advanceNo,
           user.id,
@@ -171,6 +172,7 @@ router.post(
           amount,
           body.purpose,
           body.expected_settle_date,
+          body.urgency,
           ts,
           ts,
         ]

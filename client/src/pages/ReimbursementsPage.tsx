@@ -36,6 +36,7 @@ interface ReimbursementRow {
   offset_amount: number;
   net_pay_amount: number;
   status: string;
+  urgency?: 'NORMAL' | 'URGENT';
   current_step: number;
   total_steps: number;
   current_step_name: string | null;
@@ -155,6 +156,7 @@ export function ReimbursementsPage() {
   const [cashAdvanceId, setCashAdvanceId] = useState<number | ''>('');
   const [offsetAmount, setOffsetAmount] = useState<number>(0);
   const [remarks, setRemarks] = useState('');
+  const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT'>('NORMAL');
   const [paymentType, setPaymentType] = useState<'CORPORATE' | 'PERSONAL'>('PERSONAL');
   const [payeeName, setPayeeName] = useState('');
   const [payeeBank, setPayeeBank] = useState('');
@@ -264,6 +266,7 @@ export function ReimbursementsPage() {
     setCashAdvanceId('');
     setOffsetAmount(0);
     setRemarks('');
+    setUrgency('NORMAL');
     setPaymentType('PERSONAL');
     setPayeeName('');
     setPayeeBank('');
@@ -291,6 +294,7 @@ export function ReimbursementsPage() {
     setCashAdvanceId(d.claim.cash_advance_id ?? '');
     setOffsetAmount(Number(d.claim.offset_amount || 0));
     setRemarks(d.claim.remarks || '');
+    setUrgency(d.claim.urgency === 'URGENT' ? 'URGENT' : 'NORMAL');
     setPaymentType(d.claim.payment_type || 'PERSONAL');
     setPayeeName(d.claim.payee_name || '');
     setPayeeBank(d.claim.payee_bank || '');
@@ -365,6 +369,7 @@ export function ReimbursementsPage() {
         cash_advance_id: cashAdvanceId === '' ? null : Number(cashAdvanceId),
         offset_amount: Number(offsetAmount || 0),
         remarks: remarks.trim() || null,
+        urgency,
         payment_type: paymentType,
         payee_name: payeeName.trim(),
         payee_bank: payeeBank.trim(),
@@ -596,7 +601,20 @@ export function ReimbursementsPage() {
                     className="hover:bg-stone-50/80 cursor-pointer transition-colors"
                   >
                     <td className="px-5 py-3.5">
-                      <div className="font-semibold text-stone-900">{r.title}</div>
+                      <div className="flex items-center gap-1.5">
+                        {r.urgency === 'URGENT' && (
+                          <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-200 text-[11px] font-bold shrink-0">
+                            紧急
+                          </span>
+                        )}
+                        <span
+                          className={`font-semibold ${
+                            r.urgency === 'URGENT' ? 'text-red-600' : 'text-stone-900'
+                          }`}
+                        >
+                          {r.title}
+                        </span>
+                      </div>
                       <div className="text-xs text-stone-400 font-mono mt-0.5">{r.claim_no}</div>
                     </td>
                     <td className="px-4 py-3.5">
@@ -739,15 +757,30 @@ export function ReimbursementsPage() {
             </div>
           </div>
 
-          <div>
-            <label className="block text-xs font-medium text-stone-700 mb-1">备注说明</label>
-            <textarea
-              rows={3}
-              value={remarks}
-              onChange={(e) => setRemarks(e.target.value)}
-              placeholder="选填：采购背景、审批补充说明或特殊情况说明"
-              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm resize-y"
-            />
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-start">
+            <div className="sm:col-span-9">
+              <label className="block text-xs font-medium text-stone-700 mb-1">备注说明</label>
+              <textarea
+                rows={3}
+                value={remarks}
+                onChange={(e) => setRemarks(e.target.value)}
+                placeholder="选填：采购背景、审批补充说明或特殊情况说明"
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm resize-y"
+              />
+            </div>
+            <div className="sm:col-span-3">
+              <label className="block text-xs font-medium text-stone-700 mb-1">紧急程度</label>
+              <select
+                value={urgency}
+                onChange={(e) => setUrgency(e.target.value as 'NORMAL' | 'URGENT')}
+                className={`w-full px-3 py-2 rounded-xl border text-sm bg-white font-medium ${
+                  urgency === 'URGENT' ? 'border-red-300 text-red-600 bg-red-50/40' : 'border-stone-300 text-stone-800'
+                }`}
+              >
+                <option value="NORMAL">常规</option>
+                <option value="URGENT">紧急（红字加急提醒）</option>
+              </select>
+            </div>
           </div>
 
           {/* Payee Account Section (Corporate / Personal) */}
@@ -1139,6 +1172,11 @@ export function ReimbursementsPage() {
             <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-xl bg-stone-50 border border-stone-200">
               <div className="flex items-center gap-3">
                 <StatusBadge status={detail.claim.status} />
+                {detail.claim.urgency === 'URGENT' && (
+                  <span className="px-2 py-0.5 rounded-full bg-red-50 text-red-600 border border-red-200 text-xs font-bold">
+                    紧急单据
+                  </span>
+                )}
                 <span className="text-xs text-stone-500">费用月份：{detail.claim.expense_month}</span>
               </div>
               <div className="flex items-center gap-5 tabular-nums text-sm">

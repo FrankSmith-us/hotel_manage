@@ -19,6 +19,7 @@ interface LeaveRow {
   days: number;
   hours: number;
   reason: string;
+  urgency?: 'NORMAL' | 'URGENT';
   status: string;
   current_step_name: string | null;
   canApprove: boolean;
@@ -37,6 +38,7 @@ export function LeavesPage() {
   const [days, setDays] = useState(1);
   const [hours, setHours] = useState(8);
   const [reason, setReason] = useState('');
+  const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT'>('NORMAL');
 
   const load = useCallback(async () => {
     const d = await apiFetch<{ leaves: LeaveRow[] }>(`/api/leaves?tab=${tab}`);
@@ -59,11 +61,13 @@ export function LeavesPage() {
           days: leaveType === 'OVERTIME' ? 0 : Number(days),
           hours: Number(hours),
           reason,
+          urgency,
         }),
       });
       showToast('请假/加班申请已提交');
       setOpen(false);
       setReason('');
+      setUrgency('NORMAL');
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '提交失败', 'error');
@@ -152,7 +156,16 @@ export function LeavesPage() {
                     {r.leave_type === 'OVERTIME' ? `${r.hours} 小时` : `${r.days} 天 (${r.hours}小时)`}
                   </div>
                 </td>
-                <td className="px-4 py-3.5 text-xs text-stone-600 max-w-xs truncate">{r.reason}</td>
+                <td className="px-4 py-3.5 text-xs max-w-xs truncate">
+                  {r.urgency === 'URGENT' && (
+                    <span className="px-1.5 py-0.5 rounded bg-red-50 text-red-600 border border-red-200 text-[11px] font-bold mr-1.5">
+                      紧急
+                    </span>
+                  )}
+                  <span className={r.urgency === 'URGENT' ? 'text-red-600 font-semibold' : 'text-stone-600'}>
+                    {r.reason}
+                  </span>
+                </td>
                 <td className="px-4 py-3.5">
                   <StatusBadge status={r.status} />
                   {r.current_step_name && (
@@ -245,6 +258,19 @@ export function LeavesPage() {
                 onChange={(e) => setHours(Number(e.target.value))}
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
               />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">紧急程度</label>
+              <select
+                value={urgency}
+                onChange={(e) => setUrgency(e.target.value as 'NORMAL' | 'URGENT')}
+                className={`w-full px-3 py-2 rounded-xl border text-sm bg-white ${
+                  urgency === 'URGENT' ? 'border-red-300 text-red-600 font-semibold' : 'border-stone-300'
+                }`}
+              >
+                <option value="NORMAL">常规</option>
+                <option value="URGENT">紧急</option>
+              </select>
             </div>
           </div>
           <div>

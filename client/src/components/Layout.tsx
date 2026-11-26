@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { NavLink, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import {
   Building2,
   CalendarClock,
@@ -17,6 +17,7 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
+import { apiFetch } from '../lib/api';
 import { useAuth } from '../lib/auth';
 
 interface NavGroup {
@@ -65,7 +66,28 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { user, demoAccounts, demoSwitchEnabled, switchDemoAccount, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [alertCounts, setAlertCounts] = useState({
+    pendingExpenseCount: 0,
+    urgentExpenseCount: 0,
+    pendingOtherCount: 0,
+    urgentOtherCount: 0,
+  });
   const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (!user) return;
+    apiFetch<{
+      kpis: {
+        pendingExpenseCount: number;
+        urgentExpenseCount: number;
+        pendingOtherCount: number;
+        urgentOtherCount: number;
+      };
+    }>('/api/dashboard/summary')
+      .then((d) => setAlertCounts(d.kpis))
+      .catch(() => {});
+  }, [user?.id, location.pathname]);
 
   const handleSwitch = async (username: string) => {
     await switchDemoAccount(username);
@@ -163,6 +185,32 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 {user?.hotel_name || '悦栖酒店集团'}
               </span>
               <span>当前身份：{user?.role_label}</span>
+              {alertCounts.pendingExpenseCount > 0 && (
+                <button
+                  onClick={() => navigate('/reimbursements')}
+                  className={`px-2.5 py-1 rounded-full border font-semibold transition-colors ${
+                    alertCounts.urgentExpenseCount > 0
+                      ? 'bg-red-50 border-red-200 text-red-600'
+                      : 'bg-amber-50 border-amber-200 text-amber-800'
+                  }`}
+                >
+                  费用审批 {alertCounts.pendingExpenseCount}
+                  {alertCounts.urgentExpenseCount > 0 ? `（${alertCounts.urgentExpenseCount}紧急）` : ''}
+                </button>
+              )}
+              {alertCounts.pendingOtherCount > 0 && (
+                <button
+                  onClick={() => navigate('/leaves')}
+                  className={`px-2.5 py-1 rounded-full border font-semibold transition-colors ${
+                    alertCounts.urgentOtherCount > 0
+                      ? 'bg-red-50 border-red-200 text-red-600'
+                      : 'bg-stone-100 border-stone-200 text-stone-700'
+                  }`}
+                >
+                  其他审批 {alertCounts.pendingOtherCount}
+                  {alertCounts.urgentOtherCount > 0 ? `（${alertCounts.urgentOtherCount}紧急）` : ''}
+                </button>
+              )}
             </div>
           </div>
 

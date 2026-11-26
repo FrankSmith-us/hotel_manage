@@ -82,7 +82,7 @@ router.get(
        JOIN hotels h ON h.id = l.hotel_id
        LEFT JOIN users u ON u.employee_id = e.id
        WHERE ${conditions.join(' AND ')}
-       ORDER BY l.id DESC`,
+       ORDER BY CASE WHEN l.urgency = 'URGENT' THEN 0 ELSE 1 END ASC, l.id DESC`,
       params
     );
 
@@ -122,6 +122,7 @@ const createLeaveSchema = z.object({
   days: z.number().min(0).default(0),
   hours: z.number().min(0).default(0),
   reason: z.string().min(2, '请填写事由'),
+  urgency: z.enum(['NORMAL', 'URGENT']).default('NORMAL'),
 });
 
 router.post(
@@ -147,8 +148,8 @@ router.post(
       const ins = await tx.execute(
         `INSERT INTO leave_requests (
           request_no, employee_id, hotel_id, leave_type, start_date, end_date,
-          days, hours, reason, status, current_step, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
+          days, hours, reason, urgency, status, current_step, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
         [
           requestNo,
           user.employee_id,
@@ -159,6 +160,7 @@ router.post(
           body.days,
           body.hours,
           body.reason,
+          body.urgency,
           ts,
           ts,
         ]

@@ -57,6 +57,7 @@ const claimPayloadSchema = z.object({
   payee_name: z.string().trim().min(1, '请填写收款人账户名称'),
   payee_bank: z.string().trim().min(2, '请填写开户银行'),
   payee_account: z.string().trim().min(4, '请填写收款账户号码'),
+  urgency: z.enum(['NORMAL', 'URGENT']).default('NORMAL'),
   submit: z.boolean().default(false),
   items: z.array(itemSchema).min(1, '至少添加一条费用明细'),
 });
@@ -252,7 +253,7 @@ router.get(
        LEFT JOIN departments d ON d.id = r.department_id
        LEFT JOIN users rt ON rt.id = r.returned_to_user_id
        WHERE ${conditions.join(' AND ')}
-       ORDER BY r.id DESC`,
+       ORDER BY CASE WHEN r.urgency = 'URGENT' THEN 0 ELSE 1 END ASC, r.id DESC`,
       params
     );
 
@@ -577,9 +578,9 @@ router.post(
       const ins = await tx.execute(
         `INSERT INTO reimbursements (
           claim_no, title, applicant_id, employee_id, hotel_id, department_id, expense_month,
-          total_amount, cash_advance_id, offset_amount, net_pay_amount, status, current_step, total_steps,
+          total_amount, cash_advance_id, offset_amount, net_pay_amount, urgency, status, current_step, total_steps,
           risk_flags, risk_summary, remarks, payment_type, payee_name, payee_bank, payee_account, submitted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           claimNo,
           body.title,
@@ -592,6 +593,7 @@ router.post(
           body.cash_advance_id ?? null,
           offsetAmount,
           netPayAmount,
+          body.urgency,
           body.submit ? 'PENDING_APPROVAL' : 'DRAFT',
           body.submit ? 1 : 0,
           body.submit ? route.length : 0,
@@ -782,7 +784,7 @@ router.put(
       await tx.execute(
         `UPDATE reimbursements
          SET title = ?, hotel_id = ?, department_id = ?, expense_month = ?, total_amount = ?,
-             cash_advance_id = ?, offset_amount = ?, net_pay_amount = ?, status = ?,
+             cash_advance_id = ?, offset_amount = ?, net_pay_amount = ?, urgency = ?, status = ?,
              current_step = ?, total_steps = ?, risk_flags = ?, risk_summary = ?, remarks = ?,
              payment_type = ?, payee_name = ?, payee_bank = ?, payee_account = ?,
              returned_to_step = ?, returned_to_user_id = ?, returned_to_role = ?,
@@ -798,6 +800,7 @@ router.put(
           body.cash_advance_id ?? null,
           offsetAmount,
           netPayAmount,
+          body.urgency,
           nextStatus,
           nextCurrentStep,
           body.submit ? route.length : 0,
