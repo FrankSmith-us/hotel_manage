@@ -8,7 +8,7 @@ import { initSchema } from '../db/init';
 import { seedDatabase } from '../db/seed';
 import { SqliteAdapter } from '../db/sqliteAdapter';
 import { createApp } from '../src/app';
-import { currentYearMonth, getMondayOfCurrentWeek, todayStr } from '../src/utils/numbers';
+import { currentYearMonth, getMondayOfCurrentWeek, nowIso, todayStr } from '../src/utils/numbers';
 
 let server: http.Server;
 let baseUrl = '';
@@ -1351,5 +1351,13 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(archiveRes.status, 200);
     assert.equal(archiveRes.data.archive.employee_name, '林新宇');
     assert.ok(archiveRes.data.archive.records.lifecycleEvents.length >= 2);
+  });
+
+  it('T1-11: nowIso() and todayStr() format timestamps in Beijing time (UTC+8)', () => {
+    const bjStr = nowIso();
+    assert.match(bjStr, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+    const expectedBj = new Date(Date.now() + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 19);
+    const diffMs = Math.abs(Date.parse(bjStr.replace(' ', 'T') + 'Z') - Date.parse(expectedBj.replace(' ', 'T') + 'Z'));
+    assert.ok(diffMs <= 5000, `Expected Beijing time ${expectedBj}, got ${bjStr}`);
   });
 });

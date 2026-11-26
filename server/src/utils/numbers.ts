@@ -7,30 +7,28 @@ export function roundMoney(val: number): number {
   return Math.round((Number(val) + Number.EPSILON) * 100) / 100;
 }
 
+const BEIJING_OFFSET_MS = 8 * 60 * 60 * 1000;
+
+function beijingNow(): Date {
+  return new Date(Date.now() + BEIJING_OFFSET_MS);
+}
+
 export function nowIso(): string {
-  return new Date().toISOString().replace('T', ' ').slice(0, 19);
+  return beijingNow().toISOString().replace('T', ' ').slice(0, 19);
 }
 
 export function todayStr(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return beijingNow().toISOString().slice(0, 10);
 }
 
 export function addDays(baseDateStr: string, days: number): string {
-  const d = new Date(`${baseDateStr}T00:00:00`);
-  d.setDate(d.getDate() + days);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  const d = new Date(`${baseDateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
 }
 
 export function currentYearMonth(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  return beijingNow().toISOString().slice(0, 7);
 }
 
 export function offsetYearMonth(baseYm: string, deltaMonths: number): string {
