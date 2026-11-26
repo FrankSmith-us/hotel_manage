@@ -1,11 +1,24 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Calculator, CheckCircle2, Download, Edit3 } from 'lucide-react';
+import { Calculator, CheckCircle2, Download, Edit3, Settings2 } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
 import { apiFetch, downloadCsv } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { currentYearMonth, formatMoney } from '../lib/format';
+
+interface CitySsRule {
+  id?: number;
+  city: string;
+  effective_year: number;
+  ss_base_min: number;
+  ss_base_max: number;
+  pension_rate: number;
+  medical_rate: number;
+  unemployment_rate: number;
+  housing_fund_rate: number;
+  total_personal_rate: number;
+}
 
 interface PayrollRow {
   id: number;
@@ -23,6 +36,7 @@ interface PayrollRow {
   leave_deduction: number;
   performance_bonus: number;
   social_security: number;
+  income_tax?: number;
   gross_pay: number;
   net_pay: number;
   status: string;
@@ -40,11 +54,50 @@ export function PayrollPage() {
   const [editing, setEditing] = useState<PayrollRow | null>(null);
   const [bonusInput, setBonusInput] = useState(0);
   const [notesInput, setNotesInput] = useState('');
+  const [ssModalOpen, setSsModalOpen] = useState(false);
+  const [ssRules, setSsRules] = useState<CitySsRule[]>([]);
+  const [ssForm, setSsForm] = useState<CitySsRule>({
+    city: '上海',
+    effective_year: 2026,
+    ss_base_min: 7384,
+    ss_base_max: 36921,
+    pension_rate: 0.08,
+    medical_rate: 0.02,
+    unemployment_rate: 0.005,
+    housing_fund_rate: 0.07,
+    total_personal_rate: 0.175,
+  });
 
   const load = useCallback(async () => {
     const d = await apiFetch<{ records: PayrollRow[] }>(`/api/payroll?yearMonth=${yearMonth}`);
     setRecords(d.records);
   }, [yearMonth]);
+
+  const openSsRules = async () => {
+    try {
+      const d = await apiFetch<{ rules: CitySsRule[] }>('/api/payroll/ss-rules');
+      setSsRules(d.rules);
+      if (d.rules.length > 0) setSsForm(d.rules[0]);
+      setSsModalOpen(true);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '加载社保规则失败', 'error');
+    }
+  };
+
+  const handleSaveSsRule = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await apiFetch('/api/payroll/ss-rules', {
+        method: 'PUT',
+        body: JSON.stringify(ssForm),
+      });
+      showToast(`${ssForm.city} 社保公积金规则已更新`);
+      const d = await apiFetch<{ rules: CitySsRule[] }>('/api/payroll/ss-rules');
+      setSsRules(d.rules);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '保存社保规则失败', 'error');
+    }
+  };
 
   useEffect(() => {
     load();
@@ -133,6 +186,14 @@ export function PayrollPage() {
               <CheckCircle2 className="w-4 h-4" /> 确认锁账
             </button>
           )}
+          {canEditOrConfirm && (
+            <button
+              onClick={openSsRules}
+              className="px-3.5 py-2 rounded-xl bg-white border border-stone-200 text-sm font-medium flex items-center gap-1.5"
+            >
+              <Settings2 className="w-4 h-4" /> 城市社保规则
+            </button>
+          )}
           {user?.role !== 'STAFF' && (
             <button
               onClick={() => downloadCsv(`/api/payroll/export?yearMonth=${yearMonth}`, `payroll-${yearMonth}.csv`)}
@@ -164,6 +225,7 @@ export function PayrollPage() {
               <th className="px-3 py-3 text-right">请假扣款</th>
               <th className="px-3 py-3 text-right">绩效奖金</th>
               <th className="px-3 py-3 text-right">社保公积金</th>
+              <th className="px-3 py-3 text-right">个税</th>
               <th className="px-3 py-3 text-right">实发工资</th>
               <th className="px-3 py-3">状态</th>
               {canEditOrConfirm && <th className="px-4 py-3 text-right">调整</th>}
@@ -172,7 +234,7 @@ export function PayrollPage() {
           <tbody className="divide-y divide-stone-100 tabular-nums">
             {records.length === 0 ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-stone-400">
+                <td colSpan={11} className="py-12 text-center text-stone-400">
                   本月尚未核算薪资，点击右上角“一键核算本月薪资”自动生成
                 </td>
               </tr>
@@ -197,6 +259,7 @@ export function PayrollPage() {
                   <td className="px-3 py-3 text-right text-rose-600">-{formatMoney(r.leave_deduction)}</td>
                   <td className="px-3 py-3 text-right text-brand-700">+{formatMoney(r.performance_bonus)}</td>
                   <td className="px-3 py-3 text-right text-stone-500">-{formatMoney(r.social_security)}</td>
+                  <td className="px-3 py-3 text-right text-stone-500">-{formatMoney(r.income_tax || 0)}</td>
                   <td className="px-3 py-3 text-right font-bold text-sm text-stone-900">
                     {formatMoney(r.net_pay)}
                   </td>
@@ -262,6 +325,111 @@ export function PayrollPage() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal open={ssModalOpen} onClose={() => setSsModalOpen(false)} title="城市社保与公积金规则配置">
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-1.5">
+            {ssRules.map((r) => (
+              <button
+                key={r.city}
+                type="button"
+                onClick={() => setSsForm(r)}
+                className={`px-2.5 py-1 rounded-lg text-xs border ${
+                  ssForm.city === r.city
+                    ? 'bg-brand-50 text-brand-700 border-brand-200 font-semibold'
+                    : 'bg-white text-stone-600 border-stone-200'
+                }`}
+              >
+                {r.city} ({(Number(r.total_personal_rate) * 100).toFixed(1)}%)
+              </button>
+            ))}
+          </div>
+          <form onSubmit={handleSaveSsRule} className="space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs text-stone-600 mb-1">城市</label>
+                <input
+                  type="text"
+                  value={ssForm.city}
+                  onChange={(e) => setSsForm({ ...ssForm, city: e.target.value })}
+                  className="w-full px-3 py-1.5 rounded-lg border border-stone-300 text-sm"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-stone-600 mb-1">基数下限(元)</label>
+                <input
+                  type="number"
+                  value={ssForm.ss_base_min}
+                  onChange={(e) => setSsForm({ ...ssForm, ss_base_min: Number(e.target.value) })}
+                  className="w-full px-3 py-1.5 rounded-lg border border-stone-300 text-sm"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-stone-600 mb-1">基数上限(元)</label>
+                <input
+                  type="number"
+                  value={ssForm.ss_base_max}
+                  onChange={(e) => setSsForm({ ...ssForm, ss_base_max: Number(e.target.value) })}
+                  className="w-full px-3 py-1.5 rounded-lg border border-stone-300 text-sm"
+                  required
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              <div>
+                <label className="block text-[11px] text-stone-600 mb-1">养老比例</label>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={ssForm.pension_rate}
+                  onChange={(e) => setSsForm({ ...ssForm, pension_rate: Number(e.target.value) })}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-stone-600 mb-1">医疗比例</label>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={ssForm.medical_rate}
+                  onChange={(e) => setSsForm({ ...ssForm, medical_rate: Number(e.target.value) })}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-stone-600 mb-1">失业比例</label>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={ssForm.unemployment_rate}
+                  onChange={(e) => setSsForm({ ...ssForm, unemployment_rate: Number(e.target.value) })}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-stone-600 mb-1">公积金比例</label>
+                <input
+                  type="number"
+                  step="0.001"
+                  value={ssForm.housing_fund_rate}
+                  onChange={(e) => setSsForm({ ...ssForm, housing_fund_rate: Number(e.target.value) })}
+                  className="w-full px-2.5 py-1.5 rounded-lg border border-stone-300 text-sm"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" onClick={() => setSsModalOpen(false)} className="px-4 py-2 rounded-xl border text-sm">
+                关闭
+              </button>
+              <button type="submit" className="px-4 py-2 rounded-xl bg-brand-600 text-white text-sm font-semibold">
+                保存规则
+              </button>
+            </div>
+          </form>
+        </div>
       </Modal>
     </div>
   );

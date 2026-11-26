@@ -68,6 +68,7 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['political_status', 'TEXT'],
       ['probation_salary_ratio', 'REAL NOT NULL DEFAULT 1.00'],
       ['resign_date', 'TEXT'],
+      ['special_additional_deduction', 'REAL NOT NULL DEFAULT 0.00'],
     ] as const) {
       if (!eCols.has(colName)) {
         await db.execute(`ALTER TABLE employees ADD COLUMN ${colName} ${colDef}`);
@@ -81,6 +82,12 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['advance_deduction', 'REAL NOT NULL DEFAULT 0.00'],
       ['other_deduction', 'REAL NOT NULL DEFAULT 0.00'],
       ['is_resigned_settlement', 'INTEGER NOT NULL DEFAULT 0'],
+      ['city_ss_base', 'REAL NOT NULL DEFAULT 0.00'],
+      ['special_deduction', 'REAL NOT NULL DEFAULT 0.00'],
+      ['taxable_income', 'REAL NOT NULL DEFAULT 0.00'],
+      ['ytd_taxable_income', 'REAL NOT NULL DEFAULT 0.00'],
+      ['ytd_tax_paid', 'REAL NOT NULL DEFAULT 0.00'],
+      ['income_tax', 'REAL NOT NULL DEFAULT 0.00'],
     ] as const) {
       if (!prCols.has(colName)) {
         await db.execute(`ALTER TABLE payroll_records ADD COLUMN ${colName} ${colDef}`);
@@ -204,6 +211,13 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['offboarding_requests', 'pending_reimbursement_count', 'INT NOT NULL DEFAULT 0'],
       ['offboarding_requests', 'handover_to_user_id', 'BIGINT NULL'],
       ['offboarding_requests', 'scheduled_execute', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      ['employees', 'special_additional_deduction', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'city_ss_base', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'special_deduction', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'taxable_income', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'ytd_taxable_income', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'ytd_tax_paid', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'income_tax', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt

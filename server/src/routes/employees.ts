@@ -311,6 +311,8 @@ const updateEmpSchema = z.object({
   health_cert_expiry: isoDateSchema.nullable().optional(),
   contract_end_date: isoDateSchema.nullable().optional(),
   base_salary: z.number().min(0).max(1_000_000).optional(),
+  probation_salary_ratio: z.number().min(0.1).max(1).optional(),
+  special_additional_deduction: z.number().min(0).max(100_000).optional(),
   night_allowance_rate: z.number().min(0).max(10_000).optional(),
   bank_name: z.string().nullable().optional(),
   bank_account: z.string().nullable().optional(),
@@ -342,6 +344,8 @@ router.put(
 
     const hasSensitiveChange =
       body.base_salary !== undefined ||
+      body.probation_salary_ratio !== undefined ||
+      body.special_additional_deduction !== undefined ||
       body.night_allowance_rate !== undefined ||
       body.bank_name !== undefined ||
       body.bank_account !== undefined;

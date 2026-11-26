@@ -2105,6 +2105,23 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         [offIns.insertId, userIds['staff_sh_hk'], ts]
       );
     }
+
+    const ssRules = [
+      ['上海', 2026, 7384, 36921, 0.08, 0.02, 0.005, 0.07, 0.175],
+      ['北京', 2026, 6821, 35283, 0.08, 0.02, 0.005, 0.07, 0.175],
+      ['杭州', 2026, 4812, 24060, 0.08, 0.02, 0.005, 0.07, 0.175],
+      ['深圳', 2026, 4492, 27501, 0.08, 0.02, 0.005, 0.05, 0.155],
+      ['广州', 2026, 5510, 27501, 0.08, 0.02, 0.005, 0.05, 0.155],
+    ] as const;
+    for (const [city, yr, minB, maxB, pR, mR, uR, hR, totR] of ssRules) {
+      await tx.execute(
+        `INSERT INTO city_social_security_rules (
+          city, effective_year, ss_base_min, ss_base_max, pension_rate, medical_rate,
+          unemployment_rate, housing_fund_rate, total_personal_rate, updated_by, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [city, yr, minB, maxB, pR, mR, uR, hR, totR, userIds['admin'], ts]
+      );
+    }
   });
 
   console.log('[db:seed] Seeded YueQi Hotel Ops database successfully.');

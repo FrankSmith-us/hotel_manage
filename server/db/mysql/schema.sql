@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS employees (
   health_cert_expiry VARCHAR(16) NULL,
   base_salary DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   probation_salary_ratio DECIMAL(4,2) NOT NULL DEFAULT 1.00,
+  special_additional_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   night_allowance_rate DECIMAL(12,2) NOT NULL DEFAULT 80.00,
   bank_name VARCHAR(80) NULL,
   bank_account VARCHAR(64) NULL,
@@ -173,7 +174,13 @@ CREATE TABLE IF NOT EXISTS payroll_records (
   leave_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   performance_bonus DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   other_allowance DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  city_ss_base DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   social_security DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  special_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  taxable_income DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  ytd_taxable_income DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  ytd_tax_paid DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  income_tax DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   advance_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   other_deduction DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   gross_pay DECIMAL(12,2) NOT NULL DEFAULT 0.00,
@@ -622,6 +629,21 @@ CREATE TABLE IF NOT EXISTS cash_advance_repayments (
   INDEX idx_adv_repayments_adv (advance_id),
   CONSTRAINT fk_adv_rep_adv FOREIGN KEY (advance_id) REFERENCES cash_advances(id),
   CONSTRAINT fk_adv_rep_user FOREIGN KEY (recorded_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS city_social_security_rules (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  city VARCHAR(64) NOT NULL UNIQUE,
+  effective_year INT NOT NULL DEFAULT 2026,
+  ss_base_min DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  ss_base_max DECIMAL(12, 2) NOT NULL DEFAULT 999999.00,
+  pension_rate DECIMAL(6, 4) NOT NULL DEFAULT 0.0800,
+  medical_rate DECIMAL(6, 4) NOT NULL DEFAULT 0.0200,
+  unemployment_rate DECIMAL(6, 4) NOT NULL DEFAULT 0.0050,
+  housing_fund_rate DECIMAL(6, 4) NOT NULL DEFAULT 0.0700,
+  total_personal_rate DECIMAL(6, 4) NOT NULL DEFAULT 0.1750,
+  updated_by BIGINT NULL,
+  updated_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

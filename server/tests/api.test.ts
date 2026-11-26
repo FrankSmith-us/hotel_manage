@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 32 tables', () => {
+  it('MySQL and SQLite schemas define identical 33 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 32);
+    assert.equal(mysqlTables.length, 33);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1967,9 +1967,20 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       body: { performance_bonus: 500, other_allowance: 200, advance_deduction: 300, other_deduction: 100 },
     });
     assert.equal(updRes.status, 200);
-    // gross = 3000 + 500 + 200 = 3700; ss = 3000 * 0.105 = 315; net = 3700 - 315 - 300 - 100 = 2985
+    // gross = 3000 + 500 + 200 = 3700; net = max(0, gross - ss - tax - 300 - 100)
     assert.equal(updRes.data.record.gross_pay, 3700);
-    assert.equal(updRes.data.record.net_pay, 2985);
+    const expectedNet = Math.max(
+      0,
+      Math.round(
+        (updRes.data.record.gross_pay -
+          updRes.data.record.social_security -
+          (updRes.data.record.income_tax || 0) -
+          300 -
+          100) *
+          100
+      ) / 100
+    );
+    assert.equal(updRes.data.record.net_pay, expectedNet);
 
     // 5. Confirm lock prevents further edits
     assert.equal((await req('POST', '/api/payroll/confirm', { token: finToken, body: { yearMonth: ym, hotelId: 2 } })).status, 200);
@@ -2088,5 +2099,81 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     });
     assert.equal(compNow.status, 200);
     assert.ok(compNow.data.archiveId > 0);
+  });
+
+  it('T1-09b: city social security clamping, cumulative IIT withholding, special deduction, and RBAC', async () => {
+    const hrToken = await loginAs('hr');
+    const finToken = await loginAs('finance');
+    const staffToken = await loginAs('staff_sh');
+
+    // 1. Staff cannot update city social security rules -> 403
+    assert.equal(
+      (
+        await req('PUT', '/api/payroll/ss-rules', {
+          token: staffToken,
+          body: {
+            city: '苏州',
+            ss_base_min: 4800,
+            ss_base_max: 24000,
+            pension_rate: 0.08,
+            medical_rate: 0.02,
+            unemployment_rate: 0.005,
+            housing_fund_rate: 0.07,
+          },
+        })
+      ).status,
+      403
+    );
+
+    const rulesRes = await req('GET', '/api/payroll/ss-rules', { token: finToken });
+    assert.equal(rulesRes.status, 200);
+    assert.ok(rulesRes.data.rules.some((r: any) => r.city === '上海'));
+
+    // 2. Create an employee in Shanghai (ss_base_min=7384, rate=17.5%) with base_salary 10000 and special_additional_deduction 1000
+    const empRes = await req('POST', '/api/employees', {
+      token: hrToken,
+      body: {
+        name: '个税测试员工',
+        gender: 'M',
+        phone: '13900001095',
+        hotel_id: 2,
+        department_id: 6,
+        position: '前厅主管',
+        employment_type: 'FULL_TIME',
+        status: 'ACTIVE',
+        hire_date: '2026-01-01',
+        base_salary: 10000,
+      },
+    });
+    assert.equal(empRes.status, 201);
+    const empId = empRes.data.employee.id;
+
+    assert.equal(
+      (await req('PUT', `/api/employees/${empId}`, { token: hrToken, body: { special_additional_deduction: 1000 } })).status,
+      200
+    );
+
+    // Month 1 (2026-01): gross=10000, ss=10000*0.175=1750, spec=1000, threshold=5000 => taxable = 2250 => tax = 2250*0.03 = 67.50
+    assert.equal((await req('POST', '/api/payroll/calculate', { token: hrToken, body: { yearMonth: '2026-01', hotelId: 2 } })).status, 200);
+    const janList = await req('GET', '/api/payroll?yearMonth=2026-01&hotelId=2', { token: finToken });
+    const janRec = janList.data.records.find((r: any) => r.employee_id === empId);
+    assert.ok(janRec);
+    assert.equal(janRec.social_security, 1750);
+    assert.equal(janRec.special_deduction, 1000);
+    assert.equal(janRec.income_tax, 67.5);
+
+    // Month 2 (2026-02) with big bonus pushing YTD taxable over 36,000 bracket
+    assert.equal((await req('POST', '/api/payroll/calculate', { token: hrToken, body: { yearMonth: '2026-02', hotelId: 2 } })).status, 200);
+    const febList = await req('GET', '/api/payroll?yearMonth=2026-02&hotelId=2', { token: finToken });
+    const febRec = febList.data.records.find((r: any) => r.employee_id === empId);
+    const febUpd = await req('PUT', `/api/payroll/${febRec.id}`, {
+      token: finToken,
+      body: { performance_bonus: 35000 },
+    });
+    assert.equal(febUpd.status, 200);
+    // YTD taxable = (10000 + 45000) - 3500 - 2000 - 10000 = 39500 (> 36000 => 10% rate, quickDeduction 2520)
+    // Cumulative tax = 39500*0.1 - 2520 = 1430; Feb tax = 1430 - 67.5 = 1362.5
+    assert.equal(febUpd.data.record.ytd_taxable_income, 39500);
+    assert.equal(febUpd.data.record.income_tax, 1362.5);
   });
 });

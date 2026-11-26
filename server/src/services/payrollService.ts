@@ -2,6 +2,78 @@ import { DbQueryRunner } from '../../db/adapter';
 import { BUSINESS_RULES } from '../config/businessRules';
 import { nowIso, roundMoney } from '../utils/numbers';
 
+export async function computeCumulativeIit(
+  db: DbQueryRunner,
+  params: {
+    employeeId: number;
+    yearMonth: string;
+    grossPay: number;
+    socialSecurity: number;
+    specialDeduction: number;
+  }
+): Promise<{
+  taxableIncome: number;
+  ytdTaxableIncome: number;
+  ytdTaxPaid: number;
+  incomeTax: number;
+}> {
+  const year = params.yearMonth.slice(0, 4);
+  const yearStartYm = `${year}-01`;
+
+  const prevRow = await db.queryOne<{
+    prev_gross: number;
+    prev_ss: number;
+    prev_spec: number;
+    prev_tax: number;
+    prev_cnt: number;
+  }>(
+    `SELECT COALESCE(SUM(gross_pay), 0) AS prev_gross,
+            COALESCE(SUM(social_security), 0) AS prev_ss,
+            COALESCE(SUM(special_deduction), 0) AS prev_spec,
+            COALESCE(SUM(income_tax), 0) AS prev_tax,
+            COUNT(*) AS prev_cnt
+     FROM payroll_records
+     WHERE employee_id = ? AND \`year_month\` >= ? AND \`year_month\` < ?`,
+    [params.employeeId, yearStartYm, params.yearMonth]
+  );
+
+  const prevCnt = Number(prevRow?.prev_cnt || 0);
+  const curTaxable = Math.max(
+    0,
+    roundMoney(
+      params.grossPay -
+        params.socialSecurity -
+        params.specialDeduction -
+        BUSINESS_RULES.payroll.taxThresholdMonthly
+    )
+  );
+  const ytdGross = roundMoney(Number(prevRow?.prev_gross || 0) + params.grossPay);
+  const ytdSs = roundMoney(Number(prevRow?.prev_ss || 0) + params.socialSecurity);
+  const ytdSpec = roundMoney(Number(prevRow?.prev_spec || 0) + params.specialDeduction);
+  const ytdThreshold = roundMoney((prevCnt + 1) * BUSINESS_RULES.payroll.taxThresholdMonthly);
+  const ytdTaxableIncome = Math.max(0, roundMoney(ytdGross - ytdSs - ytdSpec - ytdThreshold));
+  const ytdTaxPaid = roundMoney(Number(prevRow?.prev_tax || 0));
+
+  let cumulativeTax = 0;
+  for (const bracket of BUSINESS_RULES.payroll.taxBrackets2026) {
+    if (ytdTaxableIncome <= bracket.upTo) {
+      cumulativeTax = Math.max(
+        0,
+        roundMoney(ytdTaxableIncome * bracket.rate - bracket.quickDeduction)
+      );
+      break;
+    }
+  }
+  const incomeTax = Math.max(0, roundMoney(cumulativeTax - ytdTaxPaid));
+
+  return {
+    taxableIncome: curTaxable,
+    ytdTaxableIncome,
+    ytdTaxPaid,
+    incomeTax,
+  };
+}
+
 export async function calculateMonthlyPayroll(
   db: DbQueryRunner,
   params: {
@@ -23,21 +95,24 @@ export async function calculateMonthlyPayroll(
   const employees = await db.query<{
     id: number;
     hotel_id: number;
+    hotel_city: string;
     status: string;
     hire_date: string;
     resign_date: string | null;
     base_salary: number;
     probation_salary_ratio: number | null;
+    special_additional_deduction: number | null;
     night_allowance_rate: number;
     ev_resign_date: string | null;
   }>(
-    `SELECT e.id, e.hotel_id, e.status, e.hire_date, e.resign_date, e.base_salary,
-            e.probation_salary_ratio, e.night_allowance_rate,
+    `SELECT e.id, e.hotel_id, h.city AS hotel_city, e.status, e.hire_date, e.resign_date, e.base_salary,
+            e.probation_salary_ratio, e.special_additional_deduction, e.night_allowance_rate,
             (SELECT MAX(ev.effective_date)
              FROM employee_lifecycle_events ev
              WHERE ev.employee_id = e.id AND ev.event_type = 'RESIGN'
                AND ev.effective_date >= ? AND ev.effective_date <= ?) AS ev_resign_date
      FROM employees e
+     JOIN hotels h ON h.id = e.hotel_id
      WHERE e.hire_date <= ?
        AND (
          e.status IN ('ACTIVE', 'PROBATION')
@@ -56,6 +131,14 @@ export async function calculateMonthlyPayroll(
        ${hotelFilterSql}`,
     [monthStart, monthEnd, ...empParams]
   );
+
+  const ssRulesRows = await db.query<{
+    city: string;
+    ss_base_min: number;
+    ss_base_max: number;
+    total_personal_rate: number;
+  }>('SELECT city, ss_base_min, ss_base_max, total_personal_rate FROM city_social_security_rules');
+  const ssRuleMap = new Map(ssRulesRows.map((r) => [r.city, r]));
 
   const ts = nowIso();
   let processedCount = 0;
@@ -159,19 +242,45 @@ export async function calculateMonthlyPayroll(
     const otherAllowance = existing ? roundMoney(Number(existing.other_allowance || 0)) : 0;
     const advanceDeduction = existing ? roundMoney(Number(existing.advance_deduction || 0)) : 0;
     const otherDeduction = existing ? roundMoney(Number(existing.other_deduction || 0)) : 0;
-    const socialSecurity = roundMoney(baseSalary * BUSINESS_RULES.payroll.defaultSocialSecurityRate);
+    const specialDeduction = roundMoney(Number(emp.special_additional_deduction || 0));
+
+    const ssRule =
+      ssRuleMap.get(emp.hotel_city) ??
+      ssRuleMap.get((emp.hotel_city || '').replace(/市$/, ''));
+    let citySsBase = baseSalary;
+    let socialSecurity = roundMoney(baseSalary * BUSINESS_RULES.payroll.defaultSocialSecurityRate);
+    if (ssRule) {
+      citySsBase = roundMoney(
+        Math.min(Math.max(baseAfterProbation, Number(ssRule.ss_base_min)), Number(ssRule.ss_base_max))
+      );
+      socialSecurity = roundMoney(citySsBase * Number(ssRule.total_personal_rate));
+    }
+
     const grossPay = Math.max(
       0,
       roundMoney(baseSalary + nightAllowance + overtimePay + performanceBonus + otherAllowance - leaveDeduction)
     );
-    const netPay = Math.max(0, roundMoney(grossPay - socialSecurity - advanceDeduction - otherDeduction));
+
+    const iit = await computeCumulativeIit(db, {
+      employeeId: emp.id,
+      yearMonth: params.yearMonth,
+      grossPay,
+      socialSecurity,
+      specialDeduction,
+    });
+
+    const netPay = Math.max(
+      0,
+      roundMoney(grossPay - socialSecurity - iit.incomeTax - advanceDeduction - otherDeduction)
+    );
 
     if (existing) {
       await db.execute(
         `UPDATE payroll_records
          SET hotel_id = ?, base_salary = ?, prorated_days = ?, total_month_days = ?,
              night_shifts = ?, night_allowance = ?, overtime_hours = ?, overtime_pay = ?,
-             leave_deduction_days = ?, leave_deduction = ?, social_security = ?,
+             leave_deduction_days = ?, leave_deduction = ?, city_ss_base = ?, social_security = ?,
+             special_deduction = ?, taxable_income = ?, ytd_taxable_income = ?, ytd_tax_paid = ?, income_tax = ?,
              gross_pay = ?, net_pay = ?, is_resigned_settlement = ?, updated_at = ?
          WHERE id = ?`,
         [
@@ -185,7 +294,13 @@ export async function calculateMonthlyPayroll(
           overtimePay,
           leaveDeductionDays,
           leaveDeduction,
+          citySsBase,
           socialSecurity,
+          specialDeduction,
+          iit.taxableIncome,
+          iit.ytdTaxableIncome,
+          iit.ytdTaxPaid,
+          iit.incomeTax,
           grossPay,
           netPay,
           isResignedSettlement,
@@ -199,9 +314,10 @@ export async function calculateMonthlyPayroll(
           \`year_month\`, employee_id, hotel_id, base_salary, prorated_days, total_month_days,
           night_shifts, night_allowance, overtime_hours, overtime_pay,
           leave_deduction_days, leave_deduction, performance_bonus, other_allowance,
-          social_security, advance_deduction, other_deduction, gross_pay, net_pay,
+          city_ss_base, social_security, special_deduction, taxable_income, ytd_taxable_income, ytd_tax_paid, income_tax,
+          advance_deduction, other_deduction, gross_pay, net_pay,
           is_resigned_settlement, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)`,
         [
           params.yearMonth,
           emp.id,
@@ -217,7 +333,13 @@ export async function calculateMonthlyPayroll(
           leaveDeduction,
           performanceBonus,
           otherAllowance,
+          citySsBase,
           socialSecurity,
+          specialDeduction,
+          iit.taxableIncome,
+          iit.ytdTaxableIncome,
+          iit.ytdTaxPaid,
+          iit.incomeTax,
           advanceDeduction,
           otherDeduction,
           grossPay,

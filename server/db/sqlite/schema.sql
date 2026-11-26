@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS employees (
   health_cert_expiry TEXT,
   base_salary REAL NOT NULL DEFAULT 0.00,
   probation_salary_ratio REAL NOT NULL DEFAULT 1.00,
+  special_additional_deduction REAL NOT NULL DEFAULT 0.00,
   night_allowance_rate REAL NOT NULL DEFAULT 80.00,
   bank_name TEXT,
   bank_account TEXT,
@@ -159,7 +160,13 @@ CREATE TABLE IF NOT EXISTS payroll_records (
   leave_deduction REAL NOT NULL DEFAULT 0.00,
   performance_bonus REAL NOT NULL DEFAULT 0.00,
   other_allowance REAL NOT NULL DEFAULT 0.00,
+  city_ss_base REAL NOT NULL DEFAULT 0.00,
   social_security REAL NOT NULL DEFAULT 0.00,
+  special_deduction REAL NOT NULL DEFAULT 0.00,
+  taxable_income REAL NOT NULL DEFAULT 0.00,
+  ytd_taxable_income REAL NOT NULL DEFAULT 0.00,
+  ytd_tax_paid REAL NOT NULL DEFAULT 0.00,
+  income_tax REAL NOT NULL DEFAULT 0.00,
   advance_deduction REAL NOT NULL DEFAULT 0.00,
   other_deduction REAL NOT NULL DEFAULT 0.00,
   gross_pay REAL NOT NULL DEFAULT 0.00,
@@ -577,3 +584,18 @@ CREATE TABLE IF NOT EXISTS cash_advance_repayments (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_adv_repayments_adv ON cash_advance_repayments(advance_id);
+
+CREATE TABLE IF NOT EXISTS city_social_security_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  city TEXT NOT NULL UNIQUE,
+  effective_year INTEGER NOT NULL DEFAULT 2026,
+  ss_base_min REAL NOT NULL DEFAULT 0.00,
+  ss_base_max REAL NOT NULL DEFAULT 999999.00,
+  pension_rate REAL NOT NULL DEFAULT 0.08,
+  medical_rate REAL NOT NULL DEFAULT 0.02,
+  unemployment_rate REAL NOT NULL DEFAULT 0.005,
+  housing_fund_rate REAL NOT NULL DEFAULT 0.07,
+  total_personal_rate REAL NOT NULL DEFAULT 0.175,
+  updated_by INTEGER,
+  updated_at TEXT NOT NULL
+);

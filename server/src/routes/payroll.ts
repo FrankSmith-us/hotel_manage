@@ -10,7 +10,7 @@ import {
   requireRoles,
 } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
-import { calculateMonthlyPayroll } from '../services/payrollService';
+import { calculateMonthlyPayroll, computeCumulativeIit } from '../services/payrollService';
 import { buildCsv } from '../utils/csv';
 import { currentYearMonth, nowIso, roundMoney } from '../utils/numbers';
 
@@ -105,6 +105,8 @@ router.put(
     const updated = await db.transaction(async (tx) => {
       const row = await tx.queryOne<{
         id: number;
+        employee_id: number;
+        year_month: string;
         status: string;
         base_salary: number;
         night_allowance: number;
@@ -113,6 +115,7 @@ router.put(
         performance_bonus: number;
         other_allowance: number;
         social_security: number;
+        special_deduction: number;
         advance_deduction: number;
         other_deduction: number;
       }>(`SELECT * FROM payroll_records WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
@@ -136,17 +139,39 @@ router.put(
             Number(row.leave_deduction)
         )
       );
+      const iit = await computeCumulativeIit(tx, {
+        employeeId: row.employee_id,
+        yearMonth: row.year_month,
+        grossPay,
+        socialSecurity: Number(row.social_security),
+        specialDeduction: Number(row.special_deduction || 0),
+      });
       const netPay = Math.max(
         0,
-        roundMoney(grossPay - Number(row.social_security) - advanceDeduction - otherDeduction)
+        roundMoney(grossPay - Number(row.social_security) - iit.incomeTax - advanceDeduction - otherDeduction)
       );
 
       const upd = await tx.execute(
         `UPDATE payroll_records
          SET performance_bonus = ?, other_allowance = ?, advance_deduction = ?, other_deduction = ?,
+             taxable_income = ?, ytd_taxable_income = ?, ytd_tax_paid = ?, income_tax = ?,
              gross_pay = ?, net_pay = ?, notes = ?, updated_at = ?
          WHERE id = ? AND status = 'DRAFT'`,
-        [bonus, otherAllowance, advanceDeduction, otherDeduction, grossPay, netPay, body.notes ?? null, nowIso(), id]
+        [
+          bonus,
+          otherAllowance,
+          advanceDeduction,
+          otherDeduction,
+          iit.taxableIncome,
+          iit.ytdTaxableIncome,
+          iit.ytdTaxPaid,
+          iit.incomeTax,
+          grossPay,
+          netPay,
+          body.notes ?? null,
+          nowIso(),
+          id,
+        ]
       );
       if (upd.affectedRows !== 1) throw new AppError(409, '薪资记录状态已变更，请刷新后重试');
 
@@ -312,6 +337,93 @@ router.get(
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="payroll-${yearMonth}.csv"`);
     res.send(csv);
+  })
+);
+
+router.get(
+  '/ss-rules',
+  asyncHandler(async (_req, res) => {
+    const db = getDb();
+    const rules = await db.query('SELECT * FROM city_social_security_rules ORDER BY city ASC');
+    res.json({ rules });
+  })
+);
+
+router.put(
+  '/ss-rules',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'FINANCE'),
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        city: z.string().trim().min(1, '请填写城市名称'),
+        effective_year: z.number().int().min(2020).max(2099).default(2026),
+        ss_base_min: z.number().min(0),
+        ss_base_max: z.number().positive(),
+        pension_rate: z.number().min(0).max(0.5),
+        medical_rate: z.number().min(0).max(0.5),
+        unemployment_rate: z.number().min(0).max(0.5),
+        housing_fund_rate: z.number().min(0).max(0.5),
+      })
+      .parse(req.body);
+
+    if (body.ss_base_max < body.ss_base_min) {
+      throw new AppError(400, '社保缴费基数上限不能小于下限');
+    }
+
+    const totalPersonalRate = roundMoney(
+      (body.pension_rate + body.medical_rate + body.unemployment_rate + body.housing_fund_rate) * 100
+    ) / 100;
+    const db = getDb();
+    const ts = nowIso();
+    const existing = await db.queryOne<{ id: number }>(
+      'SELECT id FROM city_social_security_rules WHERE city = ?',
+      [body.city]
+    );
+    if (existing) {
+      await db.execute(
+        `UPDATE city_social_security_rules
+         SET effective_year = ?, ss_base_min = ?, ss_base_max = ?,
+             pension_rate = ?, medical_rate = ?, unemployment_rate = ?, housing_fund_rate = ?,
+             total_personal_rate = ?, updated_by = ?, updated_at = ?
+         WHERE id = ?`,
+        [
+          body.effective_year,
+          body.ss_base_min,
+          body.ss_base_max,
+          body.pension_rate,
+          body.medical_rate,
+          body.unemployment_rate,
+          body.housing_fund_rate,
+          totalPersonalRate,
+          req.user!.id,
+          ts,
+          existing.id,
+        ]
+      );
+    } else {
+      await db.execute(
+        `INSERT INTO city_social_security_rules (
+          city, effective_year, ss_base_min, ss_base_max, pension_rate, medical_rate,
+          unemployment_rate, housing_fund_rate, total_personal_rate, updated_by, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          body.city,
+          body.effective_year,
+          body.ss_base_min,
+          body.ss_base_max,
+          body.pension_rate,
+          body.medical_rate,
+          body.unemployment_rate,
+          body.housing_fund_rate,
+          totalPersonalRate,
+          req.user!.id,
+          ts,
+        ]
+      );
+    }
+
+    const rule = await db.queryOne('SELECT * FROM city_social_security_rules WHERE city = ?', [body.city]);
+    res.json({ rule });
   })
 );
 
