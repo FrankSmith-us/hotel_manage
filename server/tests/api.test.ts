@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 28 tables', () => {
+  it('MySQL and SQLite schemas define identical 29 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 28);
+    assert.equal(mysqlTables.length, 29);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1413,5 +1413,81 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     } finally {
       process.env.DEMO_ROLE_SWITCH = prevDemo;
     }
+  });
+
+  it('T1-07: unconfigured budget yields NO_BUDGET (not OVER_BUDGET), budget change requires reason, and new hotel copies template', async () => {
+    const adminToken = await loginAs('admin');
+    const finToken = await loginAs('finance');
+    const ym = currentYearMonth();
+
+    // 1. Create a new hotel WITHOUT budget template -> preview yields NO_BUDGET and NOT OVER_BUDGET
+    const hNoBudget = await req('POST', '/api/organization/hotels', {
+      token: adminToken,
+      body: {
+        code: 'NO-BUD-01',
+        name: '无预算测试门店',
+        region_id: 2,
+        city: '上海市',
+        address: '测试路100号',
+        phone: '021-55556666',
+        room_count: 80,
+      },
+    });
+    assert.equal(hNoBudget.status, 201);
+    const previewRes = await req('POST', '/api/reimbursements/preview', {
+      token: adminToken,
+      body: {
+        hotel_id: hNoBudget.data.hotel.id,
+        expense_month: ym,
+        items: [{ category: 'LINEN_SUPPLIES', amount: 150 }],
+      },
+    });
+    assert.equal(previewRes.status, 200);
+    assert.ok(previewRes.data.risks.riskFlags.includes('NO_BUDGET'));
+    assert.ok(!previewRes.data.risks.riskFlags.includes('OVER_BUDGET'));
+
+    // 2. PUT /api/budgets without reason returns 400; with reason writes budget_change_logs
+    const badUpd = await req('PUT', '/api/budgets', {
+      token: finToken,
+      body: { hotel_id: hNoBudget.data.hotel.id, year_month: ym, category: 'LINEN_SUPPLIES', budget_amount: 5000 },
+    });
+    assert.equal(badUpd.status, 400);
+
+    const okUpd = await req('PUT', '/api/budgets', {
+      token: finToken,
+      body: {
+        hotel_id: hNoBudget.data.hotel.id,
+        year_month: ym,
+        category: 'LINEN_SUPPLIES',
+        budget_amount: 5000,
+        reason: '新店开业初始化客房布草预算',
+      },
+    });
+    assert.equal(okUpd.status, 200);
+
+    const logsRes = await req('GET', `/api/budgets/logs?hotelId=${hNoBudget.data.hotel.id}`, { token: finToken });
+    assert.equal(logsRes.status, 200);
+    assert.ok(logsRes.data.logs.some((l: any) => l.reason === '新店开业初始化客房布草预算' && Number(l.new_amount) === 5000));
+
+    // 3. Create a new hotel WITH budget_template_hotel_id = 2 -> copies budgets automatically
+    const hWithTpl = await req('POST', '/api/organization/hotels', {
+      token: adminToken,
+      body: {
+        code: 'TPL-BUD-02',
+        name: '模板预算门店',
+        region_id: 2,
+        city: '上海市',
+        address: '测试路200号',
+        phone: '021-55557777',
+        room_count: 100,
+        budget_template_hotel_id: 2,
+      },
+    });
+    assert.equal(hWithTpl.status, 201);
+    const copiedBudgets = await req('GET', `/api/budgets?hotelId=${hWithTpl.data.hotel.id}&yearMonth=${ym}`, {
+      token: finToken,
+    });
+    assert.equal(copiedBudgets.status, 200);
+    assert.ok(copiedBudgets.data.budgets.length >= 5);
   });
 });

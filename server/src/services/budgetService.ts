@@ -130,6 +130,11 @@ export interface RiskEvaluationResult {
     projectedUsed: number;
     exceededBy: number;
   }>;
+  noBudgetCategories: Array<{
+    category: string;
+    categoryLabel: string;
+    claimAmount: number;
+  }>;
   duplicateInvoices: Array<{
     invoiceNo: string;
     conflictClaimNos: string[];
@@ -154,13 +159,22 @@ export async function evaluateReimbursementRisks(
   }
 
   const overBudgetCategories: RiskEvaluationResult['overBudgetCategories'] = [];
+  const noBudgetCategories: RiskEvaluationResult['noBudgetCategories'] = [];
 
   for (const [category, claimAmount] of categorySums.entries()) {
     const budgetRow = await db.queryOne<{ budget_amount: number }>(
       'SELECT budget_amount FROM store_budgets WHERE hotel_id = ? AND `year_month` = ? AND category = ?',
       [params.hotelId, params.expenseMonth, category]
     );
-    const budgetAmount = budgetRow ? roundMoney(Number(budgetRow.budget_amount)) : 0;
+    if (!budgetRow) {
+      noBudgetCategories.push({
+        category,
+        categoryLabel: EXPENSE_CATEGORY_LABELS[category as ExpenseCategory] || category,
+        claimAmount,
+      });
+      continue;
+    }
+    const budgetAmount = roundMoney(Number(budgetRow.budget_amount));
 
     const excludeSql = params.excludeReimbursementId ? 'AND r.id != ?' : '';
     const usedParams: unknown[] = [params.hotelId, params.expenseMonth, category];
@@ -247,6 +261,12 @@ export async function evaluateReimbursementRisks(
     summaryParts.push(`预算超标：${detail}`);
   }
 
+  if (noBudgetCategories.length > 0) {
+    riskFlags.push('NO_BUDGET');
+    const detail = noBudgetCategories.map((c) => c.categoryLabel).join('、');
+    summaryParts.push(`尚未设置预算：${detail}`);
+  }
+
   if (duplicateInvoices.length > 0) {
     riskFlags.push('DUPLICATE_INVOICE');
     const detail = duplicateInvoices
@@ -259,6 +279,7 @@ export async function evaluateReimbursementRisks(
     riskFlags,
     riskSummary: summaryParts.join(' | '),
     overBudgetCategories,
+    noBudgetCategories,
     duplicateInvoices,
   };
 }

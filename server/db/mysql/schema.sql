@@ -539,4 +539,20 @@ CREATE TABLE IF NOT EXISTS employee_archives (
   CONSTRAINT fk_archives_emp FOREIGN KEY (employee_id) REFERENCES employees(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS budget_change_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  hotel_id BIGINT NOT NULL,
+  `year_month` VARCHAR(10) NOT NULL,
+  category VARCHAR(32) NOT NULL,
+  old_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  new_amount DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  reason VARCHAR(255) NOT NULL,
+  changed_by BIGINT NOT NULL,
+  changed_by_name VARCHAR(80) NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  INDEX idx_budget_logs_hotel_ym (hotel_id, `year_month`),
+  CONSTRAINT fk_budget_logs_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_budget_logs_user FOREIGN KEY (changed_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

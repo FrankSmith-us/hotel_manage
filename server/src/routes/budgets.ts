@@ -53,6 +53,7 @@ const upsertBudgetSchema = z.object({
     'OTHER',
   ]),
   budget_amount: z.number().min(0).max(100_000_000, '预算金额超出合理范围'),
+  reason: z.string().trim().min(2, '请填写预算调整原因'),
 });
 
 router.put(
@@ -69,6 +70,7 @@ router.put(
         'SELECT id, budget_amount FROM store_budgets WHERE hotel_id = ? AND `year_month` = ? AND category = ?',
         [body.hotel_id, body.year_month, body.category]
       );
+      const oldAmount = existing ? roundMoney(Number(existing.budget_amount)) : 0;
 
       let budgetId: number;
       if (existing) {
@@ -86,12 +88,18 @@ router.put(
         budgetId = ins.insertId;
       }
 
+      await tx.execute(
+        `INSERT INTO budget_change_logs (hotel_id, \`year_month\`, category, old_amount, new_amount, reason, changed_by, changed_by_name, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [body.hotel_id, body.year_month, body.category, oldAmount, amount, body.reason, req.user!.id, req.user!.display_name, ts]
+      );
+
       await logApprovalAction(tx, {
         bizType: 'BUDGET',
         bizId: budgetId,
         action: 'UPSERT_BUDGET',
         actor: req.user!,
-        comment: `门店 ${body.hotel_id} ${body.year_month} ${body.category} 预算：${existing ? existing.budget_amount : 0} -> ${amount}`,
+        comment: `门店 ${body.hotel_id} ${body.year_month} ${body.category} 预算：${oldAmount} -> ${amount}（${body.reason}）`,
       });
     });
 
@@ -101,6 +109,48 @@ router.put(
       category: body.category,
     });
     res.json({ budget: summary[0] });
+  })
+);
+
+router.get(
+  '/logs',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const scope = await getScopeFilter(req.user!);
+    const conditions = ['1=1'];
+    const params: unknown[] = [];
+
+    if (scope.type === 'REGION') {
+      if (scope.hotelIds.length === 0) {
+        res.json({ logs: [] });
+        return;
+      }
+      conditions.push(`l.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
+      params.push(...scope.hotelIds);
+    } else if (scope.type === 'HOTEL' || scope.type === 'SELF') {
+      conditions.push('l.hotel_id = ?');
+      params.push(scope.hotelId);
+    }
+
+    if (req.query.yearMonth) {
+      conditions.push('l.`year_month` = ?');
+      params.push(String(req.query.yearMonth));
+    }
+    if (req.query.hotelId) {
+      conditions.push('l.hotel_id = ?');
+      params.push(Number(req.query.hotelId));
+    }
+
+    const logs = await db.query(
+      `SELECT l.*, h.name AS hotel_name
+       FROM budget_change_logs l
+       JOIN hotels h ON h.id = l.hotel_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY l.id DESC
+       LIMIT 100`,
+      params
+    );
+    res.json({ logs });
   })
 );
 

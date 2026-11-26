@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb } from '../../db';
 import { AppError, asyncHandler, authenticate, getScopeFilter, requireRoles } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
-import { nowIso, todayStr } from '../utils/numbers';
+import { currentYearMonth, nowIso, offsetYearMonth, todayStr } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -223,6 +223,7 @@ const createHotelSchema = z.object({
   address: z.string().min(2),
   phone: z.string().min(5),
   room_count: z.number().int().min(0).default(100),
+  budget_template_hotel_id: z.number().int().positive().optional().nullable(),
 });
 
 router.post(
@@ -325,6 +326,38 @@ router.post(
           'INSERT INTO departments (hotel_id, code, name, category, created_at) VALUES (?, ?, ?, ?, ?)',
           [hid, d.code, d.name, d.category, ts]
         );
+      }
+
+      if (body.budget_template_hotel_id) {
+        const curYm = currentYearMonth();
+        const nextYm = offsetYearMonth(curYm, 1);
+        const tplRows = await tx.query<{ year_month: string; category: string; budget_amount: number }>(
+          `SELECT \`year_month\`, category, budget_amount
+           FROM store_budgets
+           WHERE hotel_id = ? AND \`year_month\` IN (?, ?)`,
+          [body.budget_template_hotel_id, curYm, nextYm]
+        );
+        for (const row of tplRows) {
+          await tx.execute(
+            `INSERT INTO store_budgets (hotel_id, \`year_month\`, category, budget_amount, updated_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [hid, row.year_month, row.category, row.budget_amount, req.user!.id, ts, ts]
+          );
+          await tx.execute(
+            `INSERT INTO budget_change_logs (hotel_id, \`year_month\`, category, old_amount, new_amount, reason, changed_by, changed_by_name, created_at)
+             VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+            [
+              hid,
+              row.year_month,
+              row.category,
+              row.budget_amount,
+              `新店按模板门店(#${body.budget_template_hotel_id})初始化预算`,
+              req.user!.id,
+              req.user!.display_name,
+              ts,
+            ]
+          );
+        }
       }
       return hid;
     });

@@ -714,6 +714,11 @@ export function ReimbursementsPage() {
                             超预算
                           </span>
                         )}
+                        {r.risk_flags.includes('NO_BUDGET') && (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-stone-100 text-stone-600 border border-stone-200">
+                            未设置预算
+                          </span>
+                        )}
                         {r.risk_flags.includes('DUPLICATE_INVOICE') && (
                           <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-orange-50 text-orange-700 border border-orange-200">
                             重复发票

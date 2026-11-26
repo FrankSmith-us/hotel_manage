@@ -75,8 +75,22 @@ export function FinancePayoutPage() {
 
   // Budgets
   const [budgets, setBudgets] = useState<BudgetRow[]>([]);
+  const [budgetLogs, setBudgetLogs] = useState<
+    Array<{
+      id: number;
+      hotel_name: string;
+      year_month: string;
+      category: string;
+      old_amount: number;
+      new_amount: number;
+      reason: string;
+      changed_by_name: string;
+      created_at: string;
+    }>
+  >([]);
   const [editingBudget, setEditingBudget] = useState<BudgetRow | null>(null);
   const [budgetAmountInput, setBudgetAmountInput] = useState(0);
+  const [budgetReason, setBudgetReason] = useState('');
 
   // Reports
   const [report, setReport] = useState<ReportData | null>(null);
@@ -87,8 +101,12 @@ export function FinancePayoutPage() {
       setQueue(d.reimbursements);
       setSelectedIds([]);
     } else if (tab === 'budgets') {
-      const d = await apiFetch<{ budgets: BudgetRow[] }>(`/api/budgets?yearMonth=${yearMonth}`);
+      const [d, logRes] = await Promise.all([
+        apiFetch<{ budgets: BudgetRow[] }>(`/api/budgets?yearMonth=${yearMonth}`),
+        apiFetch<{ logs: typeof budgetLogs }>(`/api/budgets/logs?yearMonth=${yearMonth}`).catch(() => ({ logs: [] })),
+      ]);
       setBudgets(d.budgets);
+      setBudgetLogs(logRes.logs);
     } else if (tab === 'reports') {
       const d = await apiFetch<ReportData>(`/api/reports/expenses?yearMonth=${yearMonth}`);
       setReport(d);
@@ -129,10 +147,12 @@ export function FinancePayoutPage() {
           year_month: editingBudget.year_month,
           category: editingBudget.category,
           budget_amount: Number(budgetAmountInput),
+          reason: budgetReason,
         }),
       });
       showToast('门店月度预算已更新');
       setEditingBudget(null);
+      setBudgetReason('');
       await loadData();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '更新失败', 'error');
@@ -362,6 +382,7 @@ export function FinancePayoutPage() {
                         onClick={() => {
                           setEditingBudget(b);
                           setBudgetAmountInput(b.budget_amount);
+                          setBudgetReason('');
                         }}
                         className="p-1.5 rounded-lg text-stone-500 hover:text-brand-700 hover:bg-brand-50"
                       >
@@ -373,6 +394,25 @@ export function FinancePayoutPage() {
               ))}
             </tbody>
           </table>
+          {budgetLogs.length > 0 && (
+            <div className="border-t border-stone-200 p-4 space-y-2 bg-stone-50/50">
+              <div className="text-xs font-semibold text-stone-700">最近预算调整记录</div>
+              <div className="space-y-1.5 text-xs">
+                {budgetLogs.slice(0, 8).map((l) => (
+                  <div key={l.id} className="flex flex-wrap items-center justify-between gap-2 text-stone-600">
+                    <span>
+                      <strong className="text-stone-800">{l.hotel_name}</strong> · {l.year_month} · {l.category}：
+                      {formatMoney(l.old_amount)} →{' '}
+                      <span className="font-semibold text-brand-700">{formatMoney(l.new_amount)}</span>（{l.reason}）
+                    </span>
+                    <span className="text-stone-400">
+                      {l.changed_by_name} · {l.created_at}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -479,6 +519,18 @@ export function FinancePayoutPage() {
               onChange={(e) => setBudgetAmountInput(Number(e.target.value))}
               className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm tabular-nums"
               required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">调整原因 *</label>
+            <input
+              type="text"
+              value={budgetReason}
+              onChange={(e) => setBudgetReason(e.target.value)}
+              placeholder="请填写预算调整或初始化原因（至少2个字）"
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+              required
+              minLength={2}
             />
           </div>
           <div className="flex justify-end gap-2">

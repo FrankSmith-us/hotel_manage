@@ -499,3 +499,17 @@ CREATE TABLE IF NOT EXISTS employee_archives (
   archived_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_archives_hotel ON employee_archives(hotel_id);
+
+CREATE TABLE IF NOT EXISTS budget_change_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  `year_month` TEXT NOT NULL,
+  category TEXT NOT NULL,
+  old_amount REAL NOT NULL DEFAULT 0,
+  new_amount REAL NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL,
+  changed_by INTEGER NOT NULL REFERENCES users(id),
+  changed_by_name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_budget_logs_hotel_ym ON budget_change_logs(hotel_id, `year_month`);

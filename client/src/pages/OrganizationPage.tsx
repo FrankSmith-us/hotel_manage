@@ -68,6 +68,7 @@ export function OrganizationPage() {
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [roomCount, setRoomCount] = useState(120);
+  const [budgetTemplateHotelId, setBudgetTemplateHotelId] = useState<number>(0);
 
   const load = () => {
     Promise.all([
@@ -143,6 +144,7 @@ export function OrganizationPage() {
           address,
           phone,
           room_count: Number(roomCount),
+          budget_template_hotel_id: budgetTemplateHotelId || null,
         }),
       });
       showToast('新门店已创建并自动初始化部门架构');
@@ -151,6 +153,7 @@ export function OrganizationPage() {
       setName('');
       setAddress('');
       setPhone('');
+      setBudgetTemplateHotelId(0);
       load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '创建失败', 'error');
@@ -431,6 +434,26 @@ export function OrganizationPage() {
                 required
               />
             </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">
+              预算模板门店（可选，复制当月与次月预算）
+            </label>
+            <select
+              value={budgetTemplateHotelId}
+              onChange={(e) => setBudgetTemplateHotelId(Number(e.target.value))}
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+            >
+              <option value={0}>不初始化预算（提交报销将提示「未设置预算」）</option>
+              {regions
+                .flatMap((r) => r.hotels)
+                .filter((h) => !h.is_hq)
+                .map((h) => (
+                  <option key={h.id} value={h.id}>
+                    {h.name} ({h.code})
+                  </option>
+                ))}
+            </select>
           </div>
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setOpen(false)} className="px-4 py-2 rounded-xl border border-stone-200 text-sm">
