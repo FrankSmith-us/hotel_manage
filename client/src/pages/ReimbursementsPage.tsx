@@ -118,6 +118,8 @@ export function ReimbursementsPage() {
   const [detail, setDetail] = useState<ClaimDetail | null>(null);
   const [comment, setComment] = useState('');
   const [acting, setActing] = useState(false);
+  const [payChannel, setPayChannel] = useState('BANK_TRANSFER');
+  const [payRef, setPayRef] = useState('');
 
   // Invoice Preview Modal
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -262,6 +264,7 @@ export function ReimbursementsPage() {
       const data = await apiFetch<ClaimDetail>(`/api/reimbursements/${id}`);
       setDetail(data);
       setComment('');
+      setPayRef(`TXN-${Date.now().toString().slice(-8)}`);
     } catch (err) {
       showToast(err instanceof Error ? err.message : '加载详情失败', 'error');
     }
@@ -372,6 +375,33 @@ export function ReimbursementsPage() {
     }
   };
 
+  const handleDirectPayout = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!detail) return;
+    if (payRef.trim().length < 2) {
+      showToast('请填写打款流水号', 'error');
+      return;
+    }
+    setActing(true);
+    try {
+      await apiFetch('/api/reimbursements/payout', {
+        method: 'POST',
+        body: JSON.stringify({
+          reimbursement_ids: [detail.claim.id],
+          payment_channel: payChannel,
+          payment_ref: payRef.trim(),
+        }),
+      });
+      showToast('财务付款核销完成');
+      setDetail(null);
+      await loadList();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '付款失败', 'error');
+    } finally {
+      setActing(false);
+    }
+  };
+
   const totalFormAmount = items.reduce((s, it) => s + Number(it.amount || 0), 0);
   const netPayPreview = Math.max(0, totalFormAmount - Number(offsetAmount || 0));
 
@@ -381,7 +411,7 @@ export function ReimbursementsPage() {
         <div>
           <h1 className="text-2xl font-bold text-stone-900">费用报销中心</h1>
           <p className="text-sm text-stone-500 mt-0.5">
-            支持多明细发票上传、预算超标与重复发票实时风控、备用金自动冲销及多级动态审批
+            提交后经业务审批与总经理终审，通过后由财务统一付款核销（支持预算风控与备用金冲销）
           </p>
         </div>
         <div className="flex items-center gap-2.5">
@@ -540,6 +570,11 @@ export function ReimbursementsPage() {
                       {r.current_step_name && (
                         <div className="text-[11px] text-stone-500 mt-1">
                           第{r.current_step}/{r.total_steps}步：{r.current_step_name}
+                        </div>
+                      )}
+                      {r.status === 'APPROVED' && (
+                        <div className="text-[11px] text-emerald-700 font-medium mt-1">
+                          总经理已审 · 待财务付款
                         </div>
                       )}
                     </td>
@@ -845,14 +880,17 @@ export function ReimbursementsPage() {
                 <div className="text-xs">
                   <div className="font-semibold text-brand-900 mb-1">预计动态审批链路</div>
                   <div className="flex flex-wrap items-center gap-1.5 text-brand-800">
-                    {preview.route.map((s, idx) => (
+                    {preview.route.map((s) => (
                       <React.Fragment key={s.stepOrder}>
                         <span className="px-2 py-0.5 rounded-md bg-white border border-brand-200">
                           {s.stepOrder}. {s.stepName}
                         </span>
-                        {idx < preview.route.length - 1 && <span>→</span>}
+                        <span>→</span>
                       </React.Fragment>
                     ))}
+                    <span className="px-2 py-0.5 rounded-md bg-teal-50 border border-teal-200 text-teal-800 font-medium">
+                      财务付款核销
+                    </span>
                   </div>
                 </div>
                 <div className="text-right shrink-0 tabular-nums">
@@ -1004,13 +1042,63 @@ export function ReimbursementsPage() {
               </div>
             )}
 
-            <ApprovalTimeline steps={detail.approvalSteps} logs={detail.approvalLogs} />
+            <ApprovalTimeline
+              steps={detail.approvalSteps}
+              logs={detail.approvalLogs}
+              paymentNode={{
+                status:
+                  detail.claim.status === 'PAID'
+                    ? 'DONE'
+                    : detail.claim.status === 'APPROVED'
+                      ? 'PENDING'
+                      : 'WAITING',
+                paymentRef: detail.claim.payment_ref,
+              }}
+            />
 
             {/* Context Actions */}
             {(detail.permissions.canApprove ||
+              detail.permissions.canPay ||
               detail.permissions.canEdit ||
               detail.permissions.canWithdraw) && (
               <div className="pt-4 border-t border-stone-200 space-y-3">
+                {detail.permissions.canPay && (
+                  <form
+                    onSubmit={handleDirectPayout}
+                    className="p-4 rounded-xl bg-teal-50/70 border border-teal-200 space-y-3"
+                  >
+                    <div className="text-xs font-semibold text-teal-900">
+                      总经理已审批通过，请财务登记付款核销（本次实付：{formatMoney(detail.claim.net_pay_amount)}）
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <select
+                        value={payChannel}
+                        onChange={(e) => setPayChannel(e.target.value)}
+                        className="px-3 py-2 rounded-xl border border-teal-200 bg-white text-xs"
+                      >
+                        <option value="BANK_TRANSFER">银企直连 / 对公转账</option>
+                        <option value="ALIPAY_CORP">企业支付宝</option>
+                        <option value="WECHAT_CORP">企业微信零钱</option>
+                        <option value="CASH">门店现金核销</option>
+                      </select>
+                      <input
+                        type="text"
+                        value={payRef}
+                        onChange={(e) => setPayRef(e.target.value)}
+                        placeholder="输入打款流水号"
+                        className="px-3 py-2 rounded-xl border border-teal-200 bg-white text-xs font-mono"
+                        required
+                      />
+                      <button
+                        type="submit"
+                        disabled={acting}
+                        className="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-semibold"
+                      >
+                        {acting ? '付款中...' : '财务确认付款'}
+                      </button>
+                    </div>
+                  </form>
+                )}
                 {detail.permissions.canApprove && (
                   <>
                     <textarea

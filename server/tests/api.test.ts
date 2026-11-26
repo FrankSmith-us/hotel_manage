@@ -112,6 +112,21 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const staffToken = await loginAs('staff_sh');
     const ym = currentYearMonth();
 
+    // Preview with <=1000 within budget -> 2 steps (STORE_MANAGER -> GENERAL_MANAGER), no FINANCE pre-approval
+    const smallPrev = await req('POST', '/api/reimbursements/preview', {
+      token: staffToken,
+      body: {
+        hotel_id: 2,
+        expense_month: ym,
+        items: [{ category: 'OTHER', amount: 500, invoice_no: 'INV-SMALL-1' }],
+      },
+    });
+    assert.equal(smallPrev.status, 200);
+    assert.deepEqual(
+      smallPrev.data.route.map((s: any) => s.approverRole),
+      ['STORE_MANAGER', 'GENERAL_MANAGER']
+    );
+
     // Preview with duplicate invoice INV-2026-88012 and huge maintenance amount -> OVER_BUDGET + DUPLICATE_INVOICE
     const prev = await req('POST', '/api/reimbursements/preview', {
       token: staffToken,
@@ -126,13 +141,17 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(prev.status, 200);
     assert.ok(prev.data.risks.riskFlags.includes('OVER_BUDGET'));
     assert.ok(prev.data.risks.riskFlags.includes('DUPLICATE_INVOICE'));
-    assert.equal(prev.data.route.length, 4); // 店长 -> 区域 -> 财务 -> 总经理
+    assert.deepEqual(
+      prev.data.route.map((s: any) => s.approverRole),
+      ['STORE_MANAGER', 'REGIONAL_MANAGER', 'GENERAL_MANAGER']
+    ); // 店长 -> 区域 -> 总经理，无需财务前置审核
   });
 
   it('Full reimbursement + cash advance offset + return/resubmit + payout settlement lifecycle', async () => {
     const staffToken = await loginAs('staff_sh');
     const mgrShToken = await loginAs('mgr_sh');
     const regionToken = await loginAs('region_east');
+    const gmToken = await loginAs('gm');
     const financeToken = await loginAs('finance');
     const ym = currentYearMonth();
 
@@ -217,15 +236,20 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(updRes.status, 200);
     assert.equal(updRes.data.claim.status, 'PENDING_APPROVAL');
 
-    // 6. Approve through Store Manager -> Regional Manager -> Finance
+    // 6. Approve through Store Manager -> Regional Manager -> General Manager (Finance cannot pre-approve)
     assert.equal((await req('POST', `/api/reimbursements/${claimId}/action`, { token: mgrShToken, body: { action: 'APPROVE' } })).status, 200);
     assert.equal((await req('POST', `/api/reimbursements/${claimId}/action`, { token: regionToken, body: { action: 'APPROVE' } })).status, 200);
-    const finApprove = await req('POST', `/api/reimbursements/${claimId}/action`, {
+    const finBlocked = await req('POST', `/api/reimbursements/${claimId}/action`, {
       token: financeToken,
       body: { action: 'APPROVE' },
     });
-    assert.equal(finApprove.status, 200);
-    assert.equal(finApprove.data.claim.status, 'APPROVED');
+    assert.equal(finBlocked.status, 403);
+    const gmApprove = await req('POST', `/api/reimbursements/${claimId}/action`, {
+      token: gmToken,
+      body: { action: 'APPROVE' },
+    });
+    assert.equal(gmApprove.status, 200);
+    assert.equal(gmApprove.data.claim.status, 'APPROVED');
 
     // 7. Finance batch payout -> claim PAID & advance SETTLED
     const payoutRes = await req('POST', '/api/reimbursements/payout', {

@@ -15,36 +15,21 @@ export function buildReimbursementRoute(params: {
 }): PlannedStep[] {
   const { applicantRole, totalAmount, hasOverBudget } = params;
   const steps: { stepName: string; approverRole: UserRole }[] = [];
-  const needGm = totalAmount > 5000 || hasOverBudget;
 
   if (applicantRole === 'STAFF') {
     steps.push({ stepName: '门店店长审批', approverRole: 'STORE_MANAGER' });
-    if (totalAmount > 1000) {
+    if (totalAmount > 1000 || hasOverBudget) {
       steps.push({ stepName: '区域经理复核', approverRole: 'REGIONAL_MANAGER' });
     }
-    steps.push({ stepName: '集团财务审核', approverRole: 'FINANCE' });
-    if (needGm) {
-      steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
-    }
+    steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
   } else if (applicantRole === 'STORE_MANAGER') {
     steps.push({ stepName: '区域经理审批', approverRole: 'REGIONAL_MANAGER' });
-    steps.push({ stepName: '集团财务审核', approverRole: 'FINANCE' });
-    if (needGm) {
-      steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
-    }
-  } else if (applicantRole === 'FINANCE') {
     steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
   } else if (applicantRole === 'GENERAL_MANAGER') {
-    steps.push({ stepName: '集团财务审核', approverRole: 'FINANCE' });
-    if (needGm) {
-      steps.push({ stepName: '集团系统管理员复核', approverRole: 'HQ_ADMIN' });
-    }
+    steps.push({ stepName: '集团系统管理员复核', approverRole: 'HQ_ADMIN' });
   } else {
-    // HQ_ADMIN, HR_MANAGER, REGIONAL_MANAGER
-    steps.push({ stepName: '集团财务审核', approverRole: 'FINANCE' });
-    if (needGm) {
-      steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
-    }
+    // FINANCE, HQ_ADMIN, HR_MANAGER, REGIONAL_MANAGER
+    steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
   }
 
   return steps.map((s, idx) => ({

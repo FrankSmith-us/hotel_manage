@@ -34,16 +34,18 @@ const ACTION_TEXT: Record<string, string> = {
 export function ApprovalTimeline({
   steps,
   logs,
+  paymentNode,
 }: {
   steps: ApprovalStepView[];
   logs: ApprovalLogView[];
+  paymentNode?: { status: 'WAITING' | 'PENDING' | 'DONE'; paymentRef?: string | null };
 }) {
   return (
     <div className="space-y-5">
       {steps.length > 0 && (
         <div>
           <h4 className="text-xs font-semibold uppercase tracking-wider text-stone-500 mb-3">
-            审批路由节点
+            审批与付款流程节点
           </h4>
           <div className="flex flex-wrap items-center gap-2">
             {steps.map((s, idx) => {
@@ -86,10 +88,38 @@ export function ApprovalTimeline({
                       )}
                     </div>
                   </div>
-                  {idx < steps.length - 1 && <span className="text-stone-300">→</span>}
+                  {(idx < steps.length - 1 || paymentNode) && <span className="text-stone-300">→</span>}
                 </div>
               );
             })}
+            {paymentNode && (
+              <div
+                className={`flex items-center gap-2 px-3 py-2 rounded-xl border text-xs ${
+                  paymentNode.status === 'DONE'
+                    ? 'bg-teal-50 border-teal-200 text-teal-800'
+                    : paymentNode.status === 'PENDING'
+                      ? 'bg-amber-50 border-amber-300 text-amber-900 ring-2 ring-amber-100'
+                      : 'bg-stone-50 border-stone-200 text-stone-500'
+                }`}
+              >
+                {paymentNode.status === 'DONE' ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                ) : paymentNode.status === 'PENDING' ? (
+                  <Clock className="w-3.5 h-3.5 text-amber-600" />
+                ) : (
+                  <span className="w-3.5 h-3.5 rounded-full border border-stone-300 inline-block" />
+                )}
+                <div>
+                  <div className="font-semibold">财务付款核销</div>
+                  {paymentNode.status === 'DONE' && paymentNode.paymentRef && (
+                    <div className="text-[11px] opacity-80 font-mono">{paymentNode.paymentRef}</div>
+                  )}
+                  {paymentNode.status === 'PENDING' && (
+                    <div className="text-[11px] opacity-80">待财务打款</div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

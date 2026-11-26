@@ -885,18 +885,27 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
       if (cfg.status !== 'DRAFT') {
         await replaceApprovalSteps(tx, 'REIMBURSEMENT', claimId, route);
+        const actorByRole = (role: UserRole): number => {
+          if (role === 'STORE_MANAGER') {
+            return cfg.hotel === 'BJ-GM' ? userIds['mgr_bj'] : userIds['mgr_sh'];
+          }
+          if (role === 'REGIONAL_MANAGER') return userIds['region_east'];
+          if (role === 'GENERAL_MANAGER') return userIds['gm'];
+          if (role === 'HQ_ADMIN') return userIds['admin'];
+          return userIds['gm'];
+        };
         for (const step of route) {
           if (cfg.status === 'APPROVED' || cfg.status === 'PAID' || step.stepOrder < cfg.currentStep) {
             await tx.execute(
               `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '审核通过'
                WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND step_order = ?`,
-              [userIds['finance'], ts, claimId, step.stepOrder]
+              [actorByRole(step.approverRole), ts, claimId, step.stepOrder]
             );
           } else if (cfg.status === 'RETURNED' && step.stepOrder === cfg.currentStep) {
             await tx.execute(
               `UPDATE approval_steps SET status = 'RETURNED', acted_by = ?, acted_at = ?, comment = '请补充电子发票附件后重新提交'
                WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND step_order = ?`,
-              [userIds['mgr_sh'], ts, claimId, step.stepOrder]
+              [actorByRole(step.approverRole), ts, claimId, step.stepOrder]
             );
           } else if (cfg.status === 'PENDING_APPROVAL') {
             const st = step.stepOrder === cfg.currentStep ? 'PENDING' : 'WAITING';
@@ -954,7 +963,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       logs: [
         { action: 'SUBMIT', actor: 'mgr_sh', comment: '提交10月布草补货报销（含备用金冲销）' },
         { action: 'APPROVE', actor: 'region_east', comment: '同意' },
-        { action: 'APPROVE', actor: 'finance', comment: '票据核验无误，同意核销' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理审批通过，转财务付款' },
         { action: 'PAY', actor: 'finance', comment: '已通过银企直连打款 ¥1,080.00，冲销备用金 ¥1,200.00' },
       ],
     });
@@ -984,7 +993,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
       logs: [
         { action: 'SUBMIT', actor: 'mgr_bj', comment: '提交空调维保报销' },
-        { action: 'APPROVE', actor: 'finance', comment: '核验发票完成' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理终审通过' },
         { action: 'PAY', actor: 'finance', comment: '已打款' },
       ],
     });
@@ -1013,7 +1022,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
       logs: [
         { action: 'SUBMIT', actor: 'region_east', comment: '提交杭州店水电费报销' },
-        { action: 'APPROVE', actor: 'finance', comment: '单据齐全，同意' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理终审通过' },
         { action: 'PAY', actor: 'finance', comment: '打款完成' },
       ],
     });
@@ -1044,7 +1053,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         { action: 'SUBMIT', actor: 'staff_sh', comment: '提交11月早餐食材报销' },
         { action: 'APPROVE', actor: 'mgr_sh', comment: '店长确认入库单一致' },
         { action: 'APPROVE', actor: 'region_east', comment: '同意' },
-        { action: 'APPROVE', actor: 'finance', comment: '财务终核通过，进入待打款队列' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理终审通过，转财务待付款队列' },
       ],
     });
 
@@ -1099,7 +1108,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
     });
 
-    // PENDING_APPROVAL at Step 3 (Finance)
+    // PENDING_APPROVAL at Step 2 (General Manager)
     await insertClaim({
       claim_no: 'BX-202611-005',
       title: '上海静安店双十一OTA推广与本地生活投流',
@@ -1121,11 +1130,11 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
       logs: [
         { action: 'SUBMIT', actor: 'mgr_sh', comment: '提交OTA推广费报销' },
-        { action: 'APPROVE', actor: 'region_east', comment: 'ROI达标，同意报销' },
+        { action: 'APPROVE', actor: 'region_east', comment: 'ROI达标，呈总经理终审' },
       ],
     });
 
-    // PENDING_APPROVAL large + OVER_BUDGET at General Manager (Step 3 of 3 for mgr_sh)
+    // PENDING_APPROVAL large + OVER_BUDGET at General Manager (Step 2 of 2 for mgr_bj)
     await insertClaim({
       claim_no: 'BX-202611-006',
       title: '北京国贸店冬季锅炉改造与大堂暖风工程',
@@ -1135,7 +1144,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       dept: 'ENG',
       month: curYm,
       status: 'PENDING_APPROVAL',
-      currentStep: 3,
+      currentStep: 2,
       riskFlags: 'OVER_BUDGET',
       riskSummary: '预算超标：工程维修与维保超预算 ¥1,800.00',
       items: [
@@ -1151,7 +1160,6 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
       logs: [
         { action: 'SUBMIT', actor: 'mgr_bj', comment: '冬季供暖紧急改造工程，金额超预算需总经理特批' },
-        { action: 'APPROVE', actor: 'finance', comment: '预算超标已标注，财务初核发票真实，转总经理终审' },
       ],
     });
 
