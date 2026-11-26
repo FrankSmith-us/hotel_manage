@@ -3,6 +3,7 @@ import { initSchema } from '../db/init';
 import { seedDatabase } from '../db/seed';
 import { createApp } from './app';
 import { env, validateRuntimeSecurity } from './config/env';
+import { startScheduler } from './services/schedulerService';
 
 async function bootstrap() {
   validateRuntimeSecurity();
@@ -12,6 +13,7 @@ async function bootstrap() {
     await seedDatabase(db);
   }
 
+  startScheduler(() => getDb());
   const app = createApp();
   const server = app.listen(env.port, () => {
     console.log(`[YueQi Ops API] Running on http://127.0.0.1:${env.port} (DB: ${db.dialect})`);

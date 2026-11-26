@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 31 tables', () => {
+  it('MySQL and SQLite schemas define identical 32 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 31);
+    assert.equal(mysqlTables.length, 32);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1977,5 +1977,116 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       (await req('PUT', `/api/payroll/${midRec.id}`, { token: finToken, body: { performance_bonus: 600 } })).status,
       400
     );
+  });
+
+  it('T1-08: offboarding clearance checklist, advance block/salary-deduct, and scheduled execution', async () => {
+    const hrToken = await loginAs('hr');
+    const mgrToken = await loginAs('mgr_sh');
+    const finToken = await loginAs('finance');
+    const gmToken = await loginAs('gm');
+
+    const tomorrow = (() => {
+      const d = new Date(Date.now() + 8 * 3600 * 1000 + 86400 * 1000);
+      return d.toISOString().slice(0, 10);
+    })();
+    const today = (() => {
+      const d = new Date(Date.now() + 8 * 3600 * 1000);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    // 1. Onboard an employee with a user account and give them a disbursed advance
+    const obCreate = await req('POST', '/api/hr-flows/onboarding', {
+      token: hrToken,
+      body: {
+        candidate_name: '离职清查测试员',
+        gender: 'M',
+        phone: '13900001081',
+        hotel_id: 2,
+        department_id: 6,
+        position: '前厅接待员',
+        planned_hire_date: today,
+        base_salary: 5000,
+        create_user_account: true,
+      },
+    });
+    assert.equal(obCreate.status, 201);
+    const obId = obCreate.data.request.id;
+    assert.equal((await req('POST', `/api/hr-flows/onboarding/${obId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status, 200);
+    const obComp = await req('POST', `/api/hr-flows/onboarding/${obId}/complete`, { token: hrToken, body: {} });
+    assert.equal(obComp.status, 200);
+    const empId = obComp.data.employeeId;
+    const empUserToken = await loginAs(obComp.data.username, obComp.data.temp_password);
+
+    // Change password first (production guard check skipped in demo mode, or just apply advance directly in demo mode)
+    const advRes = await req('POST', '/api/advances', {
+      token: empUserToken,
+      body: { hotel_id: 2, advance_type: 'TRAVEL', amount: 500, purpose: '差旅借款', expected_settle_date: tomorrow },
+    });
+    assert.equal(advRes.status, 201);
+    const advId = advRes.data.advance.id;
+    assert.equal((await req('POST', `/api/advances/${advId}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/advances/${advId}/action`, { token: finToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/advances/${advId}/disburse`, { token: finToken, body: { payment_ref: 'ADV-T108' } })).status, 200);
+
+    // 2. Submit offboarding by employee -> clearance items generated with ADVANCE_SETTLE = BLOCKED
+    const offRes = await req('POST', '/api/hr-flows/offboarding', {
+      token: empUserToken,
+      body: {
+        employee_id: empId,
+        resign_reason_code: 'PERSONAL',
+        resign_reason_detail: '个人发展原因离职',
+        last_working_date: tomorrow,
+      },
+    });
+    assert.equal(offRes.status, 201);
+    const offId = offRes.data.request.id;
+    assert.equal(offRes.data.request.unsettled_advance_amount, 500);
+
+    const clearList = await req('GET', `/api/hr-flows/offboarding/${offId}/clearance`, { token: finToken });
+    assert.equal(clearList.status, 200);
+    assert.equal(clearList.data.items.length, 4);
+    const advClearItem = clearList.data.items.find((x: any) => x.item_key === 'ADVANCE_SETTLE');
+    assert.equal(advClearItem.status, 'BLOCKED');
+
+    // Approve offboarding steps
+    assert.equal((await req('POST', `/api/hr-flows/offboarding/${offId}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/hr-flows/offboarding/${offId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status, 200);
+
+    // 3. Cannot complete while ADVANCE_SETTLE is BLOCKED or without allow_salary_deduct
+    const blockedComp = await req('POST', `/api/hr-flows/offboarding/${offId}/complete`, { token: hrToken, body: {} });
+    assert.equal(blockedComp.status, 400);
+
+    // Cannot clear ADVANCE_SETTLE without allow_salary_deduct while advance is still open
+    const failClear = await req('POST', `/api/hr-flows/offboarding/${offId}/clearance/${advClearItem.id}`, {
+      token: finToken,
+      body: { status: 'CLEARED' },
+    });
+    assert.equal(failClear.status, 400);
+
+    // Clear with allow_salary_deduct = true
+    const okClear = await req('POST', `/api/hr-flows/offboarding/${offId}/clearance/${advClearItem.id}`, {
+      token: finToken,
+      body: { status: 'CLEARED', allow_salary_deduct: true, remark: '同意离职薪资扣回 500 元' },
+    });
+    assert.equal(okClear.status, 200);
+
+    // 4. Schedule for effective date (tomorrow) -> remains APPROVED with scheduled_execute = 1
+    const schedRes = await req('POST', `/api/hr-flows/offboarding/${offId}/complete`, {
+      token: hrToken,
+      body: { schedule_for_effective_date: true, allow_salary_deduct: true },
+    });
+    assert.equal(schedRes.status, 200);
+    assert.equal(schedRes.data.scheduled, true);
+
+    // Unauthorized staff cannot trigger run-scheduled
+    assert.equal((await req('POST', '/api/hr-flows/offboarding/run-scheduled', { token: empUserToken })).status, 403);
+
+    // Immediate complete works once clearance is unblocked
+    const compNow = await req('POST', `/api/hr-flows/offboarding/${offId}/complete`, {
+      token: hrToken,
+      body: { allow_salary_deduct: true },
+    });
+    assert.equal(compNow.status, 200);
+    assert.ok(compNow.data.archiveId > 0);
   });
 });

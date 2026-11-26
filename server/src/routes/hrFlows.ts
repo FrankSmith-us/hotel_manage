@@ -12,6 +12,7 @@ import {
 } from '../middleware/auth';
 import { archiveEmployeeRecords } from '../services/archiveService';
 import { logApprovalAction } from '../services/auditService';
+import { completeOffboardingTx, runScheduledJobs } from '../services/schedulerService';
 import {
   buildOffboardingRoute,
   buildOnboardingRoute,
@@ -31,6 +32,7 @@ import {
   isoDateSchema,
   nowIso,
   randomTokenSuffix,
+  roundMoney,
   todayStr,
 } from '../utils/numbers';
 
@@ -575,10 +577,16 @@ router.get(
           )
         : null;
 
+      const clearanceItems = await db.query(
+        `SELECT id, item_key, item_label, department_role, status, remark, cleared_by_name, cleared_at
+         FROM offboarding_clearance_items WHERE offboarding_id = ? ORDER BY id ASC`,
+        [r.id]
+      );
       result.push({
         ...r,
         checklist: parseJsonSafe<Record<string, boolean>>(r.checklist_json, {}),
         unsettled_advances: Number(unsettledAdv?.cnt || 0),
+        clearance_items: clearanceItems,
         steps,
         canApprove,
         canComplete,
@@ -635,9 +643,32 @@ router.post(
     );
     if (dup) throw new AppError(409, '该员工已有正在处理中的离职申请');
 
-    const targetUser = await db.queryOne<{ role: UserRole }>('SELECT role FROM users WHERE employee_id = ?', [emp.id]);
+    const targetUser = await db.queryOne<{ id: number; role: UserRole }>('SELECT id, role FROM users WHERE employee_id = ?', [emp.id]);
     const targetRole: UserRole = targetUser?.role || 'STAFF';
     const plannedSteps = buildOffboardingRoute({ targetRole });
+
+    let unsettledAdvanceAmount = 0;
+    let pendingReimbursementCount = 0;
+    if (targetUser) {
+      const advRow = await db.queryOne<{ total: number }>(
+        `SELECT COALESCE(SUM(amount - offset_amount - repaid_amount), 0) AS total
+         FROM cash_advances WHERE applicant_id = ? AND status = 'DISBURSED'`,
+        [targetUser.id]
+      );
+      unsettledAdvanceAmount = roundMoney(Number(advRow?.total || 0));
+      const claimRow = await db.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM reimbursements
+         WHERE applicant_id = ? AND status IN ('PENDING_APPROVAL', 'RETURNED', 'APPROVED', 'PAYMENT_FAILED')`,
+        [targetUser.id]
+      );
+      pendingReimbursementCount = Number(claimRow?.cnt || 0);
+    }
+
+    let handoverToUserId: number | null = null;
+    if (body.handover_to_employee_id) {
+      const hu = await db.queryOne<{ id: number }>('SELECT id FROM users WHERE employee_id = ?', [body.handover_to_employee_id]);
+      handoverToUserId = hu?.id ?? null;
+    }
 
     const requestNo = generateCode('OFF');
     const ts = nowIso();
@@ -646,9 +677,10 @@ router.post(
       const ins = await tx.execute(
         `INSERT INTO offboarding_requests (
           request_no, employee_id, hotel_id, applicant_id, resign_reason_code,
-          resign_reason_detail, last_working_date, handover_to_employee_id, handover_notes,
+          resign_reason_detail, last_working_date, handover_to_employee_id, handover_to_user_id, handover_notes,
+          unsettled_advance_amount, pending_reimbursement_count, settlement_status,
           status, current_step, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
         [
           requestNo,
           emp.id,
@@ -658,11 +690,36 @@ router.post(
           body.resign_reason_detail,
           body.last_working_date,
           body.handover_to_employee_id ?? null,
+          handoverToUserId,
           body.handover_notes ?? null,
+          unsettledAdvanceAmount,
+          pendingReimbursementCount,
+          unsettledAdvanceAmount > 0 ? 'PENDING' : 'SETTLED',
           ts,
           ts,
         ]
       );
+
+      const clearanceDefs = [
+        { key: 'WORK_HANDOVER', label: '工作交接与客户资料移交', role: 'STORE_MANAGER', status: 'PENDING', remark: null },
+        { key: 'ASSETS_RETURN', label: '工牌、钥匙及门店资产归还', role: 'STORE_MANAGER', status: 'PENDING', remark: null },
+        {
+          key: 'ADVANCE_SETTLE',
+          label: '财务备用金与在途报销清账',
+          role: 'FINANCE',
+          status: unsettledAdvanceAmount > 0 ? 'BLOCKED' : 'PENDING',
+          remark: unsettledAdvanceAmount > 0 ? `尚有未结清借款 ¥${unsettledAdvanceAmount.toFixed(2)}` : null,
+        },
+        { key: 'HR_ARCHIVE', label: '人事档案核对与社保停缴确认', role: 'HR_MANAGER', status: 'PENDING', remark: null },
+      ];
+      for (const item of clearanceDefs) {
+        await tx.execute(
+          `INSERT INTO offboarding_clearance_items (
+            offboarding_id, item_key, item_label, department_role, status, remark, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [ins.insertId, item.key, item.label, item.role, item.status, item.remark, ts]
+        );
+      }
 
       const resolved = await resolveApprovalRoute(tx, emp.hotel_id, plannedSteps);
       await replaceApprovalSteps(tx, 'OFFBOARDING', ins.insertId, resolved.steps);
@@ -757,8 +814,105 @@ router.post(
   })
 );
 
+router.get(
+  '/offboarding/:id/clearance',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const db = getDb();
+    const off = await db.queryOne<{ id: number; hotel_id: number; employee_id: number; applicant_id: number }>(
+      'SELECT id, hotel_id, employee_id, applicant_id FROM offboarding_requests WHERE id = ?',
+      [id]
+    );
+    if (!off) throw new AppError(404, '离职申请不存在');
+    const isSelf =
+      Number(off.applicant_id) === Number(req.user!.id) ||
+      (req.user!.employee_id && Number(off.employee_id) === Number(req.user!.employee_id));
+    if (!isSelf && !(await canAccessHotel(req.user!, off.hotel_id))) {
+      throw new AppError(403, '无权查看该离职清查清单');
+    }
+    const items = await db.query(
+      'SELECT * FROM offboarding_clearance_items WHERE offboarding_id = ? ORDER BY id ASC',
+      [id]
+    );
+    res.json({ items });
+  })
+);
+
+router.post(
+  '/offboarding/:id/clearance/:itemId',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'FINANCE', 'STORE_MANAGER', 'REGIONAL_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const itemId = Number(req.params.itemId);
+    const body = z
+      .object({
+        status: z.enum(['CLEARED', 'BLOCKED']),
+        remark: z.string().max(255).optional().nullable(),
+        allow_salary_deduct: z.boolean().optional().default(false),
+      })
+      .parse(req.body || {});
+
+    const db = getDb();
+    const off = await db.queryOne<{ id: number; employee_id: number; hotel_id: number }>(
+      'SELECT id, employee_id, hotel_id FROM offboarding_requests WHERE id = ?',
+      [id]
+    );
+    if (!off) throw new AppError(404, '离职申请不存在');
+    if (!(await canAccessHotel(req.user!, off.hotel_id))) {
+      throw new AppError(403, '无权操作其他门店离职清查');
+    }
+
+    const item = await db.queryOne<{ id: number; item_key: string }>(
+      'SELECT id, item_key FROM offboarding_clearance_items WHERE id = ? AND offboarding_id = ?',
+      [itemId, id]
+    );
+    if (!item) throw new AppError(404, '清查项不存在');
+
+    const ts = nowIso();
+    await db.transaction(async (tx) => {
+      if (item.item_key === 'ADVANCE_SETTLE' && body.status === 'CLEARED') {
+        const empUser = await tx.queryOne<{ id: number }>('SELECT id FROM users WHERE employee_id = ?', [off.employee_id]);
+        let unsettled = 0;
+        if (empUser) {
+          const advRow = await tx.queryOne<{ total: number }>(
+            `SELECT COALESCE(SUM(amount - offset_amount - repaid_amount), 0) AS total
+             FROM cash_advances WHERE applicant_id = ? AND status = 'DISBURSED'`,
+            [empUser.id]
+          );
+          unsettled = roundMoney(Number(advRow?.total || 0));
+        }
+        if (unsettled > 0 && !body.allow_salary_deduct) {
+          throw new AppError(400, `该员工尚有未结清借款 ¥${unsettled.toFixed(2)}，请先冲销/还款或勾选离职薪资扣回后确认清账`);
+        }
+        if (unsettled > 0 && body.allow_salary_deduct) {
+          await tx.execute(
+            `UPDATE offboarding_requests SET settlement_status = 'SALARY_DEDUCT', updated_at = ? WHERE id = ?`,
+            [ts, id]
+          );
+        } else {
+          await tx.execute(
+            `UPDATE offboarding_requests SET settlement_status = 'SETTLED', unsettled_advance_amount = 0, updated_at = ? WHERE id = ?`,
+            [ts, id]
+          );
+        }
+      }
+
+      await tx.execute(
+        `UPDATE offboarding_clearance_items
+         SET status = ?, remark = ?, cleared_by = ?, cleared_by_name = ?, cleared_at = ?
+         WHERE id = ?`,
+        [body.status, body.remark ?? null, req.user!.id, req.user!.display_name, ts, itemId]
+      );
+    });
+
+    res.json({ ok: true });
+  })
+);
+
 const completeOffboardingSchema = z.object({
   checklist: z.record(z.string(), z.boolean()).optional(),
+  schedule_for_effective_date: z.boolean().optional().default(false),
+  allow_salary_deduct: z.boolean().optional().default(false),
 });
 
 router.post(
@@ -778,6 +932,7 @@ router.post(
       resign_reason_code: string;
       resign_reason_detail: string;
       last_working_date: string;
+      settlement_status: string;
       status: string;
     }>('SELECT * FROM offboarding_requests WHERE id = ?', [id]);
 
@@ -787,77 +942,61 @@ router.post(
       throw new AppError(403, '无权办理该门店员工离职');
     }
 
-    const ts = nowIso();
-    const archiveId = await db.transaction(async (tx) => {
-      const emp = await tx.queryOne<{ id: number; position: string; hotel_id: number }>(
-        'SELECT id, position, hotel_id FROM employees WHERE id = ?',
-        [off.employee_id]
-      );
-      if (!emp) throw new AppError(404, '员工不存在');
+    const blockedItem = await db.queryOne<{ id: number; item_label: string }>(
+      `SELECT id, item_label FROM offboarding_clearance_items
+       WHERE offboarding_id = ? AND status = 'BLOCKED' LIMIT 1`,
+      [id]
+    );
+    if (blockedItem) {
+      throw new AppError(400, `存在未解除阻塞的离职清查项：${blockedItem.item_label}`);
+    }
 
-      await tx.execute(`UPDATE employees SET status = 'RESIGNED', resign_date = ?, updated_at = ? WHERE id = ?`, [
-        off.last_working_date,
-        ts,
-        off.employee_id,
-      ]);
-      const empUsers = await tx.query<{ id: number }>('SELECT id FROM users WHERE employee_id = ? AND is_active = 1', [
-        off.employee_id,
-      ]);
-      await tx.execute(`UPDATE users SET is_active = 0 WHERE employee_id = ?`, [off.employee_id]);
-      for (const u of empUsers) {
-        await reassignPendingSteps(tx, u.id);
+    const empUser = await db.queryOne<{ id: number }>('SELECT id FROM users WHERE employee_id = ?', [off.employee_id]);
+    if (empUser) {
+      const advRow = await db.queryOne<{ total: number }>(
+        `SELECT COALESCE(SUM(amount - offset_amount - repaid_amount), 0) AS total
+         FROM cash_advances WHERE applicant_id = ? AND status = 'DISBURSED'`,
+        [empUser.id]
+      );
+      const unsettled = roundMoney(Number(advRow?.total || 0));
+      if (unsettled > 0 && !body.allow_salary_deduct && off.settlement_status !== 'SALARY_DEDUCT') {
+        throw new AppError(400, `员工尚有未结清借款 ¥${unsettled.toFixed(2)}，请先清账或勾选离职薪资扣回`);
       }
+    }
 
-      await tx.execute(
-        `INSERT INTO employee_lifecycle_events (
-          employee_id, event_type, from_hotel_id, to_hotel_id, from_position, to_position,
-          effective_date, reason, operator_id, created_at
-        ) VALUES (?, 'RESIGN', ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          off.employee_id,
-          emp.hotel_id,
-          emp.hotel_id,
-          emp.position,
-          emp.position,
-          off.last_working_date,
-          `离职流程（${off.request_no}）办结：${off.resign_reason_detail}`,
-          user.id,
-          ts,
-        ]
-      );
-
-      const archId = await archiveEmployeeRecords(tx, {
-        employeeId: off.employee_id,
-        resignDate: off.last_working_date,
-        resignReason: off.resign_reason_detail,
-        offboardingRequestId: off.id,
-        operator: user,
-      });
-
-      await tx.execute(
+    const ts = nowIso();
+    if (body.schedule_for_effective_date && off.last_working_date > todayStr()) {
+      await db.execute(
         `UPDATE offboarding_requests
-         SET status = 'COMPLETED', archive_id = ?, checklist_json = ?, updated_at = ?
+         SET scheduled_execute = 1,
+             settlement_status = CASE WHEN ? = 1 THEN 'SALARY_DEDUCT' ELSE settlement_status END,
+             updated_at = ?
          WHERE id = ?`,
-        [
-          archId,
-          JSON.stringify(body.checklist || { work_handover: true, assets_returned: true, finance_settled: true }),
-          ts,
-          id,
-        ]
+        [body.allow_salary_deduct ? 1 : 0, ts, id]
       );
+      res.json({ ok: true, scheduled: true, last_working_date: off.last_working_date });
+      return;
+    }
 
-      await logApprovalAction(tx, {
-        bizType: 'OFFBOARDING',
-        bizId: id,
-        action: 'COMPLETE',
-        actor: user,
-        comment: `离职办结，员工状态已变更为已离职并完成历史档案归档（归档ID #${archId}）`,
+    const archiveId = await db.transaction(async (tx) => {
+      return completeOffboardingTx(tx, off, user, {
+        checklist: body.checklist,
+        settlementStatus:
+          body.allow_salary_deduct || off.settlement_status === 'SALARY_DEDUCT' ? 'SALARY_DEDUCT' : 'SETTLED',
       });
-
-      return archId;
     });
 
     res.json({ ok: true, archiveId });
+  })
+);
+
+router.post(
+  '/offboarding/run-scheduled',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const result = await runScheduledJobs(db, req.user!);
+    res.json({ ok: true, ...result });
   })
 );
 

@@ -63,6 +63,16 @@ interface OnboardingRequestRow {
   canComplete?: boolean;
 }
 
+interface ClearanceItemRow {
+  id: number;
+  item_key: string;
+  item_label: string;
+  department_role: string;
+  status: string;
+  remark: string | null;
+  cleared_by_name: string | null;
+}
+
 interface OffboardingRequestRow {
   id: number;
   request_no: string;
@@ -79,6 +89,11 @@ interface OffboardingRequestRow {
   handover_to_name: string | null;
   handover_notes: string | null;
   unsettled_advances: number;
+  unsettled_advance_amount?: number;
+  pending_reimbursement_count?: number;
+  settlement_status?: string;
+  scheduled_execute?: number;
+  clearance_items?: ClearanceItemRow[];
   status: string;
   status_detail?: string;
   applicant_name: string;
@@ -370,6 +385,23 @@ export function EmployeesPage() {
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '提交离职申请失败', 'error');
+    }
+  };
+
+  const handleClearanceItem = async (offId: number, itemId: number, allowSalaryDeduct = false) => {
+    try {
+      await apiFetch(`/api/hr-flows/offboarding/${offId}/clearance/${itemId}`, {
+        method: 'POST',
+        body: JSON.stringify({
+          status: 'CLEARED',
+          allow_salary_deduct: allowSalaryDeduct,
+          remark: allowSalaryDeduct ? '同意离职薪资扣回并清账' : '已确认清查完成',
+        }),
+      });
+      showToast('清查项已确认完成');
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '清查确认失败', 'error');
     }
   };
 
@@ -701,9 +733,37 @@ export function EmployeesPage() {
                         {r.handover_to_name && (
                           <div className="text-stone-400 mt-0.5">工作交接人：{r.handover_to_name}</div>
                         )}
-                        {r.unsettled_advances > 0 && (
+                        {(r.unsettled_advances > 0 || Number(r.unsettled_advance_amount || 0) > 0) && (
                           <div className="text-rose-600 font-semibold mt-0.5">
-                            注意：尚有 {r.unsettled_advances} 笔未冲销备用金
+                            注意：尚有 {r.unsettled_advances} 笔未冲销借款（¥{Number(r.unsettled_advance_amount || 0).toFixed(2)}）
+                          </div>
+                        )}
+                        {r.clearance_items && r.clearance_items.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {r.clearance_items.map((ci) => (
+                              <span
+                                key={ci.id}
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] ${
+                                  ci.status === 'CLEARED'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : ci.status === 'BLOCKED'
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : 'bg-stone-50 text-stone-600 border-stone-200'
+                                }`}
+                              >
+                                {ci.item_label}:{' '}
+                                {ci.status === 'CLEARED' ? '已清' : ci.status === 'BLOCKED' ? '阻塞' : '待清'}
+                                {ci.status !== 'CLEARED' && r.status === 'APPROVED' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleClearanceItem(r.id, ci.id, ci.item_key === 'ADVANCE_SETTLE')}
+                                    className="underline text-brand-700 ml-0.5"
+                                  >
+                                    确认
+                                  </button>
+                                )}
+                              </span>
+                            ))}
                           </div>
                         )}
                       </td>

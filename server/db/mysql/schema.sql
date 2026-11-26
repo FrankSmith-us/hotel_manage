@@ -536,6 +536,12 @@ CREATE TABLE IF NOT EXISTS offboarding_requests (
   current_step INT NOT NULL DEFAULT 1,
   checklist_json TEXT NULL,
   archive_id BIGINT NULL,
+  effective_executed_at VARCHAR(32) NULL,
+  settlement_status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  unsettled_advance_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  pending_reimbursement_count INT NOT NULL DEFAULT 0,
+  handover_to_user_id BIGINT NULL,
+  scheduled_execute TINYINT(1) NOT NULL DEFAULT 0,
   created_at VARCHAR(32) NOT NULL,
   updated_at VARCHAR(32) NOT NULL,
   INDEX idx_offboard_emp (employee_id),
@@ -543,6 +549,23 @@ CREATE TABLE IF NOT EXISTS offboarding_requests (
   CONSTRAINT fk_offboard_emp FOREIGN KEY (employee_id) REFERENCES employees(id),
   CONSTRAINT fk_offboard_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
   CONSTRAINT fk_offboard_app FOREIGN KEY (applicant_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS offboarding_clearance_items (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  offboarding_id BIGINT NOT NULL,
+  item_key VARCHAR(40) NOT NULL,
+  item_label VARCHAR(120) NOT NULL,
+  department_role VARCHAR(32) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  remark VARCHAR(255) NULL,
+  cleared_by BIGINT NULL,
+  cleared_by_name VARCHAR(80) NULL,
+  cleared_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_off_clear_item (offboarding_id, item_key),
+  INDEX idx_off_clear_req (offboarding_id),
+  CONSTRAINT fk_off_clear_req FOREIGN KEY (offboarding_id) REFERENCES offboarding_requests(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS employee_archives (

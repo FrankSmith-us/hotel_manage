@@ -499,11 +499,33 @@ CREATE TABLE IF NOT EXISTS offboarding_requests (
   current_step INTEGER NOT NULL DEFAULT 1,
   checklist_json TEXT,
   archive_id INTEGER,
+  effective_executed_at TEXT,
+  settlement_status TEXT NOT NULL DEFAULT 'PENDING',
+  unsettled_advance_amount REAL NOT NULL DEFAULT 0.00,
+  pending_reimbursement_count INTEGER NOT NULL DEFAULT 0,
+  handover_to_user_id INTEGER,
+  scheduled_execute INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_offboard_emp ON offboarding_requests(employee_id);
 CREATE INDEX IF NOT EXISTS idx_offboard_status ON offboarding_requests(status);
+
+CREATE TABLE IF NOT EXISTS offboarding_clearance_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  offboarding_id INTEGER NOT NULL REFERENCES offboarding_requests(id) ON DELETE CASCADE,
+  item_key TEXT NOT NULL,
+  item_label TEXT NOT NULL,
+  department_role TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  remark TEXT,
+  cleared_by INTEGER,
+  cleared_by_name TEXT,
+  cleared_at TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(offboarding_id, item_key)
+);
+CREATE INDEX IF NOT EXISTS idx_off_clear_req ON offboarding_clearance_items(offboarding_id);
 
 CREATE TABLE IF NOT EXISTS employee_archives (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -86,6 +86,19 @@ export async function initSchema(db: DbAdapter): Promise<void> {
         await db.execute(`ALTER TABLE payroll_records ADD COLUMN ${colName} ${colDef}`);
       }
     }
+    const offCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(offboarding_requests)')).map((c) => c.name));
+    for (const [colName, colDef] of [
+      ['effective_executed_at', 'TEXT'],
+      ['settlement_status', "TEXT NOT NULL DEFAULT 'PENDING'"],
+      ['unsettled_advance_amount', 'REAL NOT NULL DEFAULT 0.00'],
+      ['pending_reimbursement_count', 'INTEGER NOT NULL DEFAULT 0'],
+      ['handover_to_user_id', 'INTEGER'],
+      ['scheduled_execute', 'INTEGER NOT NULL DEFAULT 0'],
+    ] as const) {
+      if (!offCols.has(colName)) {
+        await db.execute(`ALTER TABLE offboarding_requests ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
     const uCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(users)')).map((c) => c.name));
     if (!uCols.has('must_change_password')) {
       await db.execute('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
@@ -185,6 +198,12 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['payroll_records', 'advance_deduction', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
       ['payroll_records', 'other_deduction', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
       ['payroll_records', 'is_resigned_settlement', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      ['offboarding_requests', 'effective_executed_at', 'VARCHAR(32) NULL'],
+      ['offboarding_requests', 'settlement_status', "VARCHAR(24) NOT NULL DEFAULT 'PENDING'"],
+      ['offboarding_requests', 'unsettled_advance_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['offboarding_requests', 'pending_reimbursement_count', 'INT NOT NULL DEFAULT 0'],
+      ['offboarding_requests', 'handover_to_user_id', 'BIGINT NULL'],
+      ['offboarding_requests', 'scheduled_execute', 'TINYINT(1) NOT NULL DEFAULT 0'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt
