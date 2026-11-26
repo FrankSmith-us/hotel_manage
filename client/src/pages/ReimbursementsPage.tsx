@@ -673,8 +673,8 @@ export function ReimbursementsPage() {
         maxWidth="max-w-4xl"
       >
         <div className="space-y-5">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div className="sm:col-span-2">
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-4">
+            <div className="sm:col-span-6">
               <label className="block text-xs font-medium text-stone-700 mb-1">报销单标题 *</label>
               <input
                 type="text"
@@ -684,19 +684,7 @@ export function ReimbursementsPage() {
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
               />
             </div>
-            <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1">费用归属月份 *</label>
-              <input
-                type="month"
-                value={expenseMonth}
-                onChange={(e) => setExpenseMonth(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
+            <div className="sm:col-span-3">
               <label className="block text-xs font-medium text-stone-700 mb-1">归属门店 *</label>
               <select
                 value={hotelId}
@@ -715,16 +703,26 @@ export function ReimbursementsPage() {
                 ))}
               </select>
             </div>
-            <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1">备注说明</label>
+            <div className="sm:col-span-3">
+              <label className="block text-xs font-medium text-stone-700 mb-1">费用归属月份 *</label>
               <input
-                type="text"
-                value={remarks}
-                onChange={(e) => setRemarks(e.target.value)}
-                placeholder="选填：采购背景或特殊说明"
+                type="month"
+                value={expenseMonth}
+                onChange={(e) => setExpenseMonth(e.target.value)}
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">备注说明</label>
+            <textarea
+              rows={3}
+              value={remarks}
+              onChange={(e) => setRemarks(e.target.value)}
+              placeholder="选填：采购背景、审批补充说明或特殊情况说明"
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm resize-y"
+            />
           </div>
 
           {/* Payee Account Section (Corporate / Personal) */}
@@ -1168,6 +1166,13 @@ export function ReimbursementsPage() {
                 {detail.claim.payee_bank || '-'} · {detail.claim.payee_account || '-'}
               </div>
             </div>
+
+            {detail.claim.remarks && (
+              <div className="p-3.5 rounded-xl bg-stone-50/70 border border-stone-200 text-xs text-stone-700">
+                <div className="font-semibold text-stone-800 mb-1">备注说明</div>
+                <div className="whitespace-pre-wrap leading-relaxed">{detail.claim.remarks}</div>
+              </div>
+            )}
 
             {/* Items */}
             <div>
