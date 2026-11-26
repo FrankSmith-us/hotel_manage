@@ -338,8 +338,8 @@ router.get(
     for (const r of rows) {
       const pendingStep =
         r.status === 'PENDING_APPROVAL'
-          ? await db.queryOne<{ step_name: string; approver_role: UserRole }>(
-              `SELECT step_name, approver_role FROM approval_steps
+          ? await db.queryOne<{ step_name: string; approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT step_name, approver_role, approver_user_id FROM approval_steps
                WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND status = 'PENDING'
                ORDER BY step_order ASC LIMIT 1`,
               [r.id]
@@ -347,7 +347,10 @@ router.get(
           : null;
 
       const canApprove = pendingStep
-        ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id)
+        ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id, {
+            approverUserId: pendingStep.approver_user_id,
+            bizType: 'REIMBURSEMENT',
+          })
         : false;
       const canEdit =
         (r.status === 'DRAFT' && Number(r.applicant_id) === Number(user.id)) ||
@@ -693,7 +696,8 @@ router.post(
               applicantRole: user.role,
               totalAmount,
               hasOverBudget: risks.riskFlags.includes('OVER_BUDGET'),
-            })
+            }),
+            user.id
           )
         : { steps: [], skippedRegionalManager: false, skipReason: null };
       const route = resolved.steps;
@@ -1180,15 +1184,18 @@ router.post(
       if (!claim) throw new AppError(404, '报销单不存在');
       if (claim.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前报销单不在审批中');
 
-      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole }>(
-        `SELECT id, step_order, approver_role FROM approval_steps
+      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole; approver_user_id: number | null }>(
+        `SELECT id, step_order, approver_role, approver_user_id FROM approval_steps
          WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND status = 'PENDING'
          ORDER BY step_order ASC LIMIT 1`,
         [id]
       );
       if (!step) throw new AppError(400, '未找到当前待审批节点');
 
-      const allowed = await canUserActOnStep(tx, user, step.approver_role, claim.hotel_id, claim.applicant_id);
+      const allowed = await canUserActOnStep(tx, user, step.approver_role, claim.hotel_id, claim.applicant_id, {
+        approverUserId: step.approver_user_id,
+        bizType: 'REIMBURSEMENT',
+      });
       if (!allowed) throw new AppError(403, '您无权审批当前节点');
 
       const ts = nowIso();

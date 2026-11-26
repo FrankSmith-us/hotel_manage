@@ -331,9 +331,24 @@ CREATE TABLE IF NOT EXISTS approval_steps (
   acted_by BIGINT NULL,
   acted_at VARCHAR(32) NULL,
   comment VARCHAR(255) NULL,
+  delegated_from_user_id BIGINT NULL,
+  skip_reason VARCHAR(255) NULL,
   created_at VARCHAR(32) NOT NULL,
   UNIQUE KEY uk_steps_biz_order (biz_type, biz_id, step_order),
   INDEX idx_steps_biz (biz_type, biz_id, step_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS approval_delegations (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  delegator_user_id BIGINT NOT NULL,
+  delegate_user_id BIGINT NOT NULL,
+  start_date VARCHAR(16) NOT NULL,
+  end_date VARCHAR(16) NOT NULL,
+  biz_types VARCHAR(120) NOT NULL DEFAULT 'ALL',
+  created_at VARCHAR(32) NOT NULL,
+  INDEX idx_delegation_delegate (delegate_user_id, start_date, end_date),
+  CONSTRAINT fk_delegation_delegator FOREIGN KEY (delegator_user_id) REFERENCES users(id),
+  CONSTRAINT fk_delegation_delegate FOREIGN KEY (delegate_user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS approval_logs (

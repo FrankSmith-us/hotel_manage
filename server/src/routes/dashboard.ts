@@ -95,7 +95,11 @@ router.get(
       step_order: number;
       step_name: string;
       approver_role: UserRole;
-    }>(`SELECT biz_type, biz_id, step_order, step_name, approver_role FROM approval_steps WHERE status = 'PENDING'`);
+      approver_user_id: number | null;
+    }>(
+      `SELECT biz_type, biz_id, step_order, step_name, approver_role, approver_user_id
+       FROM approval_steps WHERE status = 'PENDING'`
+    );
 
     type InboxItem = {
       biz_type: string;
@@ -115,7 +119,6 @@ router.get(
     const otherInbox: InboxItem[] = [];
 
     for (const st of pendingSteps) {
-      if (st.approver_role !== user.role) continue;
       if (st.biz_type === 'REIMBURSEMENT') {
         const r = await db.queryOne<{
           id: number;
@@ -138,7 +141,13 @@ router.get(
            WHERE r.id = ? AND r.status = 'PENDING_APPROVAL'`,
           [st.biz_id]
         );
-        if (r && (await canUserActOnStep(db, user, st.approver_role, r.hotel_id, r.applicant_id))) {
+        if (
+          r &&
+          (await canUserActOnStep(db, user, st.approver_role, r.hotel_id, r.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'REIMBURSEMENT',
+          }))
+        ) {
           expenseInbox.push({
             biz_type: 'REIMBURSEMENT',
             biz_id: r.id,
@@ -174,7 +183,13 @@ router.get(
            WHERE a.id = ? AND a.status = 'PENDING_APPROVAL'`,
           [st.biz_id]
         );
-        if (a && (await canUserActOnStep(db, user, st.approver_role, a.hotel_id, a.applicant_id))) {
+        if (
+          a &&
+          (await canUserActOnStep(db, user, st.approver_role, a.hotel_id, a.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'CASH_ADVANCE',
+          }))
+        ) {
           expenseInbox.push({
             biz_type: 'CASH_ADVANCE',
             biz_id: a.id,
@@ -212,7 +227,10 @@ router.get(
         );
         if (
           l &&
-          (await canUserActOnStep(db, user, st.approver_role, l.hotel_id, l.applicant_user_id ?? -1))
+          (await canUserActOnStep(db, user, st.approver_role, l.hotel_id, l.applicant_user_id ?? -1, {
+            approverUserId: st.approver_user_id,
+            bizType: 'LEAVE',
+          }))
         ) {
           otherInbox.push({
             biz_type: 'LEAVE',
@@ -249,7 +267,13 @@ router.get(
            WHERE hc.id = ? AND hc.status = 'PENDING_APPROVAL'`,
           [st.biz_id]
         );
-        if (hc && (await canUserActOnStep(db, user, st.approver_role, hc.hotel_id, hc.applicant_id))) {
+        if (
+          hc &&
+          (await canUserActOnStep(db, user, st.approver_role, hc.hotel_id, hc.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'HEADCOUNT',
+          }))
+        ) {
           otherInbox.push({
             biz_type: 'HEADCOUNT',
             biz_id: hc.id,

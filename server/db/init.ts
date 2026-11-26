@@ -76,6 +76,13 @@ export async function initSchema(db: DbAdapter): Promise<void> {
     if (!uCols.has('password_changed_at')) {
       await db.execute('ALTER TABLE users ADD COLUMN password_changed_at TEXT');
     }
+    const sCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(approval_steps)')).map((c) => c.name));
+    if (!sCols.has('delegated_from_user_id')) {
+      await db.execute('ALTER TABLE approval_steps ADD COLUMN delegated_from_user_id INTEGER');
+    }
+    if (!sCols.has('skip_reason')) {
+      await db.execute('ALTER TABLE approval_steps ADD COLUMN skip_reason TEXT');
+    }
   } else {
     const col = await db.queryOne<{ cnt: number }>(
       `SELECT COUNT(*) AS cnt
@@ -134,6 +141,8 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['employees', 'political_status', 'VARCHAR(24) NULL'],
       ['users', 'must_change_password', 'TINYINT(1) NOT NULL DEFAULT 0'],
       ['users', 'password_changed_at', 'VARCHAR(32) NULL'],
+      ['approval_steps', 'delegated_from_user_id', 'BIGINT NULL'],
+      ['approval_steps', 'skip_reason', 'VARCHAR(255) NULL'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt
@@ -144,6 +153,39 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       if (!c || Number(c.cnt) === 0) {
         await db.execute(`ALTER TABLE ${tbl} ADD COLUMN ${colName} ${colDef}`);
       }
+    }
+  }
+
+  // T1-02: Backfill approver_user_id on any existing PENDING approval_steps missing concrete approver
+  const nullPendingSteps = await db.query<{
+    id: number;
+    biz_type: string;
+    biz_id: number;
+    approver_role: string;
+  }>(`SELECT id, biz_type, biz_id, approver_role FROM approval_steps WHERE status = 'PENDING' AND approver_user_id IS NULL`);
+  for (const st of nullPendingSteps) {
+    let hotelId: number | null = null;
+    if (st.biz_type === 'REIMBURSEMENT') {
+      hotelId = (await db.queryOne<{ hotel_id: number }>('SELECT hotel_id FROM reimbursements WHERE id = ?', [st.biz_id]))?.hotel_id ?? null;
+    } else if (st.biz_type === 'CASH_ADVANCE') {
+      hotelId = (await db.queryOne<{ hotel_id: number }>('SELECT hotel_id FROM cash_advances WHERE id = ?', [st.biz_id]))?.hotel_id ?? null;
+    } else if (st.biz_type === 'HEADCOUNT') {
+      hotelId = (await db.queryOne<{ hotel_id: number }>('SELECT hotel_id FROM headcount_requests WHERE id = ?', [st.biz_id]))?.hotel_id ?? null;
+    } else if (st.biz_type === 'LEAVE') {
+      hotelId = (await db.queryOne<{ hotel_id: number }>('SELECT hotel_id FROM leave_requests WHERE id = ?', [st.biz_id]))?.hotel_id ?? null;
+    }
+    if (!hotelId) continue;
+    let uid: number | null = null;
+    if (st.approver_role === 'STORE_MANAGER') {
+      uid = (await db.queryOne<{ id: number }>(`SELECT id FROM users WHERE role = 'STORE_MANAGER' AND hotel_id = ? AND is_active = 1 ORDER BY id ASC LIMIT 1`, [hotelId]))?.id ?? null;
+    } else if (st.approver_role === 'REGIONAL_MANAGER') {
+      const reg = await db.queryOne<{ id: number; manager_user_id: number | null }>(`SELECT r.id, r.manager_user_id FROM hotels h JOIN regions r ON r.id = h.region_id WHERE h.id = ?`, [hotelId]);
+      uid = reg?.manager_user_id ?? (reg?.id ? (await db.queryOne<{ id: number }>(`SELECT id FROM users WHERE role = 'REGIONAL_MANAGER' AND region_id = ? AND is_active = 1 ORDER BY id ASC LIMIT 1`, [reg.id]))?.id ?? null : null);
+    } else {
+      uid = (await db.queryOne<{ id: number }>(`SELECT id FROM users WHERE role = ? AND is_active = 1 ORDER BY id ASC LIMIT 1`, [st.approver_role]))?.id ?? null;
+    }
+    if (uid) {
+      await db.execute('UPDATE approval_steps SET approver_user_id = ? WHERE id = ?', [uid, st.id]);
     }
   }
 }

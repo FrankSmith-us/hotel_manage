@@ -11,6 +11,7 @@ import {
 } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
 import { archiveEmployeeRecords } from '../services/archiveService';
+import { reassignPendingSteps } from '../services/workflowEngine';
 import { addDays, isoDateSchema, nowIso, randomTokenSuffix, todayStr } from '../utils/numbers';
 
 function maskSensitiveEmployeeFields<T extends Record<string, unknown>>(row: T, allowFull: boolean): T {
@@ -463,8 +464,13 @@ router.post(
       );
 
       if (body.event_type === 'RESIGN') {
+        const empUsers = await tx.query<{ id: number }>('SELECT id FROM users WHERE employee_id = ? AND is_active = 1', [id]);
         await tx.execute('UPDATE users SET is_active = 0 WHERE employee_id = ?', [id]);
+        for (const u of empUsers) {
+          await reassignPendingSteps(tx, u.id);
+        }
       } else if (body.event_type === 'TRANSFER') {
+        const empUsers = await tx.query<{ id: number }>('SELECT id FROM users WHERE employee_id = ? AND is_active = 1', [id]);
         const targetHotel = await tx.queryOne<{ region_id: number }>('SELECT region_id FROM hotels WHERE id = ?', [
           newHotelId,
         ]);
@@ -473,6 +479,9 @@ router.post(
           targetHotel?.region_id ?? null,
           id,
         ]);
+        for (const u of empUsers) {
+          await reassignPendingSteps(tx, u.id);
+        }
       }
 
       await tx.execute(

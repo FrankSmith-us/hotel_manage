@@ -104,8 +104,8 @@ router.get(
     for (const row of rows) {
       const pendingStep =
         row.status === 'PENDING_APPROVAL'
-          ? await db.queryOne<{ step_name: string; approver_role: UserRole }>(
-              `SELECT step_name, approver_role FROM approval_steps
+          ? await db.queryOne<{ step_name: string; approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT step_name, approver_role, approver_user_id FROM approval_steps
                WHERE biz_type = 'LEAVE' AND biz_id = ? AND status = 'PENDING'
                ORDER BY step_order ASC LIMIT 1`,
               [row.id]
@@ -113,7 +113,10 @@ router.get(
           : null;
 
       const canApprove = pendingStep
-        ? await canUserActOnStep(db, user, pendingStep.approver_role, row.hotel_id, row.applicant_user_id ?? -1)
+        ? await canUserActOnStep(db, user, pendingStep.approver_role, row.hotel_id, row.applicant_user_id ?? -1, {
+            approverUserId: pendingStep.approver_user_id,
+            bizType: 'LEAVE',
+          })
         : false;
 
       if (tab === 'pending' && !canApprove) continue;
@@ -190,7 +193,8 @@ router.post(
     const resolved = await resolveApprovalRoute(
       db,
       user.hotel_id,
-      buildLeaveRoute({ applicantRole: user.role, days: effectiveDays })
+      buildLeaveRoute({ applicantRole: user.role, days: effectiveDays }),
+      user.id
     );
     const route = resolved.steps;
 
@@ -305,8 +309,9 @@ router.post(
         id: number;
         step_order: number;
         approver_role: UserRole;
+        approver_user_id: number | null;
       }>(
-        `SELECT id, step_order, approver_role FROM approval_steps
+        `SELECT id, step_order, approver_role, approver_user_id FROM approval_steps
          WHERE biz_type = 'LEAVE' AND biz_id = ? AND status = 'PENDING'
          ORDER BY step_order ASC LIMIT 1`,
         [id]
@@ -318,7 +323,8 @@ router.post(
         user,
         step.approver_role,
         leave.hotel_id,
-        applicantUser?.id ?? -1
+        applicantUser?.id ?? -1,
+        { approverUserId: step.approver_user_id, bizType: 'LEAVE' }
       );
       if (!allowed) throw new AppError(403, '您无权审批当前节点');
 

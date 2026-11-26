@@ -1,11 +1,13 @@
 import { DbQueryRunner } from '../../db/adapter';
 import { AuthUser, BizType, UserRole } from '../types';
-import { nowIso, roundMoney } from '../utils/numbers';
+import { nowIso, roundMoney, todayStr } from '../utils/numbers';
 
 export interface PlannedStep {
   stepOrder: number;
   stepName: string;
   approverRole: UserRole;
+  approverUserId?: number | null;
+  skipReason?: string | null;
 }
 
 export function buildReimbursementRoute(params: {
@@ -217,48 +219,163 @@ export async function isRegionalManagerSameAsGM(
   return { sameAsGm: false, regionName: region.name, gmName: null };
 }
 
+const ESCALATION_CHAIN: Partial<Record<UserRole, UserRole>> = {
+  STORE_MANAGER: 'REGIONAL_MANAGER',
+  REGIONAL_MANAGER: 'GENERAL_MANAGER',
+  HR_MANAGER: 'GENERAL_MANAGER',
+  FINANCE: 'GENERAL_MANAGER',
+};
+
+const ROLE_STEP_NAMES: Partial<Record<UserRole, string>> = {
+  STORE_MANAGER: '门店店长审批',
+  REGIONAL_MANAGER: '区域经理审核',
+  HR_MANAGER: '集团HR审批',
+  FINANCE: '集团财务审批',
+  GENERAL_MANAGER: '集团总经理审批',
+};
+
+async function findActiveUserForRole(
+  db: DbQueryRunner,
+  role: UserRole,
+  hotelId: number
+): Promise<{ id: number; display_name: string } | null> {
+  if (role === 'STORE_MANAGER') {
+    return db.queryOne<{ id: number; display_name: string }>(
+      `SELECT id, display_name FROM users WHERE role = 'STORE_MANAGER' AND hotel_id = ? AND is_active = 1 ORDER BY id ASC LIMIT 1`,
+      [hotelId]
+    );
+  }
+  if (role === 'REGIONAL_MANAGER') {
+    const reg = await db.queryOne<{ id: number; manager_user_id: number | null }>(
+      `SELECT r.id, r.manager_user_id FROM hotels h JOIN regions r ON r.id = h.region_id WHERE h.id = ?`,
+      [hotelId]
+    );
+    if (reg?.manager_user_id) {
+      const mgr = await db.queryOne<{ id: number; display_name: string }>(
+        `SELECT id, display_name FROM users WHERE id = ? AND is_active = 1`,
+        [reg.manager_user_id]
+      );
+      if (mgr) return mgr;
+    }
+    if (reg?.id) {
+      return db.queryOne<{ id: number; display_name: string }>(
+        `SELECT id, display_name FROM users WHERE role = 'REGIONAL_MANAGER' AND region_id = ? AND is_active = 1 ORDER BY id ASC LIMIT 1`,
+        [reg.id]
+      );
+    }
+    return null;
+  }
+  return db.queryOne<{ id: number; display_name: string }>(
+    `SELECT id, display_name FROM users WHERE role = ? AND is_active = 1 ORDER BY id ASC LIMIT 1`,
+    [role]
+  );
+}
+
+export async function resolveApprover(
+  db: DbQueryRunner,
+  role: UserRole,
+  hotelId: number,
+  applicantUserId?: number | null
+): Promise<{ userId: number | null; resolvedRole: UserRole; stepName: string | null; skipReason: string | null }> {
+  let curRole: UserRole | undefined = role;
+  const reasons: string[] = [];
+
+  for (let depth = 0; depth < 5 && curRole; depth++) {
+    const candidate = await findActiveUserForRole(db, curRole, hotelId);
+    if (candidate && (!applicantUserId || Number(candidate.id) !== Number(applicantUserId))) {
+      return {
+        userId: Number(candidate.id),
+        resolvedRole: curRole,
+        stepName: depth > 0 ? ROLE_STEP_NAMES[curRole] || null : null,
+        skipReason: reasons.length > 0 ? reasons.join('；') : null,
+      };
+    }
+    const reasonText = !candidate
+      ? `${curRole}岗位暂无在职审批人，已自动上推`
+      : `审批人与申请人同为 ${candidate.display_name}，已自动上推`;
+    reasons.push(reasonText);
+    curRole = ESCALATION_CHAIN[curRole];
+  }
+
+  return {
+    userId: null,
+    resolvedRole: role,
+    stepName: null,
+    skipReason: reasons.length > 0 ? reasons.join('；') : null,
+  };
+}
+
 export async function resolveApprovalRoute(
   db: DbQueryRunner,
   hotelId: number,
-  rawSteps: PlannedStep[]
+  rawSteps: PlannedStep[],
+  applicantUserId?: number | null
 ): Promise<{
   steps: PlannedStep[];
   skippedRegionalManager: boolean;
   skipReason: string | null;
 }> {
   const hasRegionalStep = rawSteps.some((s) => s.approverRole === 'REGIONAL_MANAGER');
-  if (!hasRegionalStep) {
-    return { steps: rawSteps, skippedRegionalManager: false, skipReason: null };
-  }
+  let skippedRegionalManager = false;
+  let regionalSkipReason: string | null = null;
+  let workingSteps = rawSteps;
 
-  const { sameAsGm, gmName } = await isRegionalManagerSameAsGM(db, hotelId);
-  if (!sameAsGm) {
-    return { steps: rawSteps, skippedRegionalManager: false, skipReason: null };
-  }
-
-  const alreadyHasGm = rawSteps.some((s) => s.approverRole === 'GENERAL_MANAGER');
-  const mapped: Array<{ stepName: string; approverRole: UserRole }> = [];
-  for (const s of rawSteps) {
-    if (s.approverRole === 'REGIONAL_MANAGER') {
-      if (!alreadyHasGm) {
-        mapped.push({ stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+  if (hasRegionalStep) {
+    const { sameAsGm, gmName } = await isRegionalManagerSameAsGM(db, hotelId);
+    if (sameAsGm) {
+      skippedRegionalManager = true;
+      regionalSkipReason = `区域经理与总经理为同一人（${gmName || '集团总经理'}），已自动跳过区域经理审核，直达总经理审批`;
+      const alreadyHasGm = rawSteps.some((s) => s.approverRole === 'GENERAL_MANAGER');
+      const mapped: PlannedStep[] = [];
+      for (const s of rawSteps) {
+        if (s.approverRole === 'REGIONAL_MANAGER') {
+          if (!alreadyHasGm) {
+            mapped.push({ stepOrder: s.stepOrder, stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+          }
+        } else {
+          mapped.push(s);
+        }
       }
-      // When GM is already in the route, skip REGIONAL_MANAGER directly
-    } else {
-      mapped.push({ stepName: s.stepName, approverRole: s.approverRole });
+      workingSteps = mapped;
     }
   }
 
-  const steps: PlannedStep[] = mapped.map((s, idx) => ({
+  // Resolve concrete approver_user_id with fallback escalation
+  const resolvedCandidates: Array<PlannedStep & { approverUserId: number | null; skipReason: string | null }> = [];
+  for (const s of workingSteps) {
+    const res = await resolveApprover(db, s.approverRole, hotelId, applicantUserId);
+    resolvedCandidates.push({
+      stepOrder: s.stepOrder,
+      stepName: res.stepName || s.stepName,
+      approverRole: res.resolvedRole,
+      approverUserId: res.userId,
+      skipReason: res.skipReason || s.skipReason || null,
+    });
+  }
+
+  // Deduplicate repeated approverUserId (keep the last/highest step for that approver)
+  const deduped: typeof resolvedCandidates = [];
+  for (let i = 0; i < resolvedCandidates.length; i++) {
+    const cur = resolvedCandidates[i];
+    const hasLaterSameUser =
+      cur.approverUserId !== null &&
+      resolvedCandidates.slice(i + 1).some((later) => later.approverUserId === cur.approverUserId);
+    if (hasLaterSameUser) continue;
+    deduped.push(cur);
+  }
+
+  const steps: PlannedStep[] = deduped.map((s, idx) => ({
     stepOrder: idx + 1,
     stepName: s.stepName,
     approverRole: s.approverRole,
+    approverUserId: s.approverUserId,
+    skipReason: s.skipReason,
   }));
 
   return {
     steps,
-    skippedRegionalManager: true,
-    skipReason: `区域经理与总经理为同一人（${gmName || '集团总经理'}），已自动跳过区域经理审核，直达总经理审批`,
+    skippedRegionalManager,
+    skipReason: regionalSkipReason,
   };
 }
 
@@ -272,11 +389,42 @@ export async function replaceApprovalSteps(
   const ts = nowIso();
   for (const s of plannedSteps) {
     await db.execute(
-      `INSERT INTO approval_steps (biz_type, biz_id, step_order, step_name, approver_role, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [bizType, bizId, s.stepOrder, s.stepName, s.approverRole, s.stepOrder === 1 ? 'PENDING' : 'WAITING', ts]
+      `INSERT INTO approval_steps (biz_type, biz_id, step_order, step_name, approver_role, approver_user_id, skip_reason, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        bizType,
+        bizId,
+        s.stepOrder,
+        s.stepName,
+        s.approverRole,
+        s.approverUserId ?? null,
+        s.skipReason ?? null,
+        s.stepOrder === 1 ? 'PENDING' : 'WAITING',
+        ts,
+      ]
     );
   }
+}
+
+export async function isActiveDelegateFor(
+  db: DbQueryRunner,
+  delegatorUserId: number,
+  delegateUserId: number,
+  bizType?: BizType
+): Promise<boolean> {
+  const today = todayStr();
+  const rows = await db.query<{ biz_types: string }>(
+    `SELECT biz_types FROM approval_delegations
+     WHERE delegator_user_id = ? AND delegate_user_id = ? AND start_date <= ? AND end_date >= ?`,
+    [delegatorUserId, delegateUserId, today, today]
+  );
+  for (const r of rows) {
+    const list = r.biz_types.split(',').map((s) => s.trim().toUpperCase());
+    if (list.includes('ALL') || (bizType && list.includes(bizType))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function canUserActOnStep(
@@ -284,12 +432,24 @@ export async function canUserActOnStep(
   user: AuthUser,
   approverRole: UserRole,
   bizHotelId: number,
-  applicantUserId: number
+  applicantUserId: number,
+  opts?: { approverUserId?: number | null; bizType?: BizType }
 ): Promise<boolean> {
-  if (user.id === applicantUserId) {
+  if (Number(user.id) === Number(applicantUserId)) {
     return false;
   }
+  if (opts?.approverUserId) {
+    if (Number(user.id) === Number(opts.approverUserId)) {
+      return true;
+    }
+    return isActiveDelegateFor(db, opts.approverUserId, user.id, opts.bizType);
+  }
   if (user.role !== approverRole) {
+    // Check if user is an active delegate of the resolved approver for this role/hotel
+    const resolved = await findActiveUserForRole(db, approverRole, bizHotelId);
+    if (resolved && (await isActiveDelegateFor(db, resolved.id, user.id, opts?.bizType))) {
+      return true;
+    }
     return false;
   }
   if (approverRole === 'STORE_MANAGER') {
@@ -310,6 +470,61 @@ export async function canUserActOnStep(
     return Boolean(user.region_id && Number(hotel.region_id) === Number(user.region_id));
   }
   return true;
+}
+
+export async function reassignPendingSteps(db: DbQueryRunner, oldUserId: number): Promise<number> {
+  const pendingRows = await db.query<{
+    id: number;
+    biz_type: BizType;
+    biz_id: number;
+    approver_role: UserRole;
+  }>(
+    `SELECT id, biz_type, biz_id, approver_role FROM approval_steps WHERE status = 'PENDING' AND approver_user_id = ?`,
+    [oldUserId]
+  );
+  let count = 0;
+  for (const st of pendingRows) {
+    let hotelId: number | null = null;
+    let applicantId: number | null = null;
+    if (st.biz_type === 'REIMBURSEMENT') {
+      const r = await db.queryOne<{ hotel_id: number; applicant_id: number }>('SELECT hotel_id, applicant_id FROM reimbursements WHERE id = ?', [st.biz_id]);
+      hotelId = r?.hotel_id ?? null;
+      applicantId = r?.applicant_id ?? null;
+    } else if (st.biz_type === 'CASH_ADVANCE') {
+      const r = await db.queryOne<{ hotel_id: number; applicant_id: number }>('SELECT hotel_id, applicant_id FROM cash_advances WHERE id = ?', [st.biz_id]);
+      hotelId = r?.hotel_id ?? null;
+      applicantId = r?.applicant_id ?? null;
+    } else if (st.biz_type === 'HEADCOUNT') {
+      const r = await db.queryOne<{ hotel_id: number; applicant_id: number }>('SELECT hotel_id, applicant_id FROM headcount_requests WHERE id = ?', [st.biz_id]);
+      hotelId = r?.hotel_id ?? null;
+      applicantId = r?.applicant_id ?? null;
+    } else if (st.biz_type === 'LEAVE') {
+      const r = await db.queryOne<{ hotel_id: number; employee_id: number }>('SELECT hotel_id, employee_id FROM leave_requests WHERE id = ?', [st.biz_id]);
+      if (r) {
+        hotelId = r.hotel_id;
+        const u = await db.queryOne<{ id: number }>('SELECT id FROM users WHERE employee_id = ?', [r.employee_id]);
+        applicantId = u?.id ?? null;
+      }
+    } else if (st.biz_type === 'ONBOARDING') {
+      const r = await db.queryOne<{ hotel_id: number; applicant_id: number }>('SELECT hotel_id, applicant_id FROM onboarding_requests WHERE id = ?', [st.biz_id]);
+      hotelId = r?.hotel_id ?? null;
+      applicantId = r?.applicant_id ?? null;
+    } else if (st.biz_type === 'OFFBOARDING') {
+      const r = await db.queryOne<{ hotel_id: number; applicant_id: number }>('SELECT hotel_id, applicant_id FROM offboarding_requests WHERE id = ?', [st.biz_id]);
+      hotelId = r?.hotel_id ?? null;
+      applicantId = r?.applicant_id ?? null;
+    }
+    if (!hotelId) continue;
+    const res = await resolveApprover(db, st.approver_role, hotelId, applicantId);
+    if (res.userId && res.userId !== oldUserId) {
+      await db.execute(
+        `UPDATE approval_steps SET approver_user_id = ?, approver_role = ?, skip_reason = ? WHERE id = ?`,
+        [res.userId, res.resolvedRole, res.skipReason || '原审批人离职/异动自动转派', st.id]
+      );
+      count++;
+    }
+  }
+  return count;
 }
 
 export async function isUserReturnTarget(

@@ -4,14 +4,96 @@ import { z } from 'zod';
 import { getDb } from '../../db';
 import { AppError, asyncHandler, authenticate, requireRoles } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
+import { reassignPendingSteps } from '../services/workflowEngine';
 import { ROLE_LABELS, UserRole } from '../types';
-import { generateTempPassword } from '../utils/numbers';
+import { generateTempPassword, isoDateSchema, nowIso } from '../utils/numbers';
 
 const router = Router();
-router.use(authenticate, requireRoles('HQ_ADMIN', 'HR_MANAGER'));
+router.use(authenticate);
+
+// === Approval Delegations (any authenticated user for self, or HQ_ADMIN/HR_MANAGER) ===
+router.get(
+  '/delegations',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const user = req.user!;
+    const isAdminOrHr = ['HQ_ADMIN', 'HR_MANAGER'].includes(user.role);
+    const rows = await db.query(
+      `SELECT d.*, du.display_name AS delegator_name, du.username AS delegator_username,
+              de.display_name AS delegate_name, de.username AS delegate_username
+       FROM approval_delegations d
+       JOIN users du ON du.id = d.delegator_user_id
+       JOIN users de ON de.id = d.delegate_user_id
+       ${isAdminOrHr ? '' : 'WHERE d.delegator_user_id = ? OR d.delegate_user_id = ?'}
+       ORDER BY d.id DESC`,
+      isAdminOrHr ? [] : [user.id, user.id]
+    );
+    res.json({ delegations: rows });
+  })
+);
+
+router.post(
+  '/delegations',
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        delegator_user_id: z.number().int().positive().optional(),
+        delegate_user_id: z.number().int().positive(),
+        start_date: isoDateSchema,
+        end_date: isoDateSchema,
+        biz_types: z.string().trim().min(2).max(120).default('ALL'),
+      })
+      .parse(req.body);
+    const user = req.user!;
+    const delegatorId = body.delegator_user_id ?? user.id;
+    if (delegatorId !== user.id && !['HQ_ADMIN', 'HR_MANAGER'].includes(user.role)) {
+      throw new AppError(403, '仅管理员或HR可代他人设置审批委托');
+    }
+    if (delegatorId === body.delegate_user_id) {
+      throw new AppError(400, '不能将审批委托给自己');
+    }
+    if (body.end_date < body.start_date) {
+      throw new AppError(400, '委托结束日期不能早于开始日期');
+    }
+    const db = getDb();
+    const delegateUser = await db.queryOne<{ id: number; is_active: number }>(
+      'SELECT id, is_active FROM users WHERE id = ?',
+      [body.delegate_user_id]
+    );
+    if (!delegateUser || !delegateUser.is_active) {
+      throw new AppError(400, '被委托人账号不存在或已停用');
+    }
+    const ins = await db.execute(
+      `INSERT INTO approval_delegations (delegator_user_id, delegate_user_id, start_date, end_date, biz_types, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [delegatorId, body.delegate_user_id, body.start_date, body.end_date, body.biz_types.toUpperCase(), nowIso()]
+    );
+    const created = await db.queryOne('SELECT * FROM approval_delegations WHERE id = ?', [ins.insertId]);
+    res.status(201).json({ delegation: created });
+  })
+);
+
+router.delete(
+  '/delegations/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const db = getDb();
+    const row = await db.queryOne<{ id: number; delegator_user_id: number }>(
+      'SELECT id, delegator_user_id FROM approval_delegations WHERE id = ?',
+      [id]
+    );
+    if (!row) throw new AppError(404, '委托记录不存在');
+    if (row.delegator_user_id !== req.user!.id && !['HQ_ADMIN', 'HR_MANAGER'].includes(req.user!.role)) {
+      throw new AppError(403, '无权删除他人委托记录');
+    }
+    await db.execute('DELETE FROM approval_delegations WHERE id = ?', [id]);
+    res.json({ ok: true });
+  })
+);
 
 router.get(
   '/',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
   asyncHandler(async (_req, res) => {
     const db = getDb();
     const users = await db.query<{
@@ -51,6 +133,7 @@ router.get(
 
 router.post(
   '/:id/reset-password',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const db = getDb();
@@ -82,6 +165,7 @@ router.post(
 
 router.patch(
   '/:id/status',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const { is_active } = z.object({ is_active: z.boolean() }).parse(req.body);
@@ -96,6 +180,9 @@ router.patch(
       );
       if (!target) throw new AppError(404, '账号不存在');
       await tx.execute('UPDATE users SET is_active = ? WHERE id = ?', [is_active ? 1 : 0, id]);
+      if (!is_active) {
+        await reassignPendingSteps(tx, id);
+      }
       await logApprovalAction(tx, {
         bizType: 'USER',
         bizId: id,
@@ -124,6 +211,7 @@ const updateRoleSchema = z.object({
 
 router.patch(
   '/:id/role',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const body = updateRoleSchema.parse(req.body);
@@ -153,6 +241,7 @@ router.patch(
         'UPDATE users SET role = ?, hotel_id = ?, region_id = ? WHERE id = ?',
         [body.role, body.hotel_id ?? null, nextRegionId, id]
       );
+      await reassignPendingSteps(tx, id);
       await logApprovalAction(tx, {
         bizType: 'USER',
         bizId: id,

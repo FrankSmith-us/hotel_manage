@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 29 tables', () => {
+  it('MySQL and SQLite schemas define identical 30 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 29);
+    assert.equal(mysqlTables.length, 30);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1489,5 +1489,79 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     });
     assert.equal(copiedBudgets.status, 200);
     assert.ok(copiedBudgets.data.budgets.length >= 5);
+  });
+
+  it('T1-02: concrete approver resolution, fallback escalation, delegation, and non-deadlock HR headcount', async () => {
+    const adminToken = await loginAs('admin');
+    const hrToken = await loginAs('hr');
+    const gmToken = await loginAs('gm');
+    const staffHzToken = await loginAs('staff_hz', 'NewPass2026!');
+    const regionToken = await loginAs('region_east');
+    const ym = currentYearMonth();
+
+    // 1. HR submits headcount -> HR_MANAGER step auto-escalates to GENERAL_MANAGER (no deadlock)
+    const hrHc = await req('POST', '/api/recruitment/headcounts', {
+      token: hrToken,
+      body: {
+        hotel_id: 2,
+        department_id: 5,
+        position: '前厅接待专员',
+        headcount: 1,
+        salary_range: '5000-6500',
+        reason: '测试HR提交补编不死锁',
+      },
+    });
+    assert.equal(hrHc.status, 201);
+    assert.equal((await req('POST', `/api/recruitment/headcounts/${hrHc.data.headcount.id}/action`, { token: regionToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/recruitment/headcounts/${hrHc.data.headcount.id}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status, 200);
+
+    // 2. Delegation: region_east delegates to mgr_sz for today -> mgr_sz can approve a claim routed to region_east
+    const usersRes = await req('GET', '/api/users', { token: adminToken });
+    const mgrSzUser = usersRes.data.users.find((u: any) => u.username === 'mgr_sz');
+    const mgrHzUser = usersRes.data.users.find((u: any) => u.username === 'mgr_hz');
+    assert.ok(mgrSzUser && mgrHzUser);
+
+    const delRes = await req('POST', '/api/users/delegations', {
+      token: regionToken,
+      body: {
+        delegate_user_id: mgrSzUser.id,
+        start_date: todayStr(),
+        end_date: todayStr(),
+        biz_types: 'REIMBURSEMENT',
+      },
+    });
+    assert.equal(delRes.status, 201);
+
+    // Disable mgr_hz temporarily -> staff_hz claim Step 1 escalates directly to REGIONAL_MANAGER (region_east)
+    assert.equal((await req('PATCH', `/api/users/${mgrHzUser.id}/status`, { token: adminToken, body: { is_active: false } })).status, 200);
+    try {
+      const claimRes = await req('POST', '/api/reimbursements', {
+        token: staffHzToken,
+        body: {
+          title: '店长缺位自动上推+委托审批测试',
+          hotel_id: 3,
+          expense_month: ym,
+          payment_type: 'PERSONAL',
+          payee_name: '方思琪',
+          payee_bank: '招商银行杭州分行',
+          payee_account: '6225880100003002',
+          submit: true,
+          items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 150 }],
+        },
+      });
+      assert.equal(claimRes.status, 201);
+      // Delegated user mgr_sz can approve the escalated REGIONAL_MANAGER step!
+      const mgrSzToken = await loginAs('mgr_sz');
+      const delApprove = await req('POST', `/api/reimbursements/${claimRes.data.claim.id}/action`, {
+        token: mgrSzToken,
+        body: { action: 'APPROVE', comment: '代区域经理审批' },
+      });
+      assert.equal(delApprove.status, 200);
+
+      // Delete delegation -> another user cannot approve
+      assert.equal((await req('DELETE', `/api/users/delegations/${delRes.data.delegation.id}`, { token: regionToken })).status, 200);
+    } finally {
+      await req('PATCH', `/api/users/${mgrHzUser.id}/status`, { token: adminToken, body: { is_active: true } });
+    }
   });
 });

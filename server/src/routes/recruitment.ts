@@ -91,15 +91,18 @@ router.get(
     for (const r of rows) {
       const pendingStep =
         r.status === 'PENDING_APPROVAL'
-          ? await db.queryOne<{ step_name: string; approver_role: UserRole }>(
-              `SELECT step_name, approver_role FROM approval_steps
+          ? await db.queryOne<{ step_name: string; approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT step_name, approver_role, approver_user_id FROM approval_steps
                WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND status = 'PENDING'
                ORDER BY step_order ASC LIMIT 1`,
               [r.id]
             )
           : null;
       const canApprove = pendingStep
-        ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id)
+        ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id, {
+            approverUserId: pendingStep.approver_user_id,
+            bizType: 'HEADCOUNT',
+          })
         : false;
       if (tab === 'pending' && !canApprove) continue;
 
@@ -161,7 +164,8 @@ router.post(
     const resolved = await resolveApprovalRoute(
       db,
       body.hotel_id,
-      buildHeadcountRoute({ headcount: body.headcount, urgency: body.urgency })
+      buildHeadcountRoute({ headcount: body.headcount, urgency: body.urgency }),
+      req.user!.id
     );
     const route = resolved.steps;
 
@@ -233,14 +237,19 @@ router.post(
       if (!hc) throw new AppError(404, '补编申请不存在');
       if (hc.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
 
-      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole }>(
-        `SELECT id, step_order, approver_role FROM approval_steps
+      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole; approver_user_id: number | null }>(
+        `SELECT id, step_order, approver_role, approver_user_id FROM approval_steps
          WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND status = 'PENDING'
          ORDER BY step_order ASC LIMIT 1`,
         [id]
       );
       if (!step) throw new AppError(400, '未找到待审批节点');
-      if (!(await canUserActOnStep(tx, req.user!, step.approver_role, hc.hotel_id, hc.applicant_id))) {
+      if (
+        !(await canUserActOnStep(tx, req.user!, step.approver_role, hc.hotel_id, hc.applicant_id, {
+          approverUserId: step.approver_user_id,
+          bizType: 'HEADCOUNT',
+        }))
+      ) {
         throw new AppError(403, '您无权审批此补编节点');
       }
 

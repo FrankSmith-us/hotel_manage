@@ -106,8 +106,8 @@ router.get(
 
       const pendingStep =
         row.status === 'PENDING_APPROVAL'
-          ? await db.queryOne<{ step_name: string; approver_role: UserRole }>(
-              `SELECT step_name, approver_role FROM approval_steps
+          ? await db.queryOne<{ step_name: string; approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT step_name, approver_role, approver_user_id FROM approval_steps
                WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND status = 'PENDING'
                ORDER BY step_order ASC LIMIT 1`,
               [row.id]
@@ -115,7 +115,10 @@ router.get(
           : null;
 
       const canApprove = pendingStep
-        ? await canUserActOnStep(db, user, pendingStep.approver_role, row.hotel_id, row.applicant_id)
+        ? await canUserActOnStep(db, user, pendingStep.approver_role, row.hotel_id, row.applicant_id, {
+            approverUserId: pendingStep.approver_user_id,
+            bizType: 'CASH_ADVANCE',
+          })
         : false;
 
       if (tab === 'pending' && !canApprove) continue;
@@ -176,7 +179,8 @@ router.post(
     const resolved = await resolveApprovalRoute(
       db,
       hotelId,
-      buildCashAdvanceRoute({ applicantRole: user.role, amount })
+      buildCashAdvanceRoute({ applicantRole: user.role, amount }),
+      user.id
     );
     const route = resolved.steps;
 
@@ -248,14 +252,19 @@ router.post(
       if (!adv) throw new AppError(404, '借款/备用金单不存在');
       if (adv.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
 
-      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole }>(
-        `SELECT id, step_order, approver_role FROM approval_steps
+      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole; approver_user_id: number | null }>(
+        `SELECT id, step_order, approver_role, approver_user_id FROM approval_steps
          WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND status = 'PENDING'
          ORDER BY step_order ASC LIMIT 1`,
         [id]
       );
       if (!step) throw new AppError(400, '未找到待审批节点');
-      if (!(await canUserActOnStep(tx, req.user!, step.approver_role, adv.hotel_id, adv.applicant_id))) {
+      if (
+        !(await canUserActOnStep(tx, req.user!, step.approver_role, adv.hotel_id, adv.applicant_id, {
+          approverUserId: step.approver_user_id,
+          bizType: 'CASH_ADVANCE',
+        }))
+      ) {
         throw new AppError(403, '您无权审批当前借款节点');
       }
 

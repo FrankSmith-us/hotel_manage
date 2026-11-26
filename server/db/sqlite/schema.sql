@@ -302,10 +302,23 @@ CREATE TABLE IF NOT EXISTS approval_steps (
   acted_by INTEGER,
   acted_at TEXT,
   comment TEXT,
+  delegated_from_user_id INTEGER,
+  skip_reason TEXT,
   created_at TEXT NOT NULL,
   UNIQUE(biz_type, biz_id, step_order)
 );
 CREATE INDEX IF NOT EXISTS idx_steps_biz ON approval_steps(biz_type, biz_id, step_order);
+
+CREATE TABLE IF NOT EXISTS approval_delegations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  delegator_user_id INTEGER NOT NULL REFERENCES users(id),
+  delegate_user_id INTEGER NOT NULL REFERENCES users(id),
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  biz_types TEXT NOT NULL DEFAULT 'ALL',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_delegation_delegate ON approval_delegations(delegate_user_id, start_date, end_date);
 
 CREATE TABLE IF NOT EXISTS approval_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
