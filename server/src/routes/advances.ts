@@ -10,6 +10,7 @@ import {
   isOwnHotel,
   requireRoles,
 } from '../middleware/auth';
+import { BUSINESS_RULES, assertSegregation } from '../config/businessRules';
 import { logApprovalAction } from '../services/auditService';
 import {
   buildCashAdvanceRoute,
@@ -22,7 +23,7 @@ import {
   resolveApprovalRoute,
 } from '../services/workflowEngine';
 import { UserRole } from '../types';
-import { generateCode, isoDateSchema, nowIso, roundMoney } from '../utils/numbers';
+import { generateCode, isoDateSchema, nowIso, roundMoney, todayStr } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -80,8 +81,12 @@ router.get(
       advance_type: string;
       amount: number;
       offset_amount: number;
+      repaid_amount: number;
       purpose: string;
       expected_settle_date: string;
+      payee_name: string | null;
+      payee_bank: string | null;
+      payee_account: string | null;
       status: string;
       current_step: number;
       payment_ref: string | null;
@@ -99,6 +104,7 @@ router.get(
       params
     );
 
+    const today = todayStr();
     const enriched = [];
     for (const row of rows) {
       const { availableBalance } = await getAvailableAdvanceBalance(db, row.id);
@@ -129,9 +135,16 @@ router.get(
           ? await getUserLastHandledAction(db, 'CASH_ADVANCE', row.id, user.id)
           : { my_last_action: null, my_acted_at: null };
 
+      const remainingDebt = Math.max(
+        0,
+        roundMoney(Number(row.amount) - Number(row.offset_amount || 0) - Number(row.repaid_amount || 0))
+      );
+
       enriched.push({
         ...row,
+        repaid_amount: roundMoney(Number(row.repaid_amount || 0)),
         available_balance: availableBalance,
+        is_overdue: row.status === 'DISBURSED' && row.expected_settle_date < today,
         current_step_name: pendingStep?.step_name ?? null,
         steps,
         status_detail: buildStatusDetail({
@@ -145,6 +158,14 @@ router.get(
         my_last_action: handledInfo.my_last_action,
         my_acted_at: handledInfo.my_acted_at,
         canApprove,
+        canWithdraw:
+          Number(row.applicant_id) === Number(user.id) &&
+          (row.status === 'PENDING_APPROVAL' || row.status === 'RETURNED'),
+        canEdit: Number(row.applicant_id) === Number(user.id) && row.status === 'RETURNED',
+        canRepay:
+          ['HQ_ADMIN', 'FINANCE'].includes(user.role) &&
+          row.status === 'DISBURSED' &&
+          remainingDebt > 0,
       });
     }
 
@@ -158,6 +179,9 @@ const createAdvanceSchema = z.object({
   amount: z.number().positive('借款金额必须大于0').max(10_000_000, '单笔借款金额不能超过 1000 万元'),
   purpose: z.string().min(2, '请填写借款用途'),
   expected_settle_date: isoDateSchema,
+  payee_name: z.string().trim().optional(),
+  payee_bank: z.string().trim().optional(),
+  payee_account: z.string().trim().optional(),
   urgency: z.enum(['NORMAL', 'URGENT']).default('NORMAL'),
 });
 
@@ -172,10 +196,44 @@ router.post(
       throw new AppError(403, '无权为其他门店申请备用金');
     }
 
+    const today = todayStr();
+    if (body.expected_settle_date < today) {
+      throw new AppError(400, '预计冲销日期不能早于今天');
+    }
+
+    const payeeName = (body.payee_name || user.display_name).trim();
+    if (payeeName !== user.display_name) {
+      throw new AppError(400, '借款收款人必须为申请人本人');
+    }
+
     const db = getDb();
+    const overdueRow = await db.queryOne<{ id: number }>(
+      `SELECT id FROM cash_advances
+       WHERE applicant_id = ? AND status = 'DISBURSED' AND expected_settle_date < ?
+       LIMIT 1`,
+      [user.id, today]
+    );
+    if (overdueRow) {
+      throw new AppError(400, '您有已逾期未结清的借款单，请先冲销或还款后再申请新借款');
+    }
+
+    const unsettledRow = await db.queryOne<{ total: number }>(
+      `SELECT COALESCE(SUM(amount - offset_amount - repaid_amount), 0) AS total
+       FROM cash_advances
+       WHERE applicant_id = ? AND status IN ('PENDING_APPROVAL', 'RETURNED', 'APPROVED', 'DISBURSED')`,
+      [user.id]
+    );
+    const amount = roundMoney(body.amount);
+    const currentUnsettled = roundMoney(Number(unsettledRow?.total || 0));
+    if (roundMoney(currentUnsettled + amount) > BUSINESS_RULES.advance.maxUnsettledPerPerson) {
+      throw new AppError(
+        400,
+        `个人未结清借款总额不能超过 ¥${BUSINESS_RULES.advance.maxUnsettledPerPerson.toLocaleString()}（当前未结清 ¥${currentUnsettled.toFixed(2)}）`
+      );
+    }
+
     const ts = nowIso();
     const advanceNo = generateCode('ADV');
-    const amount = roundMoney(body.amount);
     const resolved = await resolveApprovalRoute(
       db,
       hotelId,
@@ -187,9 +245,10 @@ router.post(
     const advId = await db.transaction(async (tx) => {
       const ins = await tx.execute(
         `INSERT INTO cash_advances (
-          advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount,
-          purpose, expected_settle_date, urgency, status, current_step, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
+          advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount, repaid_amount,
+          purpose, expected_settle_date, payee_name, payee_bank, payee_account,
+          urgency, status, current_step, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
         [
           advanceNo,
           user.id,
@@ -199,6 +258,9 @@ router.post(
           amount,
           body.purpose,
           body.expected_settle_date,
+          payeeName,
+          body.payee_bank || null,
+          body.payee_account || null,
           body.urgency,
           ts,
           ts,
@@ -229,13 +291,153 @@ router.post(
   })
 );
 
+router.put(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = createAdvanceSchema.parse(req.body);
+    const user = req.user!;
+    const db = getDb();
+
+    const today = todayStr();
+    if (body.expected_settle_date < today) {
+      throw new AppError(400, '预计冲销日期不能早于今天');
+    }
+
+    const payeeName = (body.payee_name || user.display_name).trim();
+    if (payeeName !== user.display_name) {
+      throw new AppError(400, '借款收款人必须为申请人本人');
+    }
+
+    const ts = nowIso();
+    const amount = roundMoney(body.amount);
+
+    await db.transaction(async (tx) => {
+      const adv = await tx.queryOne<{
+        id: number;
+        applicant_id: number;
+        hotel_id: number;
+        status: string;
+      }>(`SELECT id, applicant_id, hotel_id, status FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!adv) throw new AppError(404, '借款/备用金单不存在');
+      if (Number(adv.applicant_id) !== Number(user.id)) {
+        throw new AppError(403, '仅申请人本人可修改并重提借款单');
+      }
+      if (adv.status !== 'RETURNED') {
+        throw new AppError(400, '仅已退回状态的借款单可修改重提');
+      }
+
+      const unsettledRow = await tx.queryOne<{ total: number }>(
+        `SELECT COALESCE(SUM(amount - offset_amount - repaid_amount), 0) AS total
+         FROM cash_advances
+         WHERE applicant_id = ? AND id != ? AND status IN ('PENDING_APPROVAL', 'RETURNED', 'APPROVED', 'DISBURSED')`,
+        [user.id, id]
+      );
+      const currentUnsettled = roundMoney(Number(unsettledRow?.total || 0));
+      if (roundMoney(currentUnsettled + amount) > BUSINESS_RULES.advance.maxUnsettledPerPerson) {
+        throw new AppError(
+          400,
+          `个人未结清借款总额不能超过 ¥${BUSINESS_RULES.advance.maxUnsettledPerPerson.toLocaleString()}`
+        );
+      }
+
+      const hotelId = body.hotel_id ?? adv.hotel_id;
+      const resolved = await resolveApprovalRoute(
+        tx,
+        hotelId,
+        buildCashAdvanceRoute({ applicantRole: user.role, amount }),
+        user.id
+      );
+
+      const upd = await tx.execute(
+        `UPDATE cash_advances
+         SET hotel_id = ?, advance_type = ?, amount = ?, purpose = ?, expected_settle_date = ?,
+             payee_name = ?, payee_bank = ?, payee_account = ?, urgency = ?,
+             status = 'PENDING_APPROVAL', current_step = 1, updated_at = ?
+         WHERE id = ? AND status = 'RETURNED'`,
+        [
+          hotelId,
+          body.advance_type,
+          amount,
+          body.purpose,
+          body.expected_settle_date,
+          payeeName,
+          body.payee_bank || null,
+          body.payee_account || null,
+          body.urgency,
+          ts,
+          id,
+        ]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '借款单状态已变更，请刷新后重试');
+
+      await replaceApprovalSteps(tx, 'CASH_ADVANCE', id, resolved.steps);
+      await logApprovalAction(tx, {
+        bizType: 'CASH_ADVANCE',
+        bizId: id,
+        action: 'RESUBMIT',
+        actor: user,
+        comment: body.purpose,
+      });
+    });
+
+    const advance = await db.queryOne('SELECT * FROM cash_advances WHERE id = ?', [id]);
+    res.json({ advance });
+  })
+);
+
+router.post(
+  '/:id/withdraw',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const user = req.user!;
+    const db = getDb();
+    const ts = nowIso();
+
+    await db.transaction(async (tx) => {
+      const adv = await tx.queryOne<{ id: number; applicant_id: number; status: string }>(
+        `SELECT id, applicant_id, status FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!adv) throw new AppError(404, '借款/备用金单不存在');
+      if (Number(adv.applicant_id) !== Number(user.id)) {
+        throw new AppError(403, '仅申请人本人可撤回借款单');
+      }
+      if (adv.status !== 'PENDING_APPROVAL' && adv.status !== 'RETURNED') {
+        throw new AppError(400, '仅审批中或已退回的借款单可撤回');
+      }
+
+      const upd = await tx.execute(
+        `UPDATE cash_advances SET status = 'WITHDRAWN', updated_at = ? WHERE id = ? AND status IN ('PENDING_APPROVAL', 'RETURNED')`,
+        [ts, id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '借款单状态已变更，请刷新后重试');
+
+      await tx.execute(
+        `UPDATE approval_steps SET status = 'SKIPPED', skip_reason = '申请人主动撤回'
+         WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND status IN ('PENDING', 'WAITING')`,
+        [id]
+      );
+      await logApprovalAction(tx, {
+        bizType: 'CASH_ADVANCE',
+        bizId: id,
+        action: 'WITHDRAW',
+        actor: user,
+        comment: '申请人主动撤回',
+      });
+    });
+
+    res.json({ ok: true });
+  })
+);
+
 router.post(
   '/:id/action',
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const { action, comment } = z
       .object({
-        action: z.enum(['APPROVE', 'REJECT']),
+        action: z.enum(['APPROVE', 'REJECT', 'RETURN']),
         comment: z.string().optional().default(''),
       })
       .parse(req.body);
@@ -268,7 +470,18 @@ router.post(
         throw new AppError(403, '您无权审批当前借款节点');
       }
 
-      if (action === 'REJECT') {
+      if (action === 'RETURN') {
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'RETURNED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
+          [req.user!.id, ts, comment || '退回修改', step.id]
+        );
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
+        const advUpd = await tx.execute(
+          `UPDATE cash_advances SET status = 'RETURNED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+          [ts, id]
+        );
+        if (advUpd.affectedRows !== 1) throw new AppError(409, '借款单状态已变更，请刷新后重试');
+      } else if (action === 'REJECT') {
         const stepUpd = await tx.execute(
           `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [req.user!.id, ts, comment || '驳回', step.id]
@@ -332,11 +545,12 @@ router.post(
     const db = getDb();
     const ts = nowIso();
     await db.transaction(async (tx) => {
-      const adv = await tx.queryOne<{ id: number; status: string }>(
-        `SELECT id, status FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`,
+      const adv = await tx.queryOne<{ id: number; applicant_id: number; status: string }>(
+        `SELECT id, applicant_id, status FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`,
         [id]
       );
       if (!adv) throw new AppError(404, '借款单不存在');
+      assertSegregation(req.user!.id, adv.applicant_id, '禁止为本人的借款单执行放款');
       if (adv.status !== 'APPROVED') throw new AppError(400, '仅已审批通过的借款单可放款');
 
       const upd = await tx.execute(
@@ -354,6 +568,115 @@ router.post(
     });
 
     res.json({ ok: true });
+  })
+);
+
+router.post(
+  '/:id/repay',
+  requireRoles('HQ_ADMIN', 'FINANCE'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = z
+      .object({
+        amount: z.number().positive('还款金额必须大于0'),
+        repayment_method: z.enum(['BANK_TRANSFER', 'CASH', 'SALARY_DEDUCTION']).default('BANK_TRANSFER'),
+        payment_ref: z.string().trim().optional().default(''),
+        remark: z.string().trim().optional().default(''),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const ts = nowIso();
+    const repayAmt = roundMoney(body.amount);
+
+    const result = await db.transaction(async (tx) => {
+      const adv = await tx.queryOne<{
+        id: number;
+        applicant_id: number;
+        amount: number;
+        offset_amount: number;
+        repaid_amount: number;
+        status: string;
+      }>(
+        `SELECT id, applicant_id, amount, offset_amount, repaid_amount, status
+         FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!adv) throw new AppError(404, '借款单不存在');
+      if (adv.status !== 'DISBURSED') {
+        throw new AppError(400, '仅已放款(DISBURSED)的借款单可登记还款');
+      }
+      const remaining = roundMoney(Number(adv.amount) - Number(adv.offset_amount || 0) - Number(adv.repaid_amount || 0));
+      if (repayAmt > remaining) {
+        throw new AppError(400, `还款金额不能超过剩余未还金额 ¥${remaining.toFixed(2)}`);
+      }
+
+      const newRepaid = roundMoney(Number(adv.repaid_amount || 0) + repayAmt);
+      const settled = roundMoney(Number(adv.offset_amount || 0) + newRepaid) >= roundMoney(Number(adv.amount));
+      const nextStatus = settled ? 'SETTLED' : 'DISBURSED';
+
+      const upd = await tx.execute(
+        `UPDATE cash_advances SET repaid_amount = ?, status = ?, updated_at = ? WHERE id = ? AND status = 'DISBURSED'`,
+        [newRepaid, nextStatus, ts, id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '借款单状态已变更，请刷新后重试');
+
+      const repaymentNo = generateCode('REP');
+      await tx.execute(
+        `INSERT INTO cash_advance_repayments (
+          advance_id, repayment_no, amount, repayment_method, payment_ref, remark,
+          recorded_by, recorded_by_name, repaid_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          repaymentNo,
+          repayAmt,
+          body.repayment_method,
+          body.payment_ref || null,
+          body.remark || null,
+          req.user!.id,
+          req.user!.display_name,
+          ts,
+          ts,
+        ]
+      );
+
+      await logApprovalAction(tx, {
+        bizType: 'CASH_ADVANCE',
+        bizId: id,
+        action: 'REPAY',
+        actor: req.user!,
+        comment: `登记现金/转账还款 ¥${repayAmt.toFixed(2)}（${body.repayment_method}）`,
+      });
+
+      return { repaymentNo, status: nextStatus, repaid_amount: newRepaid };
+    });
+
+    res.json(result);
+  })
+);
+
+router.get(
+  '/:id/repayments',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const db = getDb();
+    const adv = await db.queryOne<{ id: number; applicant_id: number; hotel_id: number }>(
+      'SELECT id, applicant_id, hotel_id FROM cash_advances WHERE id = ?',
+      [id]
+    );
+    if (!adv) throw new AppError(404, '借款单不存在');
+    if (
+      Number(adv.applicant_id) !== Number(req.user!.id) &&
+      !(await canAccessHotel(req.user!, adv.hotel_id))
+    ) {
+      throw new AppError(403, '无权查看该借款单还款记录');
+    }
+    const repayments = await db.query(
+      'SELECT * FROM cash_advance_repayments WHERE advance_id = ? ORDER BY id DESC',
+      [id]
+    );
+    res.json({ repayments });
   })
 );
 

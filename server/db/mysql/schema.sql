@@ -245,8 +245,12 @@ CREATE TABLE IF NOT EXISTS cash_advances (
   advance_type VARCHAR(24) NOT NULL DEFAULT 'PETTY_CASH',
   amount DECIMAL(12,2) NOT NULL,
   offset_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  repaid_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   purpose VARCHAR(255) NOT NULL,
   expected_settle_date VARCHAR(16) NOT NULL,
+  payee_name VARCHAR(80) NULL,
+  payee_bank VARCHAR(120) NULL,
+  payee_account VARCHAR(64) NULL,
   urgency VARCHAR(16) NOT NULL DEFAULT 'NORMAL',
   status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
   current_step INT NOT NULL DEFAULT 1,
@@ -570,6 +574,23 @@ CREATE TABLE IF NOT EXISTS budget_change_logs (
   INDEX idx_budget_logs_hotel_ym (hotel_id, `year_month`),
   CONSTRAINT fk_budget_logs_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
   CONSTRAINT fk_budget_logs_user FOREIGN KEY (changed_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS cash_advance_repayments (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  advance_id BIGINT NOT NULL,
+  repayment_no VARCHAR(32) NOT NULL UNIQUE,
+  amount DECIMAL(12, 2) NOT NULL,
+  repayment_method VARCHAR(32) NOT NULL DEFAULT 'BANK_TRANSFER',
+  payment_ref VARCHAR(64) NULL,
+  remark VARCHAR(255) NULL,
+  recorded_by BIGINT NOT NULL,
+  recorded_by_name VARCHAR(80) NOT NULL,
+  repaid_at VARCHAR(32) NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  INDEX idx_adv_repayments_adv (advance_id),
+  CONSTRAINT fk_adv_rep_adv FOREIGN KEY (advance_id) REFERENCES cash_advances(id),
+  CONSTRAINT fk_adv_rep_user FOREIGN KEY (recorded_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

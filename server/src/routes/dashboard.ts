@@ -828,6 +828,28 @@ router.get(
       [curYm, ...hotelParams]
     );
 
+    const overdueAdvances = await db.query<{
+      id: number;
+      advance_no: string;
+      purpose: string;
+      amount: number;
+      offset_amount: number;
+      repaid_amount: number;
+      expected_settle_date: string;
+      hotel_name: string;
+      applicant_name: string;
+    }>(
+      `SELECT a.id, a.advance_no, a.purpose, a.amount, a.offset_amount, a.repaid_amount,
+              a.expected_settle_date, h.name AS hotel_name, u.display_name AS applicant_name
+       FROM cash_advances a
+       JOIN hotels h ON h.id = a.hotel_id
+       JOIN users u ON u.id = a.applicant_id
+       WHERE a.status = 'DISBURSED' AND a.expected_settle_date < ?
+         AND ${hotelWhere.replace(/hotel_id/g, 'a.hotel_id')}
+       ORDER BY a.expected_settle_date ASC`,
+      [today, ...hotelParams]
+    );
+
     res.json({
       yearMonth: curYm,
       kpis: {
@@ -841,6 +863,7 @@ router.get(
         budgetExecutionPct,
         activeHeadcount: Number(empRow?.cnt || 0),
         complianceAlertsCount: alertEmployees.length,
+        overdueAdvanceCount: overdueAdvances.length,
         myApplicationsCount: myApplications.length,
         myHandledCount: myHandledApprovals.length,
       },
@@ -850,6 +873,7 @@ router.get(
       myApplications,
       myHandledApprovals,
       complianceAlerts: alertEmployees,
+      overdueAdvances,
       expenseTrend: trend,
       hotelBreakdown: hotelBreakdown.map((h) => ({
         hotel_name: h.hotel_name,

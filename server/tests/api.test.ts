@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 30 tables', () => {
+  it('MySQL and SQLite schemas define identical 31 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 30);
+    assert.equal(mysqlTables.length, 31);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1766,5 +1766,121 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       body: { reimbursement_ids: [finClaim.data.claim.id], payment_channel: 'BANK_TRANSFER', payment_ref: 'TXN-SELF-001' },
     });
     assert.equal(selfPayout.status, 403);
+  });
+
+  it('T1-06: cash advance payee, withdraw, return/resubmit, repayment, cap, and overdue guard', async () => {
+    const staffToken = await loginAs('staff_sh');
+    const mgrToken = await loginAs('mgr_sh');
+    const finToken = await loginAs('finance');
+
+    const tomorrow = (() => {
+      const d = new Date(Date.now() + 8 * 3600 * 1000 + 86400 * 1000);
+      return d.toISOString().slice(0, 10);
+    })();
+    const yesterday = (() => {
+      const d = new Date(Date.now() + 8 * 3600 * 1000 - 86400 * 1000);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    // 1. Past expected_settle_date rejected; non-applicant payee rejected; exceeding 20k cap rejected
+    const pastDateRes = await req('POST', '/api/advances', {
+      token: staffToken,
+      body: { hotel_id: 2, advance_type: 'TRAVEL', amount: 1000, purpose: '差旅借款', expected_settle_date: yesterday },
+    });
+    assert.equal(pastDateRes.status, 400);
+
+    const wrongPayeeRes = await req('POST', '/api/advances', {
+      token: staffToken,
+      body: {
+        hotel_id: 2,
+        advance_type: 'TRAVEL',
+        amount: 1000,
+        purpose: '差旅借款',
+        expected_settle_date: tomorrow,
+        payee_name: '他人账户',
+      },
+    });
+    assert.equal(wrongPayeeRes.status, 400);
+
+    const overCapRes = await req('POST', '/api/advances', {
+      token: staffToken,
+      body: { hotel_id: 2, advance_type: 'PETTY_CASH', amount: 25000, purpose: '超限借款', expected_settle_date: tomorrow },
+    });
+    assert.equal(overCapRes.status, 400);
+
+    // 2. Withdraw flow
+    const advW = await req('POST', '/api/advances', {
+      token: staffToken,
+      body: { hotel_id: 2, advance_type: 'TRAVEL', amount: 800, purpose: '可撤回借款', expected_settle_date: tomorrow },
+    });
+    assert.equal(advW.status, 201);
+    const wId = advW.data.advance.id;
+    assert.equal((await req('POST', `/api/advances/${wId}/withdraw`, { token: mgrToken })).status, 403);
+    assert.equal((await req('POST', `/api/advances/${wId}/withdraw`, { token: staffToken })).status, 200);
+    assert.equal((await req('POST', `/api/advances/${wId}/withdraw`, { token: staffToken })).status, 400);
+
+    // 3. Return -> edit/resubmit -> approve -> disburse -> partial repay -> full repay -> SETTLED
+    const advMain = await req('POST', '/api/advances', {
+      token: staffToken,
+      body: {
+        hotel_id: 2,
+        advance_type: 'PETTY_CASH',
+        amount: 1200,
+        purpose: '客耗品备用金',
+        expected_settle_date: tomorrow,
+        payee_bank: '招商银行上海静安支行',
+        payee_account: '6225880100002002',
+      },
+    });
+    assert.equal(advMain.status, 201);
+    const advId = advMain.data.advance.id;
+
+    assert.equal(
+      (await req('POST', `/api/advances/${advId}/action`, { token: mgrToken, body: { action: 'RETURN', comment: '金额调整' } })).status,
+      200
+    );
+    const editRes = await req('PUT', `/api/advances/${advId}`, {
+      token: staffToken,
+      body: {
+        hotel_id: 2,
+        advance_type: 'PETTY_CASH',
+        amount: 1000,
+        purpose: '客耗品备用金（核减）',
+        expected_settle_date: tomorrow,
+        payee_bank: '招商银行上海静安支行',
+        payee_account: '6225880100002002',
+      },
+    });
+    assert.equal(editRes.status, 200);
+    assert.equal((await req('POST', `/api/advances/${advId}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/advances/${advId}/action`, { token: finToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal(
+      (await req('POST', `/api/advances/${advId}/disburse`, { token: finToken, body: { payment_ref: 'ADV-DISB-T106' } })).status,
+      200
+    );
+
+    // Non-finance cannot record repayment
+    assert.equal(
+      (await req('POST', `/api/advances/${advId}/repay`, { token: staffToken, body: { amount: 400, repayment_method: 'CASH' } })).status,
+      403
+    );
+
+    const repay1 = await req('POST', `/api/advances/${advId}/repay`, {
+      token: finToken,
+      body: { amount: 400, repayment_method: 'BANK_TRANSFER', payment_ref: 'REP-001' },
+    });
+    assert.equal(repay1.status, 200);
+    assert.equal(repay1.data.status, 'DISBURSED');
+
+    const repay2 = await req('POST', `/api/advances/${advId}/repay`, {
+      token: finToken,
+      body: { amount: 600, repayment_method: 'CASH', remark: '现金结清' },
+    });
+    assert.equal(repay2.status, 200);
+    assert.equal(repay2.data.status, 'SETTLED');
+
+    const repList = await req('GET', `/api/advances/${advId}/repayments`, { token: staffToken });
+    assert.equal(repList.status, 200);
+    assert.equal(repList.data.repayments.length, 2);
   });
 });

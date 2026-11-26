@@ -1451,8 +1451,9 @@ router.post(
             status: string;
             amount: number;
             offset_amount: number;
+            repaid_amount: number;
           }>(
-            `SELECT id, applicant_id, hotel_id, status, amount, offset_amount
+            `SELECT id, applicant_id, hotel_id, status, amount, offset_amount, repaid_amount
              FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`,
             [claim.cash_advance_id]
           );
@@ -1463,10 +1464,11 @@ router.post(
             throw new AppError(400, `关联借款单 ${claim.cash_advance_id} 归属与报销单不一致`);
           }
           const newOffset = roundMoney(Number(adv.offset_amount) + Number(claim.offset_amount));
-          if (newOffset > roundMoney(Number(adv.amount))) {
+          const settledTotal = roundMoney(newOffset + Number(adv.repaid_amount || 0));
+          if (settledTotal > roundMoney(Number(adv.amount))) {
             throw new AppError(400, `借款单 ${claim.cash_advance_id} 冲销后将超出借款总额，打款已中止`);
           }
-          const settled = newOffset >= roundMoney(Number(adv.amount));
+          const settled = settledTotal >= roundMoney(Number(adv.amount));
           const advUpd = await tx.execute(
             `UPDATE cash_advances
              SET offset_amount = ?, status = ?, updated_at = ?

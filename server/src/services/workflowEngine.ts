@@ -593,9 +593,10 @@ export async function getAvailableAdvanceBalance(
     hotel_id: number;
     amount: number;
     offset_amount: number;
+    repaid_amount: number;
     status: string;
   }>(
-    `SELECT id, advance_no, applicant_id, hotel_id, amount, offset_amount, status
+    `SELECT id, advance_no, applicant_id, hotel_id, amount, offset_amount, repaid_amount, status
      FROM cash_advances WHERE id = ?${db.forUpdateSuffix()}`,
     [advanceId]
   );
@@ -617,7 +618,10 @@ export async function getAvailableAdvanceBalance(
   );
 
   const available = roundMoney(
-    Number(advance.amount) - Number(advance.offset_amount) - Number(reservedRow?.reserved || 0)
+    Number(advance.amount) -
+      Number(advance.offset_amount) -
+      Number(advance.repaid_amount || 0) -
+      Number(reservedRow?.reserved || 0)
   );
   return {
     advance,

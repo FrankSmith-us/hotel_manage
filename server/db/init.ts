@@ -85,6 +85,17 @@ export async function initSchema(db: DbAdapter): Promise<void> {
     if (!sCols.has('skip_reason')) {
       await db.execute('ALTER TABLE approval_steps ADD COLUMN skip_reason TEXT');
     }
+    const advCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(cash_advances)')).map((c) => c.name));
+    for (const [colName, colDef] of [
+      ['repaid_amount', 'REAL NOT NULL DEFAULT 0.00'],
+      ['payee_name', 'TEXT'],
+      ['payee_bank', 'TEXT'],
+      ['payee_account', 'TEXT'],
+    ] as const) {
+      if (!advCols.has(colName)) {
+        await db.execute(`ALTER TABLE cash_advances ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
   } else {
     const col = await db.queryOne<{ cnt: number }>(
       `SELECT COUNT(*) AS cnt
@@ -147,6 +158,10 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['users', 'password_changed_at', 'VARCHAR(32) NULL'],
       ['approval_steps', 'delegated_from_user_id', 'BIGINT NULL'],
       ['approval_steps', 'skip_reason', 'VARCHAR(255) NULL'],
+      ['cash_advances', 'repaid_amount', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['cash_advances', 'payee_name', 'VARCHAR(80) NULL'],
+      ['cash_advances', 'payee_bank', 'VARCHAR(120) NULL'],
+      ['cash_advances', 'payee_account', 'VARCHAR(64) NULL'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt

@@ -57,12 +57,14 @@ export const ACTION_LABEL_MAP: Record<string, string> = {
   REJECT: '我已驳回',
   PAY: '我已打款',
   DISBURSE: '我已放款',
+  REPAY: '已登记还款',
 };
 
 export const STATUS_META: Record<string, { label: string; cls: string }> = {
   DRAFT: { label: '草稿', cls: 'bg-stone-100 text-stone-600 border-stone-200' },
   PENDING_APPROVAL: { label: '审批中', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
   RETURNED: { label: '已退回修改', cls: 'bg-orange-50 text-orange-700 border-orange-200' },
+  WITHDRAWN: { label: '已撤回', cls: 'bg-stone-100 text-stone-500 border-stone-200' },
   APPROVED: { label: '已通过(待执行)', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   COMPLETED: { label: '已完成', cls: 'bg-teal-50 text-teal-700 border-teal-200' },
   REJECTED: { label: '已驳回', cls: 'bg-rose-50 text-rose-700 border-rose-200' },

@@ -222,8 +222,12 @@ CREATE TABLE IF NOT EXISTS cash_advances (
   advance_type TEXT NOT NULL DEFAULT 'PETTY_CASH',
   amount REAL NOT NULL,
   offset_amount REAL NOT NULL DEFAULT 0.00,
+  repaid_amount REAL NOT NULL DEFAULT 0.00,
   purpose TEXT NOT NULL,
   expected_settle_date TEXT NOT NULL,
+  payee_name TEXT,
+  payee_bank TEXT,
+  payee_account TEXT,
   urgency TEXT NOT NULL DEFAULT 'NORMAL',
   status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
   current_step INTEGER NOT NULL DEFAULT 1,
@@ -528,3 +532,18 @@ CREATE TABLE IF NOT EXISTS budget_change_logs (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_budget_logs_hotel_ym ON budget_change_logs(hotel_id, `year_month`);
+
+CREATE TABLE IF NOT EXISTS cash_advance_repayments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  advance_id INTEGER NOT NULL REFERENCES cash_advances(id),
+  repayment_no TEXT NOT NULL UNIQUE,
+  amount REAL NOT NULL,
+  repayment_method TEXT NOT NULL DEFAULT 'BANK_TRANSFER',
+  payment_ref TEXT,
+  remark TEXT,
+  recorded_by INTEGER NOT NULL REFERENCES users(id),
+  recorded_by_name TEXT NOT NULL,
+  repaid_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_adv_repayments_adv ON cash_advance_repayments(advance_id);

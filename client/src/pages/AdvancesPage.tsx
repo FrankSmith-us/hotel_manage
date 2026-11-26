@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Banknote, Check, Plus, XCircle } from 'lucide-react';
+import { Banknote, Check, Pencil, Plus, RotateCcw, Undo2, XCircle } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
@@ -18,14 +18,20 @@ interface StepSummary {
 interface AdvanceRow {
   id: number;
   advance_no: string;
+  hotel_id?: number;
   hotel_name: string;
   applicant_name: string;
   advance_type: string;
   amount: number;
   offset_amount: number;
+  repaid_amount?: number;
   available_balance: number;
   purpose: string;
   expected_settle_date: string;
+  payee_name?: string | null;
+  payee_bank?: string | null;
+  payee_account?: string | null;
+  is_overdue?: boolean;
   urgency?: 'NORMAL' | 'URGENT';
   status: string;
   current_step_name: string | null;
@@ -34,6 +40,9 @@ interface AdvanceRow {
   steps?: StepSummary[];
   payment_ref: string | null;
   canApprove: boolean;
+  canWithdraw?: boolean;
+  canEdit?: boolean;
+  canRepay?: boolean;
 }
 
 export function AdvancesPage() {
@@ -48,16 +57,26 @@ export function AdvancesPage() {
   const [hotels, setHotels] = useState<Array<{ id: number; name: string }>>([]);
   const [open, setOpen] = useState(false);
 
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [hotelId, setHotelId] = useState<number>(user?.hotel_id || 0);
   const [advanceType, setAdvanceType] = useState<'PETTY_CASH' | 'TRAVEL'>('PETTY_CASH');
   const [amount, setAmount] = useState(1500);
   const [purpose, setPurpose] = useState('');
   const [settleDate, setSettleDate] = useState(todayStr());
+  const [payeeName, setPayeeName] = useState(user?.display_name || '');
+  const [payeeBank, setPayeeBank] = useState('');
+  const [payeeAccount, setPayeeAccount] = useState('');
   const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT'>('NORMAL');
   const [actingId, setActingId] = useState<number | null>(null);
 
   const [disburseId, setDisburseId] = useState<number | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
+
+  const [repayRow, setRepayRow] = useState<AdvanceRow | null>(null);
+  const [repayAmount, setRepayAmount] = useState(0);
+  const [repayMethod, setRepayMethod] = useState<'BANK_TRANSFER' | 'CASH' | 'SALARY_DEDUCTION'>('BANK_TRANSFER');
+  const [repayRef, setRepayRef] = useState('');
+  const [repayRemark, setRepayRemark] = useState('');
 
   const load = useCallback(async () => {
     const data = await apiFetch<{ advances: AdvanceRow[] }>(`/api/advances?tab=${tab}`);
@@ -76,29 +95,70 @@ export function AdvancesPage() {
   }, [load, user?.id]);
 
   useEffect(() => {
+    setPayeeName(user?.display_name || '');
     apiFetch<{ hotels: Array<{ id: number; name: string }> }>('/api/organization/hotels').then((d) => {
       setHotels(d.hotels);
       if (user?.hotel_id) setHotelId(user.hotel_id);
       else if (d.hotels.length > 0) setHotelId(d.hotels[0].id);
     });
-  }, [user?.hotel_id]);
+  }, [user?.hotel_id, user?.display_name]);
+
+  const openCreateModal = () => {
+    setEditingId(null);
+    setAdvanceType('PETTY_CASH');
+    setAmount(1500);
+    setPurpose('');
+    setSettleDate(todayStr());
+    setPayeeName(user?.display_name || '');
+    setPayeeBank('');
+    setPayeeAccount('');
+    setUrgency('NORMAL');
+    setOpen(true);
+  };
+
+  const openEditModal = (r: AdvanceRow) => {
+    setEditingId(r.id);
+    if (r.hotel_id) setHotelId(r.hotel_id);
+    setAdvanceType((r.advance_type as 'PETTY_CASH' | 'TRAVEL') || 'PETTY_CASH');
+    setAmount(Number(r.amount));
+    setPurpose(r.purpose);
+    setSettleDate(r.expected_settle_date);
+    setPayeeName(r.payee_name || user?.display_name || '');
+    setPayeeBank(r.payee_bank || '');
+    setPayeeAccount(r.payee_account || '');
+    setUrgency(r.urgency === 'URGENT' ? 'URGENT' : 'NORMAL');
+    setOpen(true);
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await apiFetch('/api/advances', {
-        method: 'POST',
-        body: JSON.stringify({
-          hotel_id: hotelId,
-          advance_type: advanceType,
-          amount: Number(amount),
-          purpose,
-          expected_settle_date: settleDate,
-          urgency,
-        }),
-      });
-      showToast('借款/备用金申请已提交');
+      const payload = {
+        hotel_id: hotelId,
+        advance_type: advanceType,
+        amount: Number(amount),
+        purpose,
+        expected_settle_date: settleDate,
+        payee_name: payeeName,
+        payee_bank: payeeBank,
+        payee_account: payeeAccount,
+        urgency,
+      };
+      if (editingId) {
+        await apiFetch(`/api/advances/${editingId}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        showToast('借款单已修改并重新提交');
+      } else {
+        await apiFetch('/api/advances', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        showToast('借款/备用金申请已提交');
+      }
       setOpen(false);
+      setEditingId(null);
       setPurpose('');
       setUrgency('NORMAL');
       await load();
@@ -107,17 +167,31 @@ export function AdvancesPage() {
     }
   };
 
-  const handleAction = async (id: number, action: 'APPROVE' | 'REJECT') => {
+  const handleAction = async (id: number, action: 'APPROVE' | 'REJECT' | 'RETURN') => {
     setActingId(id);
     try {
+      const comment = action === 'APPROVE' ? '同意' : action === 'RETURN' ? '退回修改' : '驳回';
       await apiFetch(`/api/advances/${id}/action`, {
         method: 'POST',
-        body: JSON.stringify({ action, comment: action === 'APPROVE' ? '同意' : '驳回' }),
+        body: JSON.stringify({ action, comment }),
       });
-      showToast(action === 'APPROVE' ? '审批已通过' : '已驳回');
+      showToast(action === 'APPROVE' ? '审批已通过' : action === 'RETURN' ? '已退回申请人修改' : '已驳回');
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '操作失败', 'error');
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleWithdraw = async (id: number) => {
+    setActingId(id);
+    try {
+      await apiFetch(`/api/advances/${id}/withdraw`, { method: 'POST' });
+      showToast('借款单已撤回');
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '撤回失败', 'error');
     } finally {
       setActingId(null);
     }
@@ -140,6 +214,29 @@ export function AdvancesPage() {
     }
   };
 
+  const handleRepay = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!repayRow) return;
+    try {
+      await apiFetch(`/api/advances/${repayRow.id}/repay`, {
+        method: 'POST',
+        body: JSON.stringify({
+          amount: Number(repayAmount),
+          repayment_method: repayMethod,
+          payment_ref: repayRef,
+          remark: repayRemark,
+        }),
+      });
+      showToast('还款登记成功');
+      setRepayRow(null);
+      setRepayRef('');
+      setRepayRemark('');
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '还款登记失败', 'error');
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -150,7 +247,7 @@ export function AdvancesPage() {
           </p>
         </div>
         <button
-          onClick={() => setOpen(true)}
+          onClick={openCreateModal}
           className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold flex items-center gap-1.5"
         >
           <Plus className="w-4 h-4" /> 申请备用金/借款
@@ -215,11 +312,19 @@ export function AdvancesPage() {
                 <td className="px-4 py-3.5 text-right font-semibold tabular-nums">{formatMoney(r.amount)}</td>
                 <td className="px-4 py-3.5 text-right tabular-nums text-xs">
                   <div>已冲 {formatMoney(r.offset_amount)}</div>
+                  {Number(r.repaid_amount || 0) > 0 && (
+                    <div className="text-emerald-700">已还 {formatMoney(r.repaid_amount)}</div>
+                  )}
                   <div className="text-sky-700 font-medium">余 {formatMoney(r.available_balance)}</div>
                 </td>
                 <td className="px-4 py-3.5">
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <StatusBadge status={r.status} />
+                    {r.is_overdue && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-rose-50 text-rose-700 border border-rose-200">
+                        已逾期({r.expected_settle_date})
+                      </span>
+                    )}
                     {r.my_last_action && (
                       <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
                         {ACTION_LABEL_MAP[r.my_last_action] || r.my_last_action}
@@ -251,7 +356,7 @@ export function AdvancesPage() {
                     </div>
                   )}
                 </td>
-                <td className="px-5 py-3.5 text-right space-x-2">
+                <td className="px-5 py-3.5 text-right space-x-1.5 whitespace-nowrap">
                   {r.canApprove && (
                     <>
                       <button
@@ -263,12 +368,36 @@ export function AdvancesPage() {
                       </button>
                       <button
                         disabled={actingId === r.id}
+                        onClick={() => handleAction(r.id, 'RETURN')}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-amber-200 text-amber-700 text-xs font-medium disabled:opacity-50"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" /> 退回
+                      </button>
+                      <button
+                        disabled={actingId === r.id}
                         onClick={() => handleAction(r.id, 'REJECT')}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium disabled:opacity-50"
                       >
                         <XCircle className="w-3.5 h-3.5" /> 驳回
                       </button>
                     </>
+                  )}
+                  {r.canEdit && (
+                    <button
+                      onClick={() => openEditModal(r)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-brand-200 text-brand-700 text-xs font-medium"
+                    >
+                      <Pencil className="w-3.5 h-3.5" /> 修改重提
+                    </button>
+                  )}
+                  {r.canWithdraw && (
+                    <button
+                      disabled={actingId === r.id}
+                      onClick={() => handleWithdraw(r.id)}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-stone-200 text-stone-600 text-xs font-medium disabled:opacity-50"
+                    >
+                      <Undo2 className="w-3.5 h-3.5" /> 撤回
+                    </button>
                   )}
                   {r.status === 'APPROVED' && ['HQ_ADMIN', 'FINANCE'].includes(user?.role || '') && (
                     <button
@@ -281,6 +410,22 @@ export function AdvancesPage() {
                       <Banknote className="w-3.5 h-3.5" /> 财务放款
                     </button>
                   )}
+                  {r.canRepay && (
+                    <button
+                      onClick={() => {
+                        setRepayRow(r);
+                        setRepayAmount(
+                          Math.max(0, Number(r.amount) - Number(r.offset_amount || 0) - Number(r.repaid_amount || 0))
+                        );
+                        setRepayMethod('BANK_TRANSFER');
+                        setRepayRef(`REP-${Date.now().toString().slice(-6)}`);
+                        setRepayRemark('');
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-sky-200 text-sky-700 text-xs font-medium"
+                    >
+                      登记还款
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
@@ -288,7 +433,7 @@ export function AdvancesPage() {
         </table>
       </div>
 
-      <Modal open={open} onClose={() => setOpen(false)} title="申请备用金 / 预支借款">
+      <Modal open={open} onClose={() => { setOpen(false); setEditingId(null); }} title={editingId ? '修改并重提借款单' : '申请备用金 / 预支借款'}>
         <form onSubmit={handleCreate} className="space-y-4">
           <div className="grid grid-cols-2 gap-4">
             <div>
@@ -354,6 +499,38 @@ export function AdvancesPage() {
               </select>
             </div>
           </div>
+          <div className="grid grid-cols-3 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">收款人(本人)</label>
+              <input
+                type="text"
+                value={payeeName}
+                onChange={(e) => setPayeeName(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-stone-50"
+                readOnly
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">开户行</label>
+              <input
+                type="text"
+                value={payeeBank}
+                onChange={(e) => setPayeeBank(e.target.value)}
+                placeholder="如：招商银行静安支行"
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">收款账号</label>
+              <input
+                type="text"
+                value={payeeAccount}
+                onChange={(e) => setPayeeAccount(e.target.value)}
+                placeholder="银行卡号"
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm font-mono"
+              />
+            </div>
+          </div>
           <div>
             <label className="block text-xs font-medium text-stone-700 mb-1">借款用途说明</label>
             <textarea
@@ -368,13 +545,77 @@ export function AdvancesPage() {
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
-              onClick={() => setOpen(false)}
+              onClick={() => { setOpen(false); setEditingId(null); }}
               className="px-4 py-2 rounded-xl border border-stone-200 text-sm"
             >
               取消
             </button>
             <button type="submit" className="px-5 py-2 rounded-xl bg-brand-600 text-white text-sm font-semibold">
-              提交审批
+              {editingId ? '保存并重提' : '提交审批'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal open={Boolean(repayRow)} onClose={() => setRepayRow(null)} title="登记借款还款">
+        <form onSubmit={handleRepay} className="space-y-4">
+          <div className="text-xs text-stone-500">
+            借款单：<span className="font-mono text-stone-800">{repayRow?.advance_no}</span>（{repayRow?.applicant_name}）
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">还款金额(元)</label>
+              <input
+                type="number"
+                min="0.01"
+                step="0.01"
+                value={repayAmount}
+                onChange={(e) => setRepayAmount(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+                required
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">还款方式</label>
+              <select
+                value={repayMethod}
+                onChange={(e) => setRepayMethod(e.target.value as 'BANK_TRANSFER' | 'CASH' | 'SALARY_DEDUCTION')}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+              >
+                <option value="BANK_TRANSFER">银行转账</option>
+                <option value="CASH">现金交回</option>
+                <option value="SALARY_DEDUCTION">薪资扣回</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">收款流水号</label>
+            <input
+              type="text"
+              value={repayRef}
+              onChange={(e) => setRepayRef(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">备注</label>
+            <input
+              type="text"
+              value={repayRemark}
+              onChange={(e) => setRepayRemark(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setRepayRow(null)}
+              className="px-4 py-2 rounded-xl border border-stone-200 text-sm"
+            >
+              取消
+            </button>
+            <button type="submit" className="px-5 py-2 rounded-xl bg-brand-600 text-white text-sm font-semibold">
+              确认登记
             </button>
           </div>
         </form>
