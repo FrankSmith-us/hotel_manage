@@ -1,0 +1,19 @@
+{
+  "name": "yueqi-hotel-ops",
+  "version": "1.0.0",
+  "private": true,
+  "description": "悦栖连锁酒店内部日常业务管理系统（HR与报销流程）",
+  "scripts": {
+    "install:all": "npm install && npm --prefix server install && npm --prefix client install",
+    "dev": "concurrently -n API,WEB -c yellow,cyan \"npm --prefix server run dev\" \"npm --prefix client run dev\"",
+    "dev:demo": "concurrently -n API,WEB -c yellow,cyan \"npm --prefix server run dev:demo\" \"npm --prefix client run dev\"",
+    "build": "npm --prefix server run build && npm --prefix client run build",
+    "test": "npm --prefix server test",
+    "db:init": "npm --prefix server run db:init",
+    "db:seed": "npm --prefix server run db:seed",
+    "db:reset:demo": "npm --prefix server run db:reset:demo"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}
