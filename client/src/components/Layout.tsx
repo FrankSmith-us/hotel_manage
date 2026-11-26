@@ -12,6 +12,7 @@ import {
   LogOut,
   Menu,
   Receipt,
+  Settings,
   UserPlus,
   Users,
   Wallet,
@@ -59,6 +60,17 @@ const NAV_GROUPS: NavGroup[] = [
       { to: '/leaves', label: '请假与加班审批', icon: <CalendarOff className="w-4 h-4" /> },
       { to: '/payroll', label: '月度薪资台账', icon: <FileSpreadsheet className="w-4 h-4" /> },
       { to: '/recruitment', label: '补编与招聘入职', icon: <UserPlus className="w-4 h-4" /> },
+    ],
+  },
+  {
+    label: '系统管理',
+    items: [
+      {
+        to: '/system-config',
+        label: '系统配置与基础数据',
+        icon: <Settings className="w-4 h-4" />,
+        roles: ['HQ_ADMIN'],
+      },
     ],
   },
 ];
@@ -124,15 +136,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
-          {NAV_GROUPS.map((group) => (
-            <div key={group.label}>
-              <div className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
-                {group.label}
-              </div>
-              <div className="space-y-1">
-                {group.items
-                  .filter((item) => !item.roles || item.roles.includes(user?.role || ''))
-                  .map((item) => (
+          {NAV_GROUPS.map((group) => {
+            const visibleItems = group.items.filter((item) => !item.roles || item.roles.includes(user?.role || ''));
+            if (visibleItems.length === 0) return null;
+            return (
+              <div key={group.label}>
+                <div className="px-3 mb-2 text-[11px] font-semibold uppercase tracking-wider text-stone-500">
+                  {group.label}
+                </div>
+                <div className="space-y-1">
+                  {visibleItems.map((item) => (
                   <NavLink
                     key={item.to}
                     to={item.to}
@@ -150,9 +163,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     <span>{item.label}</span>
                   </NavLink>
                 ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </nav>
 
         <div className="p-4 border-t border-stone-800">

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Building2, MapPin, Phone, Plus, UserCog, Users } from 'lucide-react';
 import { Modal } from '../components/Modal';
+import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
 import { apiFetch } from '../lib/api';
 import { useAuth } from '../lib/auth';
@@ -18,10 +19,12 @@ interface RegionNode {
     code: string;
     name: string;
     city: string;
+    district?: string | null;
     address: string;
     phone: string;
     room_count: number;
     is_hq: number;
+    status: string;
     manager_name: string | null;
     employee_count: number;
     departments: Array<{ id: number; name: string; employee_count: number }>;
@@ -47,6 +50,9 @@ export function OrganizationPage() {
   const canManageRegion = ['HQ_ADMIN', 'GENERAL_MANAGER'].includes(user?.role || '');
   const [regions, setRegions] = useState<RegionNode[]>([]);
   const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
+  const [cities, setCities] = useState<Array<{ id: number; region_id: number; name: string }>>([]);
+  const [districts, setDistricts] = useState<Array<{ id: number; city_id: number; name: string }>>([]);
+  const [hotelStatuses, setHotelStatuses] = useState<Array<{ code: string; label: string }>>([]);
   const [candidates, setCandidates] = useState<ManagerCandidate[]>([]);
   const [open, setOpen] = useState(false);
 
@@ -56,22 +62,46 @@ export function OrganizationPage() {
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
   const [regionId, setRegionId] = useState(0);
-  const [city, setCity] = useState('');
+  const [cityId, setCityId] = useState<number>(0);
+  const [districtId, setDistrictId] = useState<number>(0);
+  const [hotelStatus, setHotelStatus] = useState('OPEN');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [roomCount, setRoomCount] = useState(120);
 
   const load = () => {
-    apiFetch<{ regions: RegionNode[]; regionOptions?: RegionOption[]; managerCandidates: ManagerCandidate[] }>(
-      '/api/organization/tree'
-    ).then((d) => {
+    Promise.all([
+      apiFetch<{ regions: RegionNode[]; regionOptions?: RegionOption[]; managerCandidates: ManagerCandidate[] }>(
+        '/api/organization/tree'
+      ),
+      apiFetch<{
+        regions: RegionOption[];
+        cities: Array<{ id: number; region_id: number; name: string }>;
+        districts: Array<{ id: number; city_id: number; name: string }>;
+        dicts: Record<string, Array<{ code: string; label: string }>>;
+      }>('/api/master-data/options'),
+    ]).then(([d, md]) => {
       setRegions(d.regions);
       const opts =
-        d.regionOptions && d.regionOptions.length > 0
-          ? d.regionOptions
-          : d.regions.filter((r) => r.code !== 'HQ').map((r) => ({ id: r.id, code: r.code, name: r.name }));
+        md.regions.length > 0
+          ? md.regions
+          : d.regionOptions && d.regionOptions.length > 0
+            ? d.regionOptions
+            : d.regions.filter((r) => r.code !== 'HQ').map((r) => ({ id: r.id, code: r.code, name: r.name }));
       setRegionOptions(opts);
-      setRegionId((prev) => (opts.some((o) => o.id === prev) ? prev : opts[0]?.id || 0));
+      setCities(md.cities || []);
+      setDistricts(md.districts || []);
+      const statuses = md.dicts?.HOTEL_STATUS || [];
+      setHotelStatuses(statuses);
+      const nextRegId = opts.some((o) => o.id === regionId) ? regionId : opts[0]?.id || 0;
+      setRegionId(nextRegId);
+      const firstCity = (md.cities || []).find((c) => c.region_id === nextRegId);
+      setCityId(firstCity?.id || 0);
+      const firstDist = firstCity ? (md.districts || []).find((dt) => dt.city_id === firstCity.id) : undefined;
+      setDistrictId(firstDist?.id || 0);
+      if (statuses.length > 0 && !statuses.some((s) => s.code === hotelStatus)) {
+        setHotelStatus(statuses.find((s) => s.code === 'OPEN')?.code || statuses[0].code);
+      }
       setCandidates(d.managerCandidates || []);
     });
   };
@@ -107,7 +137,9 @@ export function OrganizationPage() {
           code,
           name,
           region_id: Number(regionId),
-          city,
+          city_id: cityId || null,
+          district_id: districtId || null,
+          status: hotelStatus,
           address,
           phone,
           room_count: Number(roomCount),
@@ -117,9 +149,24 @@ export function OrganizationPage() {
       setOpen(false);
       setCode('');
       setName('');
+      setAddress('');
+      setPhone('');
       load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '创建失败', 'error');
+    }
+  };
+
+  const handleStatusChange = async (hid: number, nextStatus: string) => {
+    try {
+      await apiFetch(`/api/organization/hotels/${hid}/status`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      showToast('门店状态已更新');
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '状态更新失败', 'error');
     }
   };
 
@@ -177,15 +224,16 @@ export function OrganizationPage() {
               <div key={h.id} className="bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm space-y-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-bold text-base text-stone-900">{h.name}</span>
                       <span className="px-2 py-0.5 rounded-md text-[11px] font-mono bg-stone-100 text-stone-600">
                         {h.code}
                       </span>
+                      {!h.is_hq && <StatusBadge status={h.status} />}
                     </div>
                     <div className="text-xs text-stone-500 mt-1 flex items-center gap-3">
                       <span className="flex items-center gap-1">
-                        <MapPin className="w-3.5 h-3.5" /> {h.city} · {h.address}
+                        <MapPin className="w-3.5 h-3.5" /> {h.city}{h.district ? ` · ${h.district}` : ''} · {h.address}
                       </span>
                     </div>
                     <div className="text-xs text-stone-500 mt-1 flex items-center gap-3">
@@ -200,7 +248,24 @@ export function OrganizationPage() {
                     <div className="text-lg font-bold text-brand-700 flex items-center justify-end gap-1">
                       <Users className="w-4 h-4" /> {h.employee_count}
                     </div>
-                    {!h.is_hq && <div className="text-[11px] text-stone-400">{h.room_count} 间客房</div>}
+                    {!h.is_hq && (
+                      <div className="mt-1.5 flex items-center justify-end gap-1.5">
+                        <span className="text-[11px] text-stone-400">{h.room_count} 间客房</span>
+                        {['HQ_ADMIN', 'GENERAL_MANAGER', 'HR_MANAGER'].includes(user?.role || '') && hotelStatuses.length > 0 && (
+                          <select
+                            value={h.status}
+                            onChange={(e) => handleStatusChange(h.id, e.target.value)}
+                            className="text-[11px] px-1.5 py-0.5 rounded border border-stone-200 bg-white text-stone-700"
+                          >
+                            {hotelStatuses.map((st) => (
+                              <option key={st.code} value={st.code}>
+                                {st.label}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -248,10 +313,17 @@ export function OrganizationPage() {
           </div>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1">所属大区</label>
+              <label className="block text-xs font-medium text-stone-700 mb-1">所属大区 *</label>
               <select
                 value={regionId}
-                onChange={(e) => setRegionId(Number(e.target.value))}
+                onChange={(e) => {
+                  const rid = Number(e.target.value);
+                  setRegionId(rid);
+                  const firstCity = cities.find((c) => c.region_id === rid);
+                  setCityId(firstCity?.id || 0);
+                  const firstDist = firstCity ? districts.find((d) => d.city_id === firstCity.id) : undefined;
+                  setDistrictId(firstDist?.id || 0);
+                }}
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
                 required
               >
@@ -263,14 +335,70 @@ export function OrganizationPage() {
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1">城市</label>
-              <input
-                type="text"
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+              <label className="block text-xs font-medium text-stone-700 mb-1">所在城市 *</label>
+              <select
+                value={cityId}
+                onChange={(e) => {
+                  const cid = Number(e.target.value);
+                  setCityId(cid);
+                  const firstDist = districts.find((d) => d.city_id === cid);
+                  setDistrictId(firstDist?.id || 0);
+                }}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
                 required
-              />
+              >
+                {cities
+                  .filter((c) => c.region_id === regionId)
+                  .map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">所在城区</label>
+              <select
+                value={districtId}
+                onChange={(e) => setDistrictId(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+              >
+                <option value={0}>不限/待定</option>
+                {districts
+                  .filter((d) => d.city_id === cityId)
+                  .map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">门店状态 *</label>
+              <select
+                value={hotelStatus}
+                onChange={(e) => setHotelStatus(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+                required
+              >
+                {(hotelStatuses.length > 0
+                  ? hotelStatuses
+                  : [
+                      { code: 'CONTRACTED', label: '签约' },
+                      { code: 'RENOVATING', label: '装修' },
+                      { code: 'SOFT_OPENING', label: '试营业' },
+                      { code: 'OPEN', label: '开业' },
+                      { code: 'SUSPENDED', label: '停业整顿' },
+                      { code: 'CLOSED', label: '关闭' },
+                    ]
+                ).map((st) => (
+                  <option key={st.code} value={st.code}>
+                    {st.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-xs font-medium text-stone-700 mb-1">客房数</label>

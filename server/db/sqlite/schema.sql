@@ -14,12 +14,15 @@ CREATE TABLE IF NOT EXISTS hotels (
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   region_id INTEGER NOT NULL REFERENCES regions(id),
+  city_id INTEGER,
+  district_id INTEGER,
   city TEXT NOT NULL,
+  district TEXT,
   address TEXT NOT NULL,
   phone TEXT NOT NULL,
   room_count INTEGER NOT NULL DEFAULT 0,
   is_hq INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  status TEXT NOT NULL DEFAULT 'OPEN',
   opened_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
@@ -44,7 +47,11 @@ CREATE TABLE IF NOT EXISTS employees (
   id_card_last4 TEXT NOT NULL DEFAULT '0000',
   hotel_id INTEGER NOT NULL REFERENCES hotels(id),
   department_id INTEGER NOT NULL REFERENCES departments(id),
+  position_id INTEGER,
   position TEXT NOT NULL,
+  education TEXT,
+  marital_status TEXT,
+  political_status TEXT,
   employment_type TEXT NOT NULL DEFAULT 'FULL_TIME',
   status TEXT NOT NULL DEFAULT 'ACTIVE',
   hire_date TEXT NOT NULL,
@@ -325,3 +332,85 @@ CREATE TABLE IF NOT EXISTS payee_accounts (
   UNIQUE(payment_type, account_number)
 );
 CREATE INDEX IF NOT EXISTS idx_payee_type ON payee_accounts(payment_type);
+
+CREATE TABLE IF NOT EXISTS cities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  region_id INTEGER NOT NULL REFERENCES regions(id),
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_cities_region ON cities(region_id);
+
+CREATE TABLE IF NOT EXISTS districts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  city_id INTEGER NOT NULL REFERENCES cities(id),
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_districts_city ON districts(city_id);
+
+CREATE TABLE IF NOT EXISTS dept_templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_level TEXT NOT NULL,
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(org_level, code)
+);
+
+CREATE TABLE IF NOT EXISTS job_positions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  org_level TEXT NOT NULL,
+  dept_template_id INTEGER NOT NULL REFERENCES dept_templates(id),
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(org_level, dept_template_id, code)
+);
+CREATE INDEX IF NOT EXISTS idx_pos_dept_tpl ON job_positions(dept_template_id);
+
+CREATE TABLE IF NOT EXISTS master_dict_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  dict_type TEXT NOT NULL,
+  code TEXT NOT NULL,
+  label TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  is_system INTEGER NOT NULL DEFAULT 0,
+  extra_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(dict_type, code)
+);
+CREATE INDEX IF NOT EXISTS idx_dict_type ON master_dict_items(dict_type);
+
+CREATE TABLE IF NOT EXISTS master_data_audit_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_type TEXT NOT NULL,
+  entity_id INTEGER NOT NULL,
+  entity_label TEXT NOT NULL,
+  action TEXT NOT NULL,
+  before_data TEXT,
+  after_data TEXT,
+  operator_id INTEGER NOT NULL,
+  operator_name TEXT NOT NULL,
+  operator_role TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_md_audit_entity ON master_data_audit_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_md_audit_created ON master_data_audit_logs(created_at);

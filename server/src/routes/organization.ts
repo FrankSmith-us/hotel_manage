@@ -53,7 +53,10 @@ router.get(
       code: string;
       name: string;
       region_id: number;
+      city_id: number | null;
+      district_id: number | null;
       city: string;
+      district: string | null;
       address: string;
       phone: string;
       room_count: number;
@@ -212,7 +215,11 @@ const createHotelSchema = z.object({
   code: z.string().min(2).max(20),
   name: z.string().min(2).max(100),
   region_id: z.number().int().positive(),
-  city: z.string().min(1),
+  city_id: z.number().int().positive().optional().nullable(),
+  district_id: z.number().int().positive().optional().nullable(),
+  city: z.string().min(1).optional(),
+  district: z.string().optional().nullable(),
+  status: z.string().trim().min(2).max(24).default('OPEN'),
   address: z.string().min(2),
   phone: z.string().min(5),
   room_count: z.number().int().min(0).default(100),
@@ -228,6 +235,48 @@ router.post(
     if (!region) {
       throw new AppError(400, '所选大区不存在，请刷新页面后重试');
     }
+
+    let cityName = (body.city || '').trim();
+    let cityId: number | null = body.city_id ?? null;
+    if (cityId) {
+      const cityRow = await db.queryOne<{ id: number; region_id: number; name: string }>(
+        'SELECT id, region_id, name FROM cities WHERE id = ?',
+        [cityId]
+      );
+      if (!cityRow) throw new AppError(400, '所选城市不存在');
+      if (Number(cityRow.region_id) !== Number(body.region_id)) {
+        throw new AppError(400, '所选城市不属于当前大区');
+      }
+      cityName = cityRow.name;
+    }
+    if (!cityName) {
+      throw new AppError(400, '请选择或填写所在城市');
+    }
+
+    let districtName = (body.district || '').trim() || null;
+    let districtId: number | null = body.district_id ?? null;
+    if (districtId) {
+      const distRow = await db.queryOne<{ id: number; city_id: number; name: string }>(
+        'SELECT id, city_id, name FROM districts WHERE id = ?',
+        [districtId]
+      );
+      if (!distRow) throw new AppError(400, '所选城区不存在');
+      if (cityId && Number(distRow.city_id) !== Number(cityId)) {
+        throw new AppError(400, '所选城区不属于当前城市');
+      }
+      districtName = distRow.name;
+    }
+
+    const hotelStatus = body.status.toUpperCase();
+    const validStatusRow = await db.queryOne<{ code: string }>(
+      `SELECT code FROM master_dict_items WHERE dict_type = 'HOTEL_STATUS' AND code = ? AND is_active = 1`,
+      [hotelStatus]
+    );
+    const fallbackStatuses = new Set(['CONTRACTED', 'RENOVATING', 'SOFT_OPENING', 'OPEN', 'SUSPENDED', 'CLOSED', 'ACTIVE']);
+    if (!validStatusRow && !fallbackStatuses.has(hotelStatus)) {
+      throw new AppError(400, '无效的门店状态');
+    }
+
     const normalizedCode = body.code.trim().toUpperCase();
     const existingCode = await db.queryOne<{ id: number }>('SELECT id FROM hotels WHERE code = ?', [normalizedCode]);
     if (existingCode) {
@@ -236,30 +285,42 @@ router.post(
     const ts = nowIso();
     const today = todayStr();
 
+    const storeTemplates = await db.query<{ code: string; name: string; category: string }>(
+      `SELECT code, name, category FROM dept_templates WHERE org_level = 'STORE' AND is_active = 1 ORDER BY sort_order ASC, id ASC`
+    );
+    const deptList =
+      storeTemplates.length > 0
+        ? storeTemplates
+        : [
+            { code: 'FO', name: '前厅部', category: 'FRONT_OFFICE' },
+            { code: 'HK', name: '客房部', category: 'HOUSEKEEPING' },
+            { code: 'ENG', name: '工程维保部', category: 'ENGINEERING' },
+            { code: 'FB', name: '餐饮部', category: 'FB' },
+            { code: 'ADM', name: '门店综合管理部', category: 'ADMIN' },
+          ];
+
     const hotelId = await db.transaction(async (tx) => {
       const resInsert = await tx.execute(
-        `INSERT INTO hotels (code, name, region_id, city, address, phone, room_count, is_hq, status, opened_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'ACTIVE', ?, ?)`,
+        `INSERT INTO hotels (code, name, region_id, city_id, district_id, city, district, address, phone, room_count, is_hq, status, opened_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
         [
           normalizedCode,
           body.name.trim(),
           body.region_id,
-          body.city.trim(),
+          cityId,
+          districtId,
+          cityName,
+          districtName,
           body.address.trim(),
           body.phone.trim(),
           body.room_count,
+          hotelStatus,
           today,
           ts,
         ]
       );
       const hid = resInsert.insertId;
-      for (const d of [
-        { code: 'FO', name: '前厅部', category: 'FRONT_OFFICE' },
-        { code: 'HK', name: '客房部', category: 'HOUSEKEEPING' },
-        { code: 'ENG', name: '工程维保部', category: 'ENGINEERING' },
-        { code: 'FB', name: '餐饮部', category: 'FB' },
-        { code: 'ADM', name: '门店综合管理部', category: 'ADMIN' },
-      ]) {
+      for (const d of deptList) {
         await tx.execute(
           'INSERT INTO departments (hotel_id, code, name, category, created_at) VALUES (?, ?, ?, ?, ?)',
           [hid, d.code, d.name, d.category, ts]
@@ -270,6 +331,30 @@ router.post(
 
     const hotel = await db.queryOne('SELECT * FROM hotels WHERE id = ?', [hotelId]);
     res.status(201).json({ hotel });
+  })
+);
+
+router.patch(
+  '/hotels/:id/status',
+  requireRoles('HQ_ADMIN', 'GENERAL_MANAGER', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const { status } = z.object({ status: z.string().trim().min(2).max(24) }).parse(req.body);
+    const nextStatus = status.toUpperCase();
+    const db = getDb();
+    const hotel = await db.queryOne<{ id: number; is_hq: number }>('SELECT id, is_hq FROM hotels WHERE id = ?', [id]);
+    if (!hotel) throw new AppError(404, '门店不存在');
+    if (hotel.is_hq) throw new AppError(400, '集团总部状态不可变更');
+
+    const validStatusRow = await db.queryOne<{ code: string }>(
+      `SELECT code FROM master_dict_items WHERE dict_type = 'HOTEL_STATUS' AND code = ? AND is_active = 1`,
+      [nextStatus]
+    );
+    if (!validStatusRow) throw new AppError(400, '无效的门店状态');
+
+    await db.execute('UPDATE hotels SET status = ? WHERE id = ?', [nextStatus, id]);
+    const updated = await db.queryOne('SELECT * FROM hotels WHERE id = ?', [id]);
+    res.json({ hotel: updated });
   })
 );
 

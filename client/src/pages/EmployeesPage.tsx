@@ -18,6 +18,10 @@ interface EmployeeRow {
   department_id: number;
   department_name: string;
   position: string;
+  education?: string | null;
+  marital_status?: string | null;
+  political_status?: string | null;
+  employment_type?: string;
   status: string;
   hire_date: string;
   contract_end_date: string | null;
@@ -53,8 +57,11 @@ export function EmployeesPage() {
   );
 
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
-  const [hotels, setHotels] = useState<Array<{ id: number; name: string }>>([]);
-  const [departments, setDepartments] = useState<Array<{ id: number; hotel_id: number; name: string }>>([]);
+  const [hotels, setHotels] = useState<Array<{ id: number; name: string; is_hq?: number }>>([]);
+  const [departments, setDepartments] = useState<Array<{ id: number; hotel_id: number; code: string; name: string }>>([]);
+  const [deptTemplates, setDeptTemplates] = useState<Array<{ id: number; org_level: string; code: string; name: string }>>([]);
+  const [jobPositions, setJobPositions] = useState<Array<{ id: number; org_level: string; dept_template_id: number; name: string }>>([]);
+  const [dicts, setDicts] = useState<Record<string, Array<{ code: string; label: string }>>>({});
 
   const [keyword, setKeyword] = useState('');
   const [alertType, setAlertType] = useState('');
@@ -71,10 +78,16 @@ export function EmployeesPage() {
   // Onboard modal
   const [createOpen, setCreateOpen] = useState(false);
   const [cName, setCName] = useState('');
+  const [cGender, setCGender] = useState('M');
   const [cPhone, setCPhone] = useState('');
   const [cHotelId, setCHotelId] = useState<number>(user?.hotel_id || 0);
   const [cDeptId, setCDeptId] = useState<number>(1);
+  const [cPositionId, setCPositionId] = useState<number>(0);
   const [cPos, setCPos] = useState('前台接待员');
+  const [cEducation, setCEducation] = useState('BACHELOR');
+  const [cEmploymentType, setCEmploymentType] = useState('FULL_TIME');
+  const [cMaritalStatus, setCMaritalStatus] = useState('SINGLE');
+  const [cPoliticalStatus, setCPoliticalStatus] = useState('MASSES');
   const [cSalary, setCSalary] = useState(6500);
   const [cHealthExpiry, setCHealthExpiry] = useState('');
 
@@ -92,16 +105,27 @@ export function EmployeesPage() {
 
   useEffect(() => {
     apiFetch<{
-      hotels: Array<{ id: number; name: string }>;
-      departments: Array<{ id: number; hotel_id: number; name: string }>;
+      hotels: Array<{ id: number; name: string; is_hq?: number }>;
+      departments: Array<{ id: number; hotel_id: number; code: string; name: string }>;
     }>('/api/organization/hotels?all=true').then((d) => {
       setHotels(d.hotels);
       setDepartments(d.departments);
-      const hid = user?.hotel_id || d.hotels[0]?.id || 2;
+      const hid = user?.hotel_id || d.hotels[0]?.id || 0;
       setCHotelId(hid);
       const firstDept = d.departments.find((x) => x.hotel_id === hid);
       if (firstDept) setCDeptId(firstDept.id);
     });
+    apiFetch<{
+      deptTemplates: Array<{ id: number; org_level: string; code: string; name: string }>;
+      jobPositions: Array<{ id: number; org_level: string; dept_template_id: number; name: string }>;
+      dicts: Record<string, Array<{ code: string; label: string }>>;
+    }>('/api/master-data/options')
+      .then((md) => {
+        setDeptTemplates(md.deptTemplates || []);
+        setJobPositions(md.jobPositions || []);
+        setDicts(md.dicts || {});
+      })
+      .catch(() => {});
   }, [user?.hotel_id]);
 
   const openDetail = async (id: number) => {
@@ -119,10 +143,16 @@ export function EmployeesPage() {
         method: 'POST',
         body: JSON.stringify({
           name: cName,
+          gender: cGender,
           phone: cPhone,
           hotel_id: cHotelId,
           department_id: cDeptId,
+          position_id: cPositionId || null,
           position: cPos,
+          education: cEducation || null,
+          employment_type: cEmploymentType,
+          marital_status: cMaritalStatus || null,
+          political_status: cPoliticalStatus || null,
           base_salary: Number(cSalary),
           health_cert_expiry: cHealthExpiry || null,
           hire_date: todayStr(),
@@ -309,6 +339,21 @@ export function EmployeesPage() {
                 <span className="font-medium">{selected.employee.contract_end_date || '-'}</span>
               </div>
               <div>
+                <span className="text-stone-400 block">学历类别</span>
+                <span className="font-medium">
+                  {(dicts.EDUCATION || []).find((d) => d.code === selected.employee.education)?.label ||
+                    selected.employee.education ||
+                    '-'}
+                </span>
+              </div>
+              <div>
+                <span className="text-stone-400 block">婚姻 / 政治面貌</span>
+                <span className="font-medium">
+                  {(dicts.MARITAL_STATUS || []).find((d) => d.code === selected.employee.marital_status)?.label || '-'} /{' '}
+                  {(dicts.POLITICAL_STATUS || []).find((d) => d.code === selected.employee.political_status)?.label || '-'}
+                </span>
+              </div>
+              <div>
                 <span className="text-stone-400 block">当前状态</span>
                 <StatusBadge status={selected.employee.status} />
               </div>
@@ -442,7 +487,7 @@ export function EmployeesPage() {
       {/* Onboard Modal */}
       <Modal open={createOpen} onClose={() => setCreateOpen(false)} title="办理新员工入职建档">
         <form onSubmit={handleOnboard} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-medium text-stone-700 mb-1">姓名 *</label>
               <input
@@ -452,6 +497,23 @@ export function EmployeesPage() {
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
                 required
               />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">性别 *</label>
+              <select
+                value={cGender}
+                onChange={(e) => setCGender(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+              >
+                {(dicts.GENDER || [
+                  { code: 'M', label: '男' },
+                  { code: 'F', label: '女' },
+                ]).map((g) => (
+                  <option key={g.code} value={g.code}>
+                    {g.label}
+                  </option>
+                ))}
+              </select>
             </div>
             <div>
               <label className="block text-xs font-medium text-stone-700 mb-1">手机号 *</label>
@@ -466,7 +528,7 @@ export function EmployeesPage() {
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1">所属门店</label>
+              <label className="block text-xs font-medium text-stone-700 mb-1">所属机构/门店</label>
               <select
                 value={cHotelId}
                 onChange={(e) => {
@@ -474,6 +536,7 @@ export function EmployeesPage() {
                   setCHotelId(hid);
                   const d = departments.find((x) => x.hotel_id === hid);
                   if (d) setCDeptId(d.id);
+                  setCPositionId(0);
                 }}
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
               >
@@ -488,7 +551,10 @@ export function EmployeesPage() {
               <label className="block text-xs font-medium text-stone-700 mb-1">所属部门</label>
               <select
                 value={cDeptId}
-                onChange={(e) => setCDeptId(Number(e.target.value))}
+                onChange={(e) => {
+                  setCDeptId(Number(e.target.value));
+                  setCPositionId(0);
+                }}
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
               >
                 {departments
@@ -503,15 +569,107 @@ export function EmployeesPage() {
           </div>
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <label className="block text-xs font-medium text-stone-700 mb-1">岗位名称 *</label>
-              <input
-                type="text"
-                value={cPos}
-                onChange={(e) => setCPos(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
-                required
-              />
+              <label className="block text-xs font-medium text-stone-700 mb-1">部门职位 *</label>
+              {(() => {
+                const selectedHotel = hotels.find((h) => h.id === cHotelId);
+                const selectedDept = departments.find((d) => d.id === cDeptId);
+                const orgLevel = selectedHotel?.is_hq ? 'HQ' : 'STORE';
+                const tpl = selectedDept
+                  ? deptTemplates.find((dt) => dt.org_level === orgLevel && dt.code === selectedDept.code)
+                  : undefined;
+                const posOpts = tpl
+                  ? jobPositions.filter((p) => p.org_level === orgLevel && p.dept_template_id === tpl.id)
+                  : [];
+                return posOpts.length > 0 ? (
+                  <select
+                    value={cPositionId || ''}
+                    onChange={(e) => {
+                      const pid = Number(e.target.value);
+                      setCPositionId(pid);
+                      const picked = posOpts.find((p) => p.id === pid);
+                      if (picked) setCPos(picked.name);
+                    }}
+                    className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+                    required
+                  >
+                    <option value="">请选择职位</option>
+                    {posOpts.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={cPos}
+                    onChange={(e) => setCPos(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+                    required
+                  />
+                );
+              })()}
             </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">学历类别</label>
+              <select
+                value={cEducation}
+                onChange={(e) => setCEducation(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+              >
+                {(dicts.EDUCATION || [{ code: 'BACHELOR', label: '本科' }]).map((ed) => (
+                  <option key={ed.code} value={ed.code}>
+                    {ed.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">用工性质</label>
+              <select
+                value={cEmploymentType}
+                onChange={(e) => setCEmploymentType(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+              >
+                {(dicts.EMPLOYMENT_TYPE || [{ code: 'FULL_TIME', label: '全职' }]).map((et) => (
+                  <option key={et.code} value={et.code}>
+                    {et.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">婚姻状况</label>
+              <select
+                value={cMaritalStatus}
+                onChange={(e) => setCMaritalStatus(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+              >
+                {(dicts.MARITAL_STATUS || [{ code: 'SINGLE', label: '未婚' }]).map((m) => (
+                  <option key={m.code} value={m.code}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-700 mb-1">政治面貌</label>
+              <select
+                value={cPoliticalStatus}
+                onChange={(e) => setCPoliticalStatus(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+              >
+                {(dicts.POLITICAL_STATUS || [{ code: 'MASSES', label: '群众' }]).map((p) => (
+                  <option key={p.code} value={p.code}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-stone-700 mb-1">月基本底薪 *</label>
               <input

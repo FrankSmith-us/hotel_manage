@@ -44,6 +44,27 @@ export async function initSchema(db: DbAdapter): Promise<void> {
         await db.execute(`ALTER TABLE ${tbl} ADD COLUMN urgency TEXT NOT NULL DEFAULT 'NORMAL'`);
       }
     }
+    const hCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(hotels)')).map((c) => c.name));
+    for (const [colName, colDef] of [
+      ['city_id', 'INTEGER'],
+      ['district_id', 'INTEGER'],
+      ['district', 'TEXT'],
+    ] as const) {
+      if (!hCols.has(colName)) {
+        await db.execute(`ALTER TABLE hotels ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
+    const eCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(employees)')).map((c) => c.name));
+    for (const [colName, colDef] of [
+      ['position_id', 'INTEGER'],
+      ['education', 'TEXT'],
+      ['marital_status', 'TEXT'],
+      ['political_status', 'TEXT'],
+    ] as const) {
+      if (!eCols.has(colName)) {
+        await db.execute(`ALTER TABLE employees ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
   } else {
     const col = await db.queryOne<{ cnt: number }>(
       `SELECT COUNT(*) AS cnt
@@ -81,6 +102,25 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       );
       if (!c || Number(c.cnt) === 0) {
         await db.execute(`ALTER TABLE ${tbl} ADD COLUMN urgency VARCHAR(16) NOT NULL DEFAULT 'NORMAL'`);
+      }
+    }
+    for (const [tbl, colName, colDef] of [
+      ['hotels', 'city_id', 'BIGINT NULL'],
+      ['hotels', 'district_id', 'BIGINT NULL'],
+      ['hotels', 'district', 'VARCHAR(64) NULL'],
+      ['employees', 'position_id', 'BIGINT NULL'],
+      ['employees', 'education', 'VARCHAR(32) NULL'],
+      ['employees', 'marital_status', 'VARCHAR(24) NULL'],
+      ['employees', 'political_status', 'VARCHAR(24) NULL'],
+    ] as const) {
+      const c = await db.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt
+         FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?`,
+        [tbl, colName]
+      );
+      if (!c || Number(c.cnt) === 0) {
+        await db.execute(`ALTER TABLE ${tbl} ADD COLUMN ${colName} ${colDef}`);
       }
     }
   }

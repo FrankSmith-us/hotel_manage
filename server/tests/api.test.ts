@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 18 tables', () => {
+  it('MySQL and SQLite schemas define identical 24 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 18);
+    assert.equal(mysqlTables.length, 24);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1056,5 +1056,105 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       },
     });
     assert.equal(dupCode.status, 409);
+  });
+
+  it('Master data system configuration: RBAC, cascading geography/departments/positions, delete guards, and audit logs', async () => {
+    const adminToken = await loginAs('admin');
+    const hrToken = await loginAs('hr');
+    const staffToken = await loginAs('staff_sh');
+
+    // 1. Non-HQ_ADMIN cannot mutate master data
+    const hrCreateCity = await req('POST', '/api/master-data/cities', {
+      token: hrToken,
+      body: { region_id: 2, code: 'WH', name: '武汉市' },
+    });
+    assert.equal(hrCreateCity.status, 403);
+    const staffCreateDict = await req('POST', '/api/master-data/dicts', {
+      token: staffToken,
+      body: { dict_type: 'EDUCATION', code: 'POSTDOC', label: '博士后' },
+    });
+    assert.equal(staffCreateDict.status, 403);
+
+    // 2. HQ_ADMIN creates Region -> City -> District -> Hotel (RENOVATING)
+    const regRes = await req('POST', '/api/master-data/regions', {
+      token: adminToken,
+      body: { code: 'WEST', name: '西南大区' },
+    });
+    assert.equal(regRes.status, 201);
+    const regId = regRes.data.region.id;
+
+    const cityRes = await req('POST', '/api/master-data/cities', {
+      token: adminToken,
+      body: { region_id: regId, code: 'CD', name: '成都市', sort_order: 10 },
+    });
+    assert.equal(cityRes.status, 201);
+    const cityId = cityRes.data.city.id;
+
+    const distRes = await req('POST', '/api/master-data/districts', {
+      token: adminToken,
+      body: { city_id: cityId, code: 'CD-JN', name: '锦江区', sort_order: 1 },
+    });
+    assert.equal(distRes.status, 201);
+    const distId = distRes.data.district.id;
+
+    const newHotel = await req('POST', '/api/organization/hotels', {
+      token: adminToken,
+      body: {
+        code: 'CD-CHX',
+        name: '成都春熙路悦栖店',
+        region_id: regId,
+        city_id: cityId,
+        district_id: distId,
+        status: 'RENOVATING',
+        address: '成都市锦江区春熙路88号',
+        phone: '028-88886666',
+        room_count: 140,
+      },
+    });
+    assert.equal(newHotel.status, 201);
+    assert.equal(newHotel.data.hotel.status, 'RENOVATING');
+    assert.equal(newHotel.data.hotel.city, '成都市');
+    assert.equal(newHotel.data.hotel.district, '锦江区');
+
+    // 3. Delete protection: referenced Region, City, District, and system/used DictItem return 409
+    assert.equal((await req('DELETE', `/api/master-data/regions/${regId}`, { token: adminToken })).status, 409);
+    assert.equal((await req('DELETE', `/api/master-data/cities/${cityId}`, { token: adminToken })).status, 409);
+    assert.equal((await req('DELETE', `/api/master-data/districts/${distId}`, { token: adminToken })).status, 409);
+
+    // 4. Separate positions per org_level (HQ vs STORE) & level-mismatch guard (400)
+    const mdAll = await req('GET', '/api/master-data/all', { token: adminToken });
+    const hqFinDept = mdAll.data.deptTemplates.find((d: any) => d.org_level === 'HQ' && d.code === 'FIN');
+    const storeAdmDept = mdAll.data.deptTemplates.find((d: any) => d.org_level === 'STORE' && d.code === 'ADM');
+    assert.ok(hqFinDept && storeAdmDept);
+
+    const mismatchPos = await req('POST', '/api/master-data/positions', {
+      token: adminToken,
+      body: { org_level: 'HQ', dept_template_id: storeAdmDept.id, code: 'BAD_POS', name: '错层职位' },
+    });
+    assert.equal(mismatchPos.status, 400);
+
+    const tempPos = await req('POST', '/api/master-data/positions', {
+      token: adminToken,
+      body: { org_level: 'HQ', dept_template_id: hqFinDept.id, code: 'HQ_TAX_SPEC', name: '税务专员' },
+    });
+    assert.equal(tempPos.status, 201);
+    const tempPosId = tempPos.data.position.id;
+
+    // Update & Delete unreferenced position, then verify audit logs capture CREATE / UPDATE / DELETE
+    assert.equal(
+      (
+        await req('PUT', `/api/master-data/positions/${tempPosId}`, {
+          token: adminToken,
+          body: { org_level: 'HQ', dept_template_id: hqFinDept.id, code: 'HQ_TAX_SPEC', name: '高级税务专员', sort_order: 5, is_active: true },
+        })
+      ).status,
+      200
+    );
+    assert.equal((await req('DELETE', `/api/master-data/positions/${tempPosId}`, { token: adminToken })).status, 200);
+
+    const auditRes = await req('GET', '/api/master-data/audit-logs?keyword=HQ_TAX_SPEC', { token: adminToken });
+    assert.equal(auditRes.status, 200);
+    const actions = auditRes.data.logs.map((l: any) => l.action);
+    assert.ok(actions.includes('CREATE') && actions.includes('UPDATE') && actions.includes('DELETE'));
   });
 });

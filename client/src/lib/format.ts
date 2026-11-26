@@ -77,4 +77,10 @@ export const STATUS_META: Record<string, { label: string; cls: string }> = {
   INTERVIEW: { label: '面试中', cls: 'bg-sky-50 text-sky-700 border-sky-200' },
   OFFERED: { label: '已发Offer', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
   HIRED: { label: '已入职建档', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  CONTRACTED: { label: '签约', cls: 'bg-sky-50 text-sky-700 border-sky-200' },
+  RENOVATING: { label: '装修', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  SOFT_OPENING: { label: '试营业', cls: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  OPEN: { label: '开业', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+  SUSPENDED: { label: '停业整顿', cls: 'bg-orange-50 text-orange-700 border-orange-200' },
+  CLOSED: { label: '关闭', cls: 'bg-stone-200 text-stone-600 border-stone-300' },
 };

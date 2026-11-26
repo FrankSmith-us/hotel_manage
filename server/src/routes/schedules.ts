@@ -123,8 +123,8 @@ router.put(
             'SELECT id, region_id, status FROM hotels WHERE id = ?',
             [assignedHotelId]
           );
-          if (!targetHotel || targetHotel.status !== 'ACTIVE') {
-            throw new AppError(400, '跨店支援的目标门店不存在或未启用');
+          if (!targetHotel || !['OPEN', 'SOFT_OPENING', 'ACTIVE'].includes(targetHotel.status)) {
+            throw new AppError(400, '跨店支援的目标门店不存在或未处于营业/试营业状态');
           }
           if (user.role === 'REGIONAL_MANAGER' && !(await canAccessHotel(user, assignedHotelId))) {
             throw new AppError(403, '区域经理仅可调派至本大区内的门店');

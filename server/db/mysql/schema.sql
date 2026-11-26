@@ -15,12 +15,15 @@ CREATE TABLE IF NOT EXISTS hotels (
   code VARCHAR(32) NOT NULL UNIQUE,
   name VARCHAR(120) NOT NULL,
   region_id BIGINT NOT NULL,
+  city_id BIGINT NULL,
+  district_id BIGINT NULL,
   city VARCHAR(64) NOT NULL,
+  district VARCHAR(64) NULL,
   address VARCHAR(255) NOT NULL,
   phone VARCHAR(32) NOT NULL,
   room_count INT NOT NULL DEFAULT 0,
   is_hq TINYINT(1) NOT NULL DEFAULT 0,
-  status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
+  status VARCHAR(24) NOT NULL DEFAULT 'OPEN',
   opened_at VARCHAR(16) NOT NULL,
   created_at VARCHAR(32) NOT NULL,
   CONSTRAINT fk_hotels_region FOREIGN KEY (region_id) REFERENCES regions(id)
@@ -47,7 +50,11 @@ CREATE TABLE IF NOT EXISTS employees (
   id_card_last4 VARCHAR(8) NOT NULL DEFAULT '0000',
   hotel_id BIGINT NOT NULL,
   department_id BIGINT NOT NULL,
+  position_id BIGINT NULL,
   position VARCHAR(80) NOT NULL,
+  education VARCHAR(32) NULL,
+  marital_status VARCHAR(24) NULL,
+  political_status VARCHAR(24) NULL,
   employment_type VARCHAR(24) NOT NULL DEFAULT 'FULL_TIME',
   status VARCHAR(24) NOT NULL DEFAULT 'ACTIVE',
   hire_date VARCHAR(16) NOT NULL,
@@ -353,6 +360,91 @@ CREATE TABLE IF NOT EXISTS payee_accounts (
   updated_at VARCHAR(32) NOT NULL,
   UNIQUE KEY uk_payee_type_acc (payment_type, account_number),
   INDEX idx_payee_type (payment_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS cities (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  region_id BIGINT NOT NULL,
+  code VARCHAR(32) NOT NULL UNIQUE,
+  name VARCHAR(64) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_cities_region (region_id),
+  CONSTRAINT fk_cities_region FOREIGN KEY (region_id) REFERENCES regions(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS districts (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  city_id BIGINT NOT NULL,
+  code VARCHAR(32) NOT NULL UNIQUE,
+  name VARCHAR(64) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_districts_city (city_id),
+  CONSTRAINT fk_districts_city FOREIGN KEY (city_id) REFERENCES cities(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS dept_templates (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  org_level VARCHAR(16) NOT NULL,
+  code VARCHAR(32) NOT NULL,
+  name VARCHAR(80) NOT NULL,
+  category VARCHAR(32) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_dept_tpl_level_code (org_level, code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS job_positions (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  org_level VARCHAR(16) NOT NULL,
+  dept_template_id BIGINT NOT NULL,
+  code VARCHAR(32) NOT NULL,
+  name VARCHAR(80) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_pos_level_dept_code (org_level, dept_template_id, code),
+  INDEX idx_pos_dept_tpl (dept_template_id),
+  CONSTRAINT fk_pos_dept_tpl FOREIGN KEY (dept_template_id) REFERENCES dept_templates(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS master_dict_items (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  dict_type VARCHAR(40) NOT NULL,
+  code VARCHAR(40) NOT NULL,
+  label VARCHAR(80) NOT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  is_system TINYINT(1) NOT NULL DEFAULT 0,
+  extra_json VARCHAR(500) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_dict_type_code (dict_type, code),
+  INDEX idx_dict_type (dict_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS master_data_audit_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  entity_type VARCHAR(40) NOT NULL,
+  entity_id BIGINT NOT NULL,
+  entity_label VARCHAR(120) NOT NULL,
+  action VARCHAR(24) NOT NULL,
+  before_data TEXT NULL,
+  after_data TEXT NULL,
+  operator_id BIGINT NOT NULL,
+  operator_name VARCHAR(80) NOT NULL,
+  operator_role VARCHAR(32) NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  INDEX idx_md_audit_entity (entity_type, entity_id),
+  INDEX idx_md_audit_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

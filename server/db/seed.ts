@@ -35,6 +35,8 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
   if (options.reset) {
     const tables = [
+      'master_data_audit_logs',
+      'master_dict_items',
       'payee_accounts',
       'approval_logs',
       'approval_steps',
@@ -50,8 +52,12 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       'employee_lifecycle_events',
       'users',
       'employees',
+      'job_positions',
+      'dept_templates',
       'departments',
       'hotels',
+      'districts',
+      'cities',
       'regions',
     ];
     for (const t of tables) {
@@ -94,6 +100,207 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       regionIds[r.code] = res.insertId;
     }
 
+    // 1b. Cities & Districts (Master Data)
+    const cityIds: Record<string, number> = {};
+    const cityDefs = [
+      { code: 'SH', name: '上海市', region: 'EAST', sort: 1 },
+      { code: 'HZ', name: '杭州市', region: 'EAST', sort: 2 },
+      { code: 'NJ', name: '南京市', region: 'EAST', sort: 3 },
+      { code: 'BJ', name: '北京市', region: 'NORTH', sort: 4 },
+      { code: 'TJ', name: '天津市', region: 'NORTH', sort: 5 },
+      { code: 'SZ', name: '深圳市', region: 'SOUTH', sort: 6 },
+      { code: 'GZ', name: '广州市', region: 'SOUTH', sort: 7 },
+    ];
+    for (const c of cityDefs) {
+      const res = await tx.execute(
+        `INSERT INTO cities (region_id, code, name, sort_order, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        [regionIds[c.region], c.code, c.name, c.sort, ts, ts]
+      );
+      cityIds[c.code] = res.insertId;
+    }
+
+    const districtIds: Record<string, number> = {};
+    const districtDefs = [
+      { code: 'SH-JA', name: '静安区', city: 'SH', sort: 1 },
+      { code: 'SH-HP', name: '黄浦区', city: 'SH', sort: 2 },
+      { code: 'SH-PD', name: '浦东新区', city: 'SH', sort: 3 },
+      { code: 'HZ-XH', name: '西湖区', city: 'HZ', sort: 1 },
+      { code: 'HZ-SC', name: '上城区', city: 'HZ', sort: 2 },
+      { code: 'NJ-GL', name: '鼓楼区', city: 'NJ', sort: 1 },
+      { code: 'BJ-CY', name: '朝阳区', city: 'BJ', sort: 1 },
+      { code: 'BJ-HD', name: '海淀区', city: 'BJ', sort: 2 },
+      { code: 'TJ-HP', name: '和平区', city: 'TJ', sort: 1 },
+      { code: 'SZ-NS', name: '南山区', city: 'SZ', sort: 1 },
+      { code: 'SZ-FT', name: '福田区', city: 'SZ', sort: 2 },
+      { code: 'GZ-TH', name: '天河区', city: 'GZ', sort: 1 },
+    ];
+    for (const d of districtDefs) {
+      const res = await tx.execute(
+        `INSERT INTO districts (city_id, code, name, sort_order, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        [cityIds[d.city], d.code, d.name, d.sort, ts, ts]
+      );
+      districtIds[d.code] = res.insertId;
+    }
+
+    // 1c. Department Templates (HQ / REGION / STORE)
+    const deptTplIds: Record<string, number> = {};
+    const deptTplDefs: Array<{ org_level: 'HQ' | 'REGION' | 'STORE'; code: string; name: string; category: string; sort: number }> = [
+      // HQ
+      { org_level: 'HQ', code: 'EXEC', name: '总经办', category: 'ADMIN', sort: 1 },
+      { org_level: 'HQ', code: 'HR', name: '人力资源中心', category: 'ADMIN', sort: 2 },
+      { org_level: 'HQ', code: 'FIN', name: '财务管理中心', category: 'ADMIN', sort: 3 },
+      { org_level: 'HQ', code: 'OPS', name: '运营督导中心', category: 'ADMIN', sort: 4 },
+      { org_level: 'HQ', code: 'IT', name: '信息系统部', category: 'ADMIN', sort: 5 },
+      { org_level: 'HQ', code: 'DEV', name: '品牌拓展部', category: 'ADMIN', sort: 6 },
+      // REGION
+      { org_level: 'REGION', code: 'REG_OPS', name: '区域运营督导部', category: 'ADMIN', sort: 1 },
+      { org_level: 'REGION', code: 'REG_HR', name: '区域人事培训部', category: 'ADMIN', sort: 2 },
+      { org_level: 'REGION', code: 'REG_FIN', name: '区域财务核算部', category: 'ADMIN', sort: 3 },
+      { org_level: 'REGION', code: 'REG_ENG', name: '区域工程支持部', category: 'ENGINEERING', sort: 4 },
+      // STORE
+      { org_level: 'STORE', code: 'FO', name: '前厅部', category: 'FRONT_OFFICE', sort: 1 },
+      { org_level: 'STORE', code: 'HK', name: '客房部', category: 'HOUSEKEEPING', sort: 2 },
+      { org_level: 'STORE', code: 'ENG', name: '工程维保部', category: 'ENGINEERING', sort: 3 },
+      { org_level: 'STORE', code: 'FB', name: '餐饮部', category: 'FB', sort: 4 },
+      { org_level: 'STORE', code: 'ADM', name: '门店综合管理部', category: 'ADMIN', sort: 5 },
+    ];
+    for (const dt of deptTplDefs) {
+      const res = await tx.execute(
+        `INSERT INTO dept_templates (org_level, code, name, category, sort_order, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+        [dt.org_level, dt.code, dt.name, dt.category, dt.sort, ts, ts]
+      );
+      deptTplIds[`${dt.org_level}:${dt.code}`] = res.insertId;
+    }
+
+    // 1d. Job Positions (separated strictly by org_level + dept_template)
+    const posIds: Record<string, number> = {};
+    const posDefs: Array<{ org_level: 'HQ' | 'REGION' | 'STORE'; dept: string; code: string; name: string; sort: number }> = [
+      // HQ positions
+      { org_level: 'HQ', dept: 'EXEC', code: 'HQ_GM', name: '集团总经理', sort: 1 },
+      { org_level: 'HQ', dept: 'HR', code: 'HQ_HR_DIR', name: '集团HR总监', sort: 1 },
+      { org_level: 'HQ', dept: 'HR', code: 'HQ_HR_SPEC', name: '人事专员', sort: 2 },
+      { org_level: 'HQ', dept: 'FIN', code: 'HQ_FIN_MGR', name: '集团财务经理', sort: 1 },
+      { org_level: 'HQ', dept: 'FIN', code: 'HQ_FIN_SPEC', name: '财务专员', sort: 2 },
+      { org_level: 'HQ', dept: 'OPS', code: 'HQ_REG_MGR', name: '华东区区域经理', sort: 1 },
+      { org_level: 'HQ', dept: 'OPS', code: 'HQ_SYS_ADMIN', name: '集团系统管理员', sort: 2 },
+      { org_level: 'HQ', dept: 'IT', code: 'HQ_IT_ENG', name: '系统运维工程师', sort: 1 },
+      { org_level: 'HQ', dept: 'DEV', code: 'HQ_DEV_MGR', name: '门店拓展经理', sort: 1 },
+      // REGION positions
+      { org_level: 'REGION', dept: 'REG_OPS', code: 'REG_DIR', name: '区域运营经理', sort: 1 },
+      { org_level: 'REGION', dept: 'REG_HR', code: 'REG_HR_SPEC', name: '人事专员', sort: 1 },
+      { org_level: 'REGION', dept: 'REG_FIN', code: 'REG_FIN_SPEC', name: '财务专员', sort: 1 },
+      { org_level: 'REGION', dept: 'REG_ENG', code: 'REG_ENG_SUP', name: '区域工程督导', sort: 1 },
+      // STORE positions
+      { org_level: 'STORE', dept: 'ADM', code: 'ST_MGR', name: '门店店长', sort: 1 },
+      { org_level: 'STORE', dept: 'ADM', code: 'ST_FIN_SPEC', name: '财务专员', sort: 2 },
+      { org_level: 'STORE', dept: 'ADM', code: 'ST_HR_SPEC', name: '人事专员', sort: 3 },
+      { org_level: 'STORE', dept: 'FO', code: 'ST_FO_SUP', name: '前厅主管', sort: 1 },
+      { org_level: 'STORE', dept: 'FO', code: 'ST_FO_REC', name: '前台接待专员', sort: 2 },
+      { org_level: 'STORE', dept: 'FO', code: 'ST_FO_NIGHT', name: '夜审前台专员', sort: 3 },
+      { org_level: 'STORE', dept: 'FO', code: 'ST_FO_CON', name: '礼宾接待员', sort: 4 },
+      { org_level: 'STORE', dept: 'HK', code: 'ST_HK_LEAD', name: '客房领班', sort: 1 },
+      { org_level: 'STORE', dept: 'HK', code: 'ST_HK_ATT', name: '客房服务员', sort: 2 },
+      { org_level: 'STORE', dept: 'ENG', code: 'ST_ENG_TECH', name: '工程维修技师', sort: 1 },
+      { org_level: 'STORE', dept: 'ENG', code: 'ST_ENG_HVAC', name: '暖通维保主管', sort: 2 },
+      { org_level: 'STORE', dept: 'FB', code: 'ST_FB_CHEF', name: '早餐厅厨师长', sort: 1 },
+      { org_level: 'STORE', dept: 'FB', code: 'ST_FB_WAIT', name: '早餐厅服务员', sort: 2 },
+    ];
+    for (const p of posDefs) {
+      const res = await tx.execute(
+        `INSERT INTO job_positions (org_level, dept_template_id, code, name, sort_order, is_active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 1, ?, ?)`,
+        [p.org_level, deptTplIds[`${p.org_level}:${p.dept}`], p.code, p.name, p.sort, ts, ts]
+      );
+      posIds[`${p.org_level}:${p.name}`] = res.insertId;
+    }
+
+    // 1e. Master Dictionary Items
+    const dictDefs: Array<{ type: string; code: string; label: string; sort: number; isSystem?: number }> = [
+      // 门店状态
+      { type: 'HOTEL_STATUS', code: 'CONTRACTED', label: '签约', sort: 1, isSystem: 1 },
+      { type: 'HOTEL_STATUS', code: 'RENOVATING', label: '装修', sort: 2, isSystem: 1 },
+      { type: 'HOTEL_STATUS', code: 'SOFT_OPENING', label: '试营业', sort: 3, isSystem: 1 },
+      { type: 'HOTEL_STATUS', code: 'OPEN', label: '开业', sort: 4, isSystem: 1 },
+      { type: 'HOTEL_STATUS', code: 'SUSPENDED', label: '停业整顿', sort: 5, isSystem: 1 },
+      { type: 'HOTEL_STATUS', code: 'CLOSED', label: '关闭', sort: 6, isSystem: 1 },
+      // 员工性别
+      { type: 'GENDER', code: 'M', label: '男', sort: 1, isSystem: 1 },
+      { type: 'GENDER', code: 'F', label: '女', sort: 2, isSystem: 1 },
+      // 学历类别
+      { type: 'EDUCATION', code: 'JUNIOR_HIGH', label: '初中及以下', sort: 1 },
+      { type: 'EDUCATION', code: 'HIGH_SCHOOL', label: '高中/中专', sort: 2 },
+      { type: 'EDUCATION', code: 'ASSOCIATE', label: '大专', sort: 3 },
+      { type: 'EDUCATION', code: 'BACHELOR', label: '本科', sort: 4 },
+      { type: 'EDUCATION', code: 'MASTER', label: '硕士', sort: 5 },
+      { type: 'EDUCATION', code: 'DOCTOR', label: '博士', sort: 6 },
+      // 用工性质
+      { type: 'EMPLOYMENT_TYPE', code: 'FULL_TIME', label: '全职', sort: 1, isSystem: 1 },
+      { type: 'EMPLOYMENT_TYPE', code: 'PART_TIME', label: '兼职', sort: 2 },
+      { type: 'EMPLOYMENT_TYPE', code: 'INTERN', label: '实习生', sort: 3 },
+      { type: 'EMPLOYMENT_TYPE', code: 'DISPATCH', label: '劳务派遣', sort: 4 },
+      // 婚姻状况
+      { type: 'MARITAL_STATUS', code: 'SINGLE', label: '未婚', sort: 1 },
+      { type: 'MARITAL_STATUS', code: 'MARRIED', label: '已婚', sort: 2 },
+      { type: 'MARITAL_STATUS', code: 'DIVORCED', label: '离异', sort: 3 },
+      { type: 'MARITAL_STATUS', code: 'WIDOWED', label: '丧偶', sort: 4 },
+      // 政治面貌
+      { type: 'POLITICAL_STATUS', code: 'MASSES', label: '群众', sort: 1 },
+      { type: 'POLITICAL_STATUS', code: 'LEAGUE_MEMBER', label: '共青团员', sort: 2 },
+      { type: 'POLITICAL_STATUS', code: 'PARTY_MEMBER', label: '中共党员', sort: 3 },
+      { type: 'POLITICAL_STATUS', code: 'OTHER_PARTY', label: '民主党派', sort: 4 },
+      // 费用报销科目
+      { type: 'EXPENSE_CATEGORY', code: 'LINEN_SUPPLIES', label: '客房布草与客耗品', sort: 1, isSystem: 1 },
+      { type: 'EXPENSE_CATEGORY', code: 'MAINTENANCE', label: '工程维修与维保', sort: 2, isSystem: 1 },
+      { type: 'EXPENSE_CATEGORY', code: 'FB_PROCUREMENT', label: '餐饮食材采购', sort: 3, isSystem: 1 },
+      { type: 'EXPENSE_CATEGORY', code: 'UTILITIES', label: '水电燃气与物业', sort: 4, isSystem: 1 },
+      { type: 'EXPENSE_CATEGORY', code: 'MARKETING', label: '门店营销与OTA推广', sort: 5, isSystem: 1 },
+      { type: 'EXPENSE_CATEGORY', code: 'TRAVEL_TRAINING', label: '差旅交通与培训', sort: 6, isSystem: 1 },
+      { type: 'EXPENSE_CATEGORY', code: 'OTHER', label: '其他运营杂费', sort: 7, isSystem: 1 },
+      // 付款渠道
+      { type: 'PAYMENT_CHANNEL', code: 'BANK_TRANSFER', label: '对公/银行转账', sort: 1, isSystem: 1 },
+      { type: 'PAYMENT_CHANNEL', code: 'ALIPAY_CORP', label: '企业支付宝', sort: 2 },
+      { type: 'PAYMENT_CHANNEL', code: 'WECHAT_CORP', label: '企业微信支付', sort: 3 },
+      { type: 'PAYMENT_CHANNEL', code: 'CASH', label: '现金付款', sort: 4 },
+      // 请假与加班类型
+      { type: 'LEAVE_TYPE', code: 'ANNUAL', label: '年假', sort: 1, isSystem: 1 },
+      { type: 'LEAVE_TYPE', code: 'SICK', label: '病假', sort: 2, isSystem: 1 },
+      { type: 'LEAVE_TYPE', code: 'PERSONAL', label: '事假', sort: 3, isSystem: 1 },
+      { type: 'LEAVE_TYPE', code: 'COMP_OFF', label: '调休', sort: 4, isSystem: 1 },
+      { type: 'LEAVE_TYPE', code: 'OVERTIME', label: '加班申请', sort: 5, isSystem: 1 },
+      // 酒店排班班次
+      { type: 'SHIFT_TYPE', code: 'MORNING', label: '早班', sort: 1, isSystem: 1 },
+      { type: 'SHIFT_TYPE', code: 'AFTERNOON', label: '中班', sort: 2, isSystem: 1 },
+      { type: 'SHIFT_TYPE', code: 'EVENING', label: '晚班', sort: 3, isSystem: 1 },
+      { type: 'SHIFT_TYPE', code: 'NIGHT', label: '夜班', sort: 4, isSystem: 1 },
+      { type: 'SHIFT_TYPE', code: 'OFF', label: '休息', sort: 5, isSystem: 1 },
+      // 证照资质类型
+      { type: 'CERT_TYPE', code: 'HEALTH_CERT', label: '食品/公共场所健康证', sort: 1 },
+      { type: 'CERT_TYPE', code: 'ELECTRICIAN_CERT', label: '电工特种作业操作证', sort: 2 },
+      { type: 'CERT_TYPE', code: 'FIRE_OPERATOR_CERT', label: '消防设施操作员证', sort: 3 },
+      { type: 'CERT_TYPE', code: 'FOOD_SAFETY_CERT', label: '食品安全管理员证', sort: 4 },
+      // 合同类型
+      { type: 'CONTRACT_TYPE', code: 'FIXED_TERM', label: '固定期限劳动合同', sort: 1 },
+      { type: 'CONTRACT_TYPE', code: 'OPEN_ENDED', label: '无固定期限劳动合同', sort: 2 },
+      { type: 'CONTRACT_TYPE', code: 'INTERNSHIP', label: '实习协议', sort: 3 },
+      { type: 'CONTRACT_TYPE', code: 'LABOR_SERVICE', label: '劳务协议', sort: 4 },
+      // 离职原因
+      { type: 'RESIGN_REASON', code: 'PERSONAL_DEV', label: '个人职业发展', sort: 1 },
+      { type: 'RESIGN_REASON', code: 'COMPENSATION', label: '薪资福利原因', sort: 2 },
+      { type: 'RESIGN_REASON', code: 'FAMILY', label: '家庭或居住地变动', sort: 3 },
+      { type: 'RESIGN_REASON', code: 'CONTRACT_EXPIRE', label: '合同到期不再续签', sort: 4 },
+      { type: 'RESIGN_REASON', code: 'PROBATION_FAIL', label: '试用期考核未通过', sort: 5 },
+    ];
+    for (const item of dictDefs) {
+      await tx.execute(
+        `INSERT INTO master_dict_items (dict_type, code, label, sort_order, is_active, is_system, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+        [item.type, item.code, item.label, item.sort, item.isSystem ?? 0, ts, ts]
+      );
+    }
+
     // 2. Hotels
     const hotelIds: Record<string, number> = {};
     const hotelDefs = [
@@ -101,7 +308,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         code: 'HQ-001',
         name: '悦栖酒店管理集团总部',
         region: 'HQ',
-        city: '上海',
+        cityCode: 'SH',
+        districtCode: 'SH-JA',
+        city: '上海市',
+        district: '静安区',
         address: '上海市静安区南京西路1266号恒隆广场2期',
         phone: '021-60008800',
         room_count: 0,
@@ -112,7 +322,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         code: 'SH-JA',
         name: '上海静安旗舰店',
         region: 'EAST',
-        city: '上海',
+        cityCode: 'SH',
+        districtCode: 'SH-JA',
+        city: '上海市',
+        district: '静安区',
         address: '上海市静安区愚园路288号',
         phone: '021-62119900',
         room_count: 180,
@@ -123,7 +336,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         code: 'HZ-XH',
         name: '杭州西湖精品店',
         region: 'EAST',
-        city: '杭州',
+        cityCode: 'HZ',
+        districtCode: 'HZ-XH',
+        city: '杭州市',
+        district: '西湖区',
         address: '杭州市西湖区曙光路120号',
         phone: '0571-87996600',
         room_count: 120,
@@ -134,7 +350,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         code: 'BJ-GM',
         name: '北京国贸商务店',
         region: 'NORTH',
-        city: '北京',
+        cityCode: 'BJ',
+        districtCode: 'BJ-CY',
+        city: '北京市',
+        district: '朝阳区',
         address: '北京市朝阳区建国门外大街甲6号',
         phone: '010-65667700',
         room_count: 150,
@@ -145,7 +364,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         code: 'SZ-NS',
         name: '深圳南山智选店',
         region: 'SOUTH',
-        city: '深圳',
+        cityCode: 'SZ',
+        districtCode: 'SZ-NS',
+        city: '深圳市',
+        district: '南山区',
         address: '深圳市南山区高新南一道18号',
         phone: '0755-26668800',
         room_count: 135,
@@ -155,9 +377,23 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     ];
     for (const h of hotelDefs) {
       const res = await tx.execute(
-        `INSERT INTO hotels (code, name, region_id, city, address, phone, room_count, is_hq, status, opened_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, ?)`,
-        [h.code, h.name, regionIds[h.region], h.city, h.address, h.phone, h.room_count, h.is_hq, h.opened_at, ts]
+        `INSERT INTO hotels (code, name, region_id, city_id, district_id, city, district, address, phone, room_count, is_hq, status, opened_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, ?)`,
+        [
+          h.code,
+          h.name,
+          regionIds[h.region],
+          cityIds[h.cityCode],
+          districtIds[h.districtCode],
+          h.city,
+          h.district,
+          h.address,
+          h.phone,
+          h.room_count,
+          h.is_hq,
+          h.opened_at,
+          ts,
+        ]
       );
       hotelIds[h.code] = res.insertId;
     }
@@ -490,13 +726,19 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     ];
 
     for (const e of empDefs) {
+      const orgLevel = e.hotel === 'HQ-001' ? 'HQ' : 'STORE';
+      const posId = posIds[`${orgLevel}:${e.position}`] ?? null;
+      const education = e.hotel === 'HQ-001' ? 'BACHELOR' : e.position.includes('店长') || e.position.includes('主管') ? 'BACHELOR' : 'ASSOCIATE';
+      const maritalStatus = e.emp_no.endsWith('1') || e.emp_no.endsWith('3') ? 'MARRIED' : 'SINGLE';
+      const politicalStatus = e.emp_no === 'YQ-0001' || e.emp_no === 'YQ-0002' || e.emp_no === 'YQ-3001' ? 'PARTY_MEMBER' : 'MASSES';
       const res = await tx.execute(
         `INSERT INTO employees (
           emp_no, name, gender, phone, email, id_card_last4, hotel_id, department_id,
-          position, employment_type, status, hire_date, probation_end_date, contract_end_date,
+          position_id, position, education, marital_status, political_status,
+          employment_type, status, hire_date, probation_end_date, contract_end_date,
           health_cert_no, health_cert_expiry, base_salary, night_allowance_rate,
           bank_name, bank_account, emergency_contact, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'FULL_TIME', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'FULL_TIME', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           e.emp_no,
           e.name,
@@ -506,7 +748,11 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
           e.emp_no.slice(-4),
           hotelIds[e.hotel],
           deptIds[`${e.hotel}:${e.dept}`],
+          posId,
           e.position,
+          education,
+          maritalStatus,
+          politicalStatus,
           e.status,
           e.hire_date,
           e.probation_end_date ?? null,
@@ -604,6 +850,24 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       regionIds['SOUTH'],
       regionIds['HQ'],
     ]);
+
+    // Baseline master data audit log
+    await tx.execute(
+      `INSERT INTO master_data_audit_logs (entity_type, entity_id, entity_label, action, before_data, after_data, operator_id, operator_name, operator_role, created_at)
+       VALUES ('SYSTEM_INIT', 1, '基础数据初始化', 'CREATE', NULL, ?, ?, '张景行', 'HQ_ADMIN', ?)`,
+      [
+        JSON.stringify({
+          regions: 4,
+          cities: cityDefs.length,
+          districts: districtDefs.length,
+          dept_templates: deptTplDefs.length,
+          job_positions: posDefs.length,
+          dict_items: dictDefs.length,
+        }),
+        userIds['admin'],
+        ts,
+      ]
+    );
 
     // 6. Lifecycle events
     await tx.execute(
