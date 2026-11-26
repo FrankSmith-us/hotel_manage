@@ -458,9 +458,10 @@ router.post(
     await db.transaction(async (tx) => {
       await tx.execute(
         `UPDATE employees
-         SET hotel_id = ?, department_id = ?, position = ?, status = ?, base_salary = ?, updated_at = ?
+         SET hotel_id = ?, department_id = ?, position = ?, status = ?, base_salary = ?,
+             resign_date = CASE WHEN ? = 'RESIGN' THEN ? ELSE resign_date END, updated_at = ?
          WHERE id = ?`,
-        [newHotelId, newDeptId, newPos, newStatus, newSalary, ts, id]
+        [newHotelId, newDeptId, newPos, newStatus, newSalary, body.event_type, body.effective_date, ts, id]
       );
 
       if (body.event_type === 'RESIGN') {

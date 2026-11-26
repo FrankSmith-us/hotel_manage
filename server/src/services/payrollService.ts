@@ -1,4 +1,5 @@
 import { DbQueryRunner } from '../../db/adapter';
+import { BUSINESS_RULES } from '../config/businessRules';
 import { nowIso, roundMoney } from '../utils/numbers';
 
 export async function calculateMonthlyPayroll(
@@ -8,31 +9,54 @@ export async function calculateMonthlyPayroll(
     hotelId?: number;
   }
 ): Promise<{ processedCount: number; skippedConfirmedCount: number }> {
-  const empConditions = [`status IN ('ACTIVE', 'PROBATION')`];
-  const empParams: unknown[] = [];
-  if (params.hotelId) {
-    empConditions.push('hotel_id = ?');
-    empParams.push(params.hotelId);
-  }
-
-  const employees = await db.query<{
-    id: number;
-    hotel_id: number;
-    base_salary: number;
-    night_allowance_rate: number;
-  }>(
-    `SELECT id, hotel_id, base_salary, night_allowance_rate
-     FROM employees
-     WHERE ${empConditions.join(' AND ')}`,
-    empParams
-  );
-
   const [ymYear, ymMonth] = params.yearMonth.split('-').map(Number);
   const lastDay = new Date(Date.UTC(ymYear, ymMonth, 0)).getUTCDate();
   const monthStart = `${params.yearMonth}-01`;
   const monthEnd = `${params.yearMonth}-${String(lastDay).padStart(2, '0')}`;
   const monthStartMs = Date.parse(`${monthStart}T00:00:00Z`);
   const monthEndMs = Date.parse(`${monthEnd}T00:00:00Z`);
+
+  const hotelFilterSql = params.hotelId ? 'AND e.hotel_id = ?' : '';
+  const empParams: unknown[] = [monthEnd, monthStart, monthEnd, monthStart, monthEnd];
+  if (params.hotelId) empParams.push(params.hotelId);
+
+  const employees = await db.query<{
+    id: number;
+    hotel_id: number;
+    status: string;
+    hire_date: string;
+    resign_date: string | null;
+    base_salary: number;
+    probation_salary_ratio: number | null;
+    night_allowance_rate: number;
+    ev_resign_date: string | null;
+  }>(
+    `SELECT e.id, e.hotel_id, e.status, e.hire_date, e.resign_date, e.base_salary,
+            e.probation_salary_ratio, e.night_allowance_rate,
+            (SELECT MAX(ev.effective_date)
+             FROM employee_lifecycle_events ev
+             WHERE ev.employee_id = e.id AND ev.event_type = 'RESIGN'
+               AND ev.effective_date >= ? AND ev.effective_date <= ?) AS ev_resign_date
+     FROM employees e
+     WHERE e.hire_date <= ?
+       AND (
+         e.status IN ('ACTIVE', 'PROBATION')
+         OR (
+           e.status = 'RESIGNED'
+           AND (
+             (e.resign_date IS NOT NULL AND e.resign_date >= ? AND e.resign_date <= ?)
+             OR EXISTS (
+               SELECT 1 FROM employee_lifecycle_events ev2
+               WHERE ev2.employee_id = e.id AND ev2.event_type = 'RESIGN'
+                 AND ev2.effective_date >= ? AND ev2.effective_date <= ?
+             )
+           )
+         )
+       )
+       ${hotelFilterSql}`,
+    [monthStart, monthEnd, ...empParams]
+  );
+
   const ts = nowIso();
   let processedCount = 0;
   let skippedConfirmedCount = 0;
@@ -42,9 +66,13 @@ export async function calculateMonthlyPayroll(
       id: number;
       status: string;
       performance_bonus: number;
+      other_allowance: number;
+      advance_deduction: number;
+      other_deduction: number;
       notes: string | null;
     }>(
-      'SELECT id, status, performance_bonus, notes FROM payroll_records WHERE `year_month` = ? AND employee_id = ?',
+      `SELECT id, status, performance_bonus, other_allowance, advance_deduction, other_deduction, notes
+       FROM payroll_records WHERE \`year_month\` = ? AND employee_id = ?`,
       [params.yearMonth, emp.id]
     );
 
@@ -52,6 +80,14 @@ export async function calculateMonthlyPayroll(
       skippedConfirmedCount++;
       continue;
     }
+
+    const effectiveResignDate = emp.status === 'RESIGNED' ? emp.resign_date || emp.ev_resign_date : null;
+    const isResignedSettlement = emp.status === 'RESIGNED' ? 1 : 0;
+    const effStart = emp.hire_date > monthStart ? emp.hire_date : monthStart;
+    const effEnd = effectiveResignDate && effectiveResignDate < monthEnd ? effectiveResignDate : monthEnd;
+    const effStartMs = Date.parse(`${effStart}T00:00:00Z`);
+    const effEndMs = Date.parse(`${effEnd}T00:00:00Z`);
+    const proratedDays = effEndMs >= effStartMs ? Math.round((effEndMs - effStartMs) / 86_400_000) + 1 : 0;
 
     // Count night shifts in this month
     const nightRow = await db.queryOne<{ cnt: number }>(
@@ -93,36 +129,56 @@ export async function calculateMonthlyPayroll(
       const ovStart = Math.max(lStartMs, monthStartMs);
       const ovEnd = Math.min(lEndMs, monthEndMs);
       const overlapCalDays = ovEnd >= ovStart ? Math.round((ovEnd - ovStart) / 86_400_000) + 1 : 0;
-      const proratedDays = roundMoney((Number(l.days || 0) * overlapCalDays) / totalCalDays);
+      const proratedLeaveDays = roundMoney((Number(l.days || 0) * overlapCalDays) / totalCalDays);
 
       if (l.leave_type === 'PERSONAL') {
-        personalDays += proratedDays;
+        personalDays += proratedLeaveDays;
       } else if (l.leave_type === 'SICK') {
-        sickDays += proratedDays;
+        sickDays += proratedLeaveDays;
       }
     }
 
-    const baseSalary = roundMoney(Number(emp.base_salary));
+    const fullBase = roundMoney(Number(emp.base_salary));
+    const probationRatio =
+      emp.status === 'PROBATION'
+        ? Number(emp.probation_salary_ratio ?? BUSINESS_RULES.payroll.probationSalaryRatio)
+        : 1.0;
+    const baseAfterProbation = roundMoney(fullBase * probationRatio);
+    const baseSalary =
+      proratedDays >= lastDay ? baseAfterProbation : roundMoney((baseAfterProbation * proratedDays) / lastDay);
+
     const nightAllowance = roundMoney(nightShifts * Number(emp.night_allowance_rate || 80));
-    const hourlyRate = baseSalary / 21.75 / 8;
-    const overtimePay = roundMoney(hourlyRate * 1.5 * overtimeHours);
-    const leaveDeductionDays = roundMoney(personalDays + sickDays * 0.4);
-    const leaveDeduction = roundMoney((baseSalary / 21.75) * leaveDeductionDays);
+    const hourlyRate = baseAfterProbation / BUSINESS_RULES.payroll.workingDaysPerMonth / 8;
+    const overtimePay = roundMoney(hourlyRate * BUSINESS_RULES.overtime.workdayRate * overtimeHours);
+    const leaveDeductionDays = roundMoney(
+      personalDays * BUSINESS_RULES.payroll.personalLeaveDeductionRate +
+        sickDays * BUSINESS_RULES.payroll.sickLeaveDeductionRate
+    );
+    const leaveDeduction = roundMoney((baseAfterProbation / BUSINESS_RULES.payroll.workingDaysPerMonth) * leaveDeductionDays);
     const performanceBonus = existing ? roundMoney(Number(existing.performance_bonus || 0)) : 0;
-    const socialSecurity = roundMoney(baseSalary * 0.105);
-    const grossPay = roundMoney(baseSalary + nightAllowance + overtimePay + performanceBonus - leaveDeduction);
-    const netPay = roundMoney(Math.max(0, grossPay - socialSecurity));
+    const otherAllowance = existing ? roundMoney(Number(existing.other_allowance || 0)) : 0;
+    const advanceDeduction = existing ? roundMoney(Number(existing.advance_deduction || 0)) : 0;
+    const otherDeduction = existing ? roundMoney(Number(existing.other_deduction || 0)) : 0;
+    const socialSecurity = roundMoney(baseSalary * BUSINESS_RULES.payroll.defaultSocialSecurityRate);
+    const grossPay = Math.max(
+      0,
+      roundMoney(baseSalary + nightAllowance + overtimePay + performanceBonus + otherAllowance - leaveDeduction)
+    );
+    const netPay = Math.max(0, roundMoney(grossPay - socialSecurity - advanceDeduction - otherDeduction));
 
     if (existing) {
       await db.execute(
         `UPDATE payroll_records
-         SET hotel_id = ?, base_salary = ?, night_shifts = ?, night_allowance = ?,
-             overtime_hours = ?, overtime_pay = ?, leave_deduction_days = ?, leave_deduction = ?,
-             social_security = ?, gross_pay = ?, net_pay = ?, updated_at = ?
+         SET hotel_id = ?, base_salary = ?, prorated_days = ?, total_month_days = ?,
+             night_shifts = ?, night_allowance = ?, overtime_hours = ?, overtime_pay = ?,
+             leave_deduction_days = ?, leave_deduction = ?, social_security = ?,
+             gross_pay = ?, net_pay = ?, is_resigned_settlement = ?, updated_at = ?
          WHERE id = ?`,
         [
           emp.hotel_id,
           baseSalary,
+          proratedDays,
+          lastDay,
           nightShifts,
           nightAllowance,
           overtimeHours,
@@ -132,6 +188,7 @@ export async function calculateMonthlyPayroll(
           socialSecurity,
           grossPay,
           netPay,
+          isResignedSettlement,
           ts,
           existing.id,
         ]
@@ -139,15 +196,19 @@ export async function calculateMonthlyPayroll(
     } else {
       await db.execute(
         `INSERT INTO payroll_records (
-          \`year_month\`, employee_id, hotel_id, base_salary, night_shifts, night_allowance,
-          overtime_hours, overtime_pay, leave_deduction_days, leave_deduction, performance_bonus,
-          social_security, gross_pay, net_pay, status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)`,
+          \`year_month\`, employee_id, hotel_id, base_salary, prorated_days, total_month_days,
+          night_shifts, night_allowance, overtime_hours, overtime_pay,
+          leave_deduction_days, leave_deduction, performance_bonus, other_allowance,
+          social_security, advance_deduction, other_deduction, gross_pay, net_pay,
+          is_resigned_settlement, status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'DRAFT', ?, ?)`,
         [
           params.yearMonth,
           emp.id,
           emp.hotel_id,
           baseSalary,
+          proratedDays,
+          lastDay,
           nightShifts,
           nightAllowance,
           overtimeHours,
@@ -155,9 +216,13 @@ export async function calculateMonthlyPayroll(
           leaveDeductionDays,
           leaveDeduction,
           performanceBonus,
+          otherAllowance,
           socialSecurity,
+          advanceDeduction,
+          otherDeduction,
           grossPay,
           netPay,
+          isResignedSettlement,
           ts,
           ts,
         ]

@@ -93,7 +93,10 @@ router.put(
     const id = Number(req.params.id);
     const body = z
       .object({
-        performance_bonus: z.number().min(0).max(1_000_000, '绩效奖金超出合理范围'),
+        performance_bonus: z.number().min(0).max(1_000_000, '绩效奖金超出合理范围').optional(),
+        other_allowance: z.number().min(0).max(1_000_000, '其他补贴超出合理范围').optional(),
+        advance_deduction: z.number().min(0).max(1_000_000, '借款扣款超出合理范围').optional(),
+        other_deduction: z.number().min(0).max(1_000_000, '其他扣款超出合理范围').optional(),
         notes: z.string().optional().nullable(),
       })
       .parse(req.body);
@@ -108,28 +111,42 @@ router.put(
         overtime_pay: number;
         leave_deduction: number;
         performance_bonus: number;
+        other_allowance: number;
         social_security: number;
+        advance_deduction: number;
+        other_deduction: number;
       }>(`SELECT * FROM payroll_records WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
       if (!row) throw new AppError(404, '薪资记录不存在');
       if (row.status !== 'DRAFT') {
         throw new AppError(400, '已确认/已发放的薪资记录不可修改');
       }
 
-      const bonus = roundMoney(body.performance_bonus);
-      const grossPay = roundMoney(
-        Number(row.base_salary) +
-          Number(row.night_allowance) +
-          Number(row.overtime_pay) +
-          bonus -
-          Number(row.leave_deduction)
+      const bonus = roundMoney(body.performance_bonus ?? Number(row.performance_bonus || 0));
+      const otherAllowance = roundMoney(body.other_allowance ?? Number(row.other_allowance || 0));
+      const advanceDeduction = roundMoney(body.advance_deduction ?? Number(row.advance_deduction || 0));
+      const otherDeduction = roundMoney(body.other_deduction ?? Number(row.other_deduction || 0));
+      const grossPay = Math.max(
+        0,
+        roundMoney(
+          Number(row.base_salary) +
+            Number(row.night_allowance) +
+            Number(row.overtime_pay) +
+            bonus +
+            otherAllowance -
+            Number(row.leave_deduction)
+        )
       );
-      const netPay = roundMoney(Math.max(0, grossPay - Number(row.social_security)));
+      const netPay = Math.max(
+        0,
+        roundMoney(grossPay - Number(row.social_security) - advanceDeduction - otherDeduction)
+      );
 
       const upd = await tx.execute(
         `UPDATE payroll_records
-         SET performance_bonus = ?, gross_pay = ?, net_pay = ?, notes = ?, updated_at = ?
+         SET performance_bonus = ?, other_allowance = ?, advance_deduction = ?, other_deduction = ?,
+             gross_pay = ?, net_pay = ?, notes = ?, updated_at = ?
          WHERE id = ? AND status = 'DRAFT'`,
-        [bonus, grossPay, netPay, body.notes ?? null, nowIso(), id]
+        [bonus, otherAllowance, advanceDeduction, otherDeduction, grossPay, netPay, body.notes ?? null, nowIso(), id]
       );
       if (upd.affectedRows !== 1) throw new AppError(409, '薪资记录状态已变更，请刷新后重试');
 

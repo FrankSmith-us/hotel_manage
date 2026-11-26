@@ -66,9 +66,24 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['education', 'TEXT'],
       ['marital_status', 'TEXT'],
       ['political_status', 'TEXT'],
+      ['probation_salary_ratio', 'REAL NOT NULL DEFAULT 1.00'],
+      ['resign_date', 'TEXT'],
     ] as const) {
       if (!eCols.has(colName)) {
         await db.execute(`ALTER TABLE employees ADD COLUMN ${colName} ${colDef}`);
+      }
+    }
+    const prCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(payroll_records)')).map((c) => c.name));
+    for (const [colName, colDef] of [
+      ['prorated_days', 'REAL NOT NULL DEFAULT 0.00'],
+      ['total_month_days', 'INTEGER NOT NULL DEFAULT 30'],
+      ['other_allowance', 'REAL NOT NULL DEFAULT 0.00'],
+      ['advance_deduction', 'REAL NOT NULL DEFAULT 0.00'],
+      ['other_deduction', 'REAL NOT NULL DEFAULT 0.00'],
+      ['is_resigned_settlement', 'INTEGER NOT NULL DEFAULT 0'],
+    ] as const) {
+      if (!prCols.has(colName)) {
+        await db.execute(`ALTER TABLE payroll_records ADD COLUMN ${colName} ${colDef}`);
       }
     }
     const uCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(users)')).map((c) => c.name));
@@ -162,6 +177,14 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['cash_advances', 'payee_name', 'VARCHAR(80) NULL'],
       ['cash_advances', 'payee_bank', 'VARCHAR(120) NULL'],
       ['cash_advances', 'payee_account', 'VARCHAR(64) NULL'],
+      ['employees', 'probation_salary_ratio', 'DECIMAL(4,2) NOT NULL DEFAULT 1.00'],
+      ['employees', 'resign_date', 'VARCHAR(16) NULL'],
+      ['payroll_records', 'prorated_days', 'DECIMAL(6,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'total_month_days', 'INT NOT NULL DEFAULT 30'],
+      ['payroll_records', 'other_allowance', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'advance_deduction', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'other_deduction', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'is_resigned_settlement', 'TINYINT(1) NOT NULL DEFAULT 0'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt

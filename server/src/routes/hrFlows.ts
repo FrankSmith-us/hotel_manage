@@ -795,7 +795,11 @@ router.post(
       );
       if (!emp) throw new AppError(404, '员工不存在');
 
-      await tx.execute(`UPDATE employees SET status = 'RESIGNED', updated_at = ? WHERE id = ?`, [ts, off.employee_id]);
+      await tx.execute(`UPDATE employees SET status = 'RESIGNED', resign_date = ?, updated_at = ? WHERE id = ?`, [
+        off.last_working_date,
+        ts,
+        off.employee_id,
+      ]);
       const empUsers = await tx.query<{ id: number }>('SELECT id FROM users WHERE employee_id = ? AND is_active = 1', [
         off.employee_id,
       ]);

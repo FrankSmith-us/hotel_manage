@@ -1883,4 +1883,99 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(repList.status, 200);
     assert.equal(repList.data.repayments.length, 2);
   });
+
+  it('T1-09a: payroll proration for mid-month hire/resign, deductions, and terminal lock', async () => {
+    const hrToken = await loginAs('hr');
+    const finToken = await loginAs('finance');
+    const staffToken = await loginAs('staff_sh');
+
+    const ym = '2026-06'; // 30 days
+    // 1. Create a mid-month hire employee (hire_date 2026-06-16 => 15 days => 50% of 6000 = 3000)
+    const hireRes = await req('POST', '/api/employees', {
+      token: hrToken,
+      body: {
+        name: '折算测试员工',
+        gender: 'M',
+        phone: '13900001091',
+        hotel_id: 2,
+        department_id: 6,
+        position: '前厅接待员',
+        employment_type: 'FULL_TIME',
+        status: 'ACTIVE',
+        hire_date: '2026-06-16',
+        base_salary: 6000,
+      },
+    });
+    assert.equal(hireRes.status, 201);
+    const midEmpId = hireRes.data.employee.id;
+
+    // 2. Create and resign another employee mid-month (2026-06-15 => 15 days => 50% of 4000 = 2000)
+    const resignEmpRes = await req('POST', '/api/employees', {
+      token: hrToken,
+      body: {
+        name: '当月离职员工',
+        gender: 'F',
+        phone: '13900001092',
+        hotel_id: 2,
+        department_id: 6,
+        position: '客房服务员',
+        employment_type: 'FULL_TIME',
+        status: 'ACTIVE',
+        hire_date: '2026-01-01',
+        base_salary: 4000,
+      },
+    });
+    assert.equal(resignEmpRes.status, 201);
+    const resEmpId = resignEmpRes.data.employee.id;
+
+    const resignLife = await req('POST', `/api/employees/${resEmpId}/lifecycle`, {
+      token: hrToken,
+      body: {
+        event_type: 'RESIGN',
+        effective_date: '2026-06-15',
+        reason: '个人原因离职',
+      },
+    });
+    assert.equal(resignLife.status, 200);
+
+    // 3. Calculate payroll for 2026-06 on hotel 2
+    const calcRes = await req('POST', '/api/payroll/calculate', {
+      token: hrToken,
+      body: { yearMonth: ym, hotelId: 2 },
+    });
+    assert.equal(calcRes.status, 200);
+
+    const listRes = await req('GET', `/api/payroll?yearMonth=${ym}&hotelId=2`, { token: finToken });
+    assert.equal(listRes.status, 200);
+    const midRec = listRes.data.records.find((r: any) => r.employee_id === midEmpId);
+    const resRec = listRes.data.records.find((r: any) => r.employee_id === resEmpId);
+    assert.ok(midRec);
+    assert.ok(resRec);
+    assert.equal(midRec.prorated_days, 15);
+    assert.equal(midRec.base_salary, 3000);
+    assert.equal(resRec.prorated_days, 15);
+    assert.equal(resRec.base_salary, 2000);
+    assert.equal(resRec.is_resigned_settlement, 1);
+
+    // 4. Unauthorized staff cannot edit payroll; finance can add allowance & deductions
+    assert.equal(
+      (await req('PUT', `/api/payroll/${midRec.id}`, { token: staffToken, body: { performance_bonus: 500 } })).status,
+      403
+    );
+    const updRes = await req('PUT', `/api/payroll/${midRec.id}`, {
+      token: finToken,
+      body: { performance_bonus: 500, other_allowance: 200, advance_deduction: 300, other_deduction: 100 },
+    });
+    assert.equal(updRes.status, 200);
+    // gross = 3000 + 500 + 200 = 3700; ss = 3000 * 0.105 = 315; net = 3700 - 315 - 300 - 100 = 2985
+    assert.equal(updRes.data.record.gross_pay, 3700);
+    assert.equal(updRes.data.record.net_pay, 2985);
+
+    // 5. Confirm lock prevents further edits
+    assert.equal((await req('POST', '/api/payroll/confirm', { token: finToken, body: { yearMonth: ym, hotelId: 2 } })).status, 200);
+    assert.equal(
+      (await req('PUT', `/api/payroll/${midRec.id}`, { token: finToken, body: { performance_bonus: 600 } })).status,
+      400
+    );
+  });
 });
