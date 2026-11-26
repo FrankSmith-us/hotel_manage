@@ -66,6 +66,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const { user, demoAccounts, demoSwitchEnabled, switchDemoAccount, logout } = useAuth();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
+  const [switcherQuery, setSwitcherQuery] = useState('');
   const [alertCounts, setAlertCounts] = useState({
     pendingExpenseCount: 0,
     urgentExpenseCount: 0,
@@ -230,12 +231,34 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     className="fixed inset-0 z-40"
                     onClick={() => setSwitcherOpen(false)}
                   />
-                  <div className="absolute right-0 mt-2 w-72 bg-white rounded-2xl shadow-xl border border-stone-200 py-2 z-50">
+                  <div className="absolute right-0 mt-2 w-80 bg-white rounded-2xl shadow-xl border border-stone-200 py-2 z-50">
                     <div className="px-4 py-2 text-[11px] font-semibold text-stone-400 uppercase border-b border-stone-100">
-                      一键切换演示账号（实时权限隔离）
+                      一键切换演示账号（共 {demoAccounts.length} 个）
+                    </div>
+                    <div className="px-3 py-2 border-b border-stone-100">
+                      <input
+                        type="text"
+                        value={switcherQuery}
+                        onChange={(e) => setSwitcherQuery(e.target.value)}
+                        placeholder="按姓名 / 门店 / 角色筛选..."
+                        className="w-full px-2.5 py-1.5 rounded-lg border border-stone-200 text-xs focus:outline-none focus:border-brand-500"
+                      />
                     </div>
                     <div className="max-h-80 overflow-y-auto py-1">
-                      {demoAccounts.map((acc) => (
+                      {demoAccounts
+                        .filter((acc) => {
+                          const q = switcherQuery.trim().toLowerCase();
+                          if (!q) return true;
+                          return [
+                            acc.display_name,
+                            acc.username,
+                            acc.role_label,
+                            acc.position || '',
+                            acc.hotel_name || '',
+                            acc.region_name || '',
+                          ].some((v) => v.toLowerCase().includes(q));
+                        })
+                        .map((acc) => (
                         <button
                           key={acc.username}
                           onClick={() => handleSwitch(acc.username)}
@@ -243,17 +266,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
                             acc.username === user?.username ? 'bg-brand-50/70' : ''
                           }`}
                         >
-                          <div>
-                            <div className="font-semibold text-stone-900">
+                          <div className="min-w-0 pr-2">
+                            <div className="font-semibold text-stone-900 truncate">
                               {acc.display_name}{' '}
                               <span className="text-brand-700 font-normal">({acc.role_label})</span>
                             </div>
-                            <div className="text-stone-500 mt-0.5">
-                              {acc.hotel_name || acc.region_name || '集团总部'} · @{acc.username}
+                            <div className="text-stone-500 mt-0.5 truncate">
+                              {acc.hotel_name || acc.region_name || '集团总部'}
+                              {acc.position ? ` · ${acc.position}` : ''} · @{acc.username}
                             </div>
                           </div>
                           {acc.username === user?.username && (
-                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-brand-600 text-white">
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-brand-600 text-white shrink-0">
                               当前
                             </span>
                           )}

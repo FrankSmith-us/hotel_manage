@@ -8,7 +8,15 @@ export function LoginPage() {
   const { showToast } = useToast();
   const [username, setUsername] = useState('mgr_sh');
   const [password, setPassword] = useState('Hotel@2026');
+  const [demoQuery, setDemoQuery] = useState('');
   const [submitting, setSubmitting] = useState(false);
+
+  const filteredDemoAccounts = demoAccounts.filter((acc) => {
+    const q = demoQuery.trim().toLowerCase();
+    if (!q) return true;
+    return [acc.display_name, acc.username, acc.role_label, acc.position || '', acc.hotel_name || '', acc.region_name || '']
+      .some((v) => v.toLowerCase().includes(q));
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -123,11 +131,20 @@ export function LoginPage() {
 
           {demoSwitchEnabled && demoAccounts.length > 0 && (
             <div className="bg-white rounded-2xl border border-stone-200 shadow-sm p-6">
-              <div className="text-xs font-semibold text-stone-700 uppercase tracking-wider mb-3">
-                快速体验 · 一键登录不同门店与审批角色
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-3">
+                <div className="text-xs font-semibold text-stone-700 uppercase tracking-wider">
+                  快速体验 · 一键登录不同门店与审批角色 ({demoAccounts.length})
+                </div>
+                <input
+                  type="text"
+                  value={demoQuery}
+                  onChange={(e) => setDemoQuery(e.target.value)}
+                  placeholder="按姓名 / 门店 / 角色筛选"
+                  className="px-2.5 py-1 rounded-lg border border-stone-200 text-xs w-full sm:w-44 focus:outline-none focus:border-brand-500"
+                />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                {demoAccounts.map((acc) => (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[340px] overflow-y-auto pr-1">
+                {filteredDemoAccounts.map((acc) => (
                   <button
                     key={acc.username}
                     type="button"
@@ -135,9 +152,14 @@ export function LoginPage() {
                     onClick={() => handleQuickDemo(acc.username)}
                     className="text-left p-3 rounded-xl border border-stone-200 hover:border-brand-400 hover:bg-brand-50/50 transition-all"
                   >
-                    <div className="flex items-center justify-between">
-                      <span className="font-semibold text-sm text-stone-900">{acc.display_name}</span>
-                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 border border-brand-200/70">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold text-sm text-stone-900 truncate">
+                        {acc.display_name}
+                        {acc.position && (
+                          <span className="text-xs font-normal text-stone-500 ml-1">· {acc.position}</span>
+                        )}
+                      </span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 border border-brand-200/70 shrink-0">
                         {acc.role_label}
                       </span>
                     </div>

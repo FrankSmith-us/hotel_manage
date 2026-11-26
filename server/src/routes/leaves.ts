@@ -3,7 +3,15 @@ import { z } from 'zod';
 import { getDb } from '../../db';
 import { AppError, asyncHandler, authenticate, getScopeFilter } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
-import { buildLeaveRoute, canUserActOnStep, replaceApprovalSteps, resolveApprovalRoute } from '../services/workflowEngine';
+import {
+  buildLeaveRoute,
+  buildStatusDetail,
+  canUserActOnStep,
+  getUserLastHandledAction,
+  getWorkflowStepsWithActors,
+  replaceApprovalSteps,
+  resolveApprovalRoute,
+} from '../services/workflowEngine';
 import { UserRole } from '../types';
 import { generateCode, nowIso } from '../utils/numbers';
 
@@ -29,6 +37,12 @@ router.get(
         res.json({ leaves: [] });
         return;
       }
+    } else if (tab === 'handled') {
+      conditions.push(
+        `(EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'LEAVE' AND s.biz_id = l.id AND s.acted_by = ?)
+          OR EXISTS (SELECT 1 FROM approval_logs al WHERE al.biz_type = 'LEAVE' AND al.biz_id = l.id AND al.actor_id = ? AND al.action IN ('APPROVE', 'REJECT')))`
+      );
+      params.push(user.id, user.id);
     } else if (tab !== 'pending') {
       if (scope.type === 'REGION') {
         if (scope.hotelIds.length === 0) {
@@ -104,9 +118,25 @@ router.get(
 
       if (tab === 'pending' && !canApprove) continue;
 
+      const steps = await getWorkflowStepsWithActors(db, 'LEAVE', row.id);
+      const handledInfo =
+        tab === 'handled'
+          ? await getUserLastHandledAction(db, 'LEAVE', row.id, user.id)
+          : { my_last_action: null, my_acted_at: null };
+
       enriched.push({
         ...row,
         current_step_name: pendingStep?.step_name ?? null,
+        steps,
+        status_detail: buildStatusDetail({
+          bizType: 'LEAVE',
+          status: row.status,
+          currentStepName: pendingStep?.step_name ?? null,
+          currentStep: row.current_step,
+          totalSteps: steps.length,
+        }),
+        my_last_action: handledInfo.my_last_action,
+        my_acted_at: handledInfo.my_acted_at,
         canApprove,
       });
     }

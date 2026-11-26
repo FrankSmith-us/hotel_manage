@@ -11,7 +11,15 @@ import {
   requireRoles,
 } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
-import { buildHeadcountRoute, canUserActOnStep, replaceApprovalSteps, resolveApprovalRoute } from '../services/workflowEngine';
+import {
+  buildHeadcountRoute,
+  buildStatusDetail,
+  canUserActOnStep,
+  getUserLastHandledAction,
+  getWorkflowStepsWithActors,
+  replaceApprovalSteps,
+  resolveApprovalRoute,
+} from '../services/workflowEngine';
 import { UserRole } from '../types';
 import { addDays, generateCode, nowIso, todayStr } from '../utils/numbers';
 
@@ -23,20 +31,32 @@ router.get(
   asyncHandler(async (req, res) => {
     const db = getDb();
     const user = req.user!;
+    const tab = String(req.query.tab || 'all');
     const scope = await getScopeFilter(user);
     const conditions = ['1=1'];
     const params: unknown[] = [];
 
-    if (scope.type === 'REGION') {
-      if (scope.hotelIds.length === 0) {
-        res.json({ headcounts: [] });
-        return;
+    if (tab === 'mine') {
+      conditions.push('hc.applicant_id = ?');
+      params.push(user.id);
+    } else if (tab === 'handled') {
+      conditions.push(
+        `(EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'HEADCOUNT' AND s.biz_id = hc.id AND s.acted_by = ?)
+          OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'HEADCOUNT' AND l.biz_id = hc.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'REJECT')))`
+      );
+      params.push(user.id, user.id);
+    } else if (tab !== 'pending') {
+      if (scope.type === 'REGION') {
+        if (scope.hotelIds.length === 0) {
+          res.json({ headcounts: [] });
+          return;
+        }
+        conditions.push(`hc.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
+        params.push(...scope.hotelIds);
+      } else if (scope.type === 'HOTEL' || scope.type === 'SELF') {
+        conditions.push('hc.hotel_id = ?');
+        params.push(scope.hotelId);
       }
-      conditions.push(`hc.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
-      params.push(...scope.hotelIds);
-    } else if (scope.type === 'HOTEL' || scope.type === 'SELF') {
-      conditions.push('hc.hotel_id = ?');
-      params.push(scope.hotelId);
     }
 
     const rows = await db.query<{
@@ -63,7 +83,7 @@ router.get(
        JOIN departments d ON d.id = hc.department_id
        JOIN users u ON u.id = hc.applicant_id
        WHERE ${conditions.join(' AND ')}
-       ORDER BY hc.id DESC`,
+       ORDER BY CASE WHEN hc.urgency = 'URGENT' THEN 0 ELSE 1 END ASC, hc.id DESC`,
       params
     );
 
@@ -81,9 +101,27 @@ router.get(
       const canApprove = pendingStep
         ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id)
         : false;
+      if (tab === 'pending' && !canApprove) continue;
+
+      const steps = await getWorkflowStepsWithActors(db, 'HEADCOUNT', r.id);
+      const handledInfo =
+        tab === 'handled'
+          ? await getUserLastHandledAction(db, 'HEADCOUNT', r.id, user.id)
+          : { my_last_action: null, my_acted_at: null };
+
       enriched.push({
         ...r,
         current_step_name: pendingStep?.step_name ?? null,
+        steps,
+        status_detail: buildStatusDetail({
+          bizType: 'HEADCOUNT',
+          status: r.status,
+          currentStepName: pendingStep?.step_name ?? null,
+          currentStep: r.current_step,
+          totalSteps: steps.length,
+        }),
+        my_last_action: handledInfo.my_last_action,
+        my_acted_at: handledInfo.my_acted_at,
         canApprove,
       });
     }

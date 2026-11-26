@@ -1,11 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Check, Plus, UserCheck, XCircle } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
 import { apiFetch } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { formatMoney } from '../lib/format';
+import { ACTION_LABEL_MAP, formatMoney } from '../lib/format';
+
+interface StepSummary {
+  step_order: number;
+  step_name: string;
+  status: string;
+  actor_name: string | null;
+}
 
 interface HeadcountRow {
   id: number;
@@ -20,6 +28,9 @@ interface HeadcountRow {
   applicant_name: string;
   status: string;
   current_step_name: string | null;
+  status_detail?: string;
+  my_last_action?: string | null;
+  steps?: StepSummary[];
   canApprove: boolean;
 }
 
@@ -40,7 +51,12 @@ interface CandidateRow {
 export function RecruitmentPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const [searchParams] = useSearchParams();
+  const initialHcTab = searchParams.get('tab');
   const [tab, setTab] = useState<'headcounts' | 'candidates'>('headcounts');
+  const [hcTab, setHcTab] = useState<'all' | 'pending' | 'mine' | 'handled'>(
+    initialHcTab === 'pending' || initialHcTab === 'mine' || initialHcTab === 'handled' ? initialHcTab : 'all'
+  );
   const [headcounts, setHeadcounts] = useState<HeadcountRow[]>([]);
   const [candidates, setCandidates] = useState<CandidateRow[]>([]);
   const [hotels, setHotels] = useState<Array<{ id: number; name: string }>>([]);
@@ -68,12 +84,20 @@ export function RecruitmentPage() {
 
   const load = useCallback(async () => {
     const [hcRes, candRes] = await Promise.all([
-      apiFetch<{ headcounts: HeadcountRow[] }>('/api/recruitment/headcounts'),
+      apiFetch<{ headcounts: HeadcountRow[] }>(`/api/recruitment/headcounts?tab=${hcTab}`),
       apiFetch<{ candidates: CandidateRow[] }>('/api/recruitment/candidates'),
     ]);
     setHeadcounts(hcRes.headcounts);
     setCandidates(candRes.candidates);
-  }, []);
+  }, [hcTab]);
+
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t === 'all' || t === 'pending' || t === 'mine' || t === 'handled') {
+      setTab('headcounts');
+      setHcTab(t);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     load();
@@ -235,7 +259,27 @@ export function RecruitmentPage() {
       </div>
 
       {tab === 'headcounts' && (
-        <div className="bg-white rounded-2xl border border-stone-200/90 shadow-sm overflow-hidden">
+        <div className="space-y-3">
+          <div className="flex items-center gap-1.5 bg-stone-100 p-1 rounded-xl w-fit flex-wrap">
+            {[
+              { key: 'all', label: '全部补编' },
+              { key: 'pending', label: '待我审批' },
+              { key: 'mine', label: '我的申请' },
+              { key: 'handled', label: '我审批过的' },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setHcTab(t.key as typeof hcTab)}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold ${
+                  hcTab === t.key ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-600'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="bg-white rounded-2xl border border-stone-200/90 shadow-sm overflow-hidden">
           <table className="w-full text-sm text-left">
             <thead className="bg-stone-50 border-b border-stone-200 text-xs text-stone-500">
               <tr>
@@ -269,9 +313,37 @@ export function RecruitmentPage() {
                   <td className="px-4 py-3.5 text-xs text-stone-600">{hc.salary_range}</td>
                   <td className="px-4 py-3.5 text-xs text-stone-600 max-w-xs truncate">{hc.reason}</td>
                   <td className="px-4 py-3.5">
-                    <StatusBadge status={hc.status} />
-                    {hc.current_step_name && (
-                      <div className="text-[11px] text-stone-500 mt-1">{hc.current_step_name}</div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <StatusBadge status={hc.status} />
+                      {hc.my_last_action && (
+                        <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+                          {ACTION_LABEL_MAP[hc.my_last_action] || hc.my_last_action}
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-stone-500 mt-1">
+                      {hc.status_detail || hc.current_step_name || ''}
+                    </div>
+                    {hc.steps && hc.steps.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {hc.steps.map((s) => (
+                          <span
+                            key={s.step_order}
+                            className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                              s.status === 'APPROVED'
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : s.status === 'PENDING'
+                                  ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                  : s.status === 'REJECTED'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                    : 'bg-stone-50 text-stone-400 border-stone-200'
+                            }`}
+                          >
+                            {s.step_order}.{s.step_name}
+                            {s.actor_name ? `(${s.actor_name})` : ''}
+                          </span>
+                        ))}
+                      </div>
                     )}
                   </td>
                   <td className="px-5 py-3.5 text-right space-x-2">
@@ -296,6 +368,7 @@ export function RecruitmentPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 

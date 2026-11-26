@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
-import { setDb, closeDb } from '../db';
+import { setDb, closeDb, getDb } from '../db';
 import { initSchema } from '../db/init';
 import { seedDatabase } from '../db/seed';
 import { SqliteAdapter } from '../db/sqliteAdapter';
@@ -70,7 +70,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 17 tables', () => {
+  it('MySQL and SQLite schemas define identical 18 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
@@ -685,5 +685,103 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     if (firstOtherIdx !== -1 && lastExpenseIdx !== -1) {
       assert.ok(lastExpenseIdx < firstOtherIdx);
     }
+  });
+
+  it('Every employee in approval forms has a login account and can view applied and approved statuses', async () => {
+    const db = getDb();
+
+    // 1. Every employee appearing in any workflow table (and all 16 seeded employees) has an active user account
+    const missingUsers = await db.query<{ emp_no: string; name: string }>(
+      `SELECT e.emp_no, e.name
+       FROM employees e
+       LEFT JOIN users u ON u.employee_id = e.id AND u.is_active = 1
+       WHERE u.id IS NULL`
+    );
+    assert.equal(missingUsers.length, 0, `Employees without active accounts: ${JSON.stringify(missingUsers)}`);
+
+    const allDemoRes = await req('GET', '/api/auth/demo-accounts');
+    assert.equal(allDemoRes.status, 200);
+    assert.ok(allDemoRes.data.accounts.length >= 16);
+
+    // Log in as newly added accounts & verify each can log in with Hotel@2026
+    const staffShHkToken = await loginAs('staff_sh_hk');
+    const staffShEngToken = await loginAs('staff_sh_eng');
+    const staffHzToken = await loginAs('staff_hz');
+    const staffBjFoToken = await loginAs('staff_bj_fo');
+    const mgrHzToken = await loginAs('mgr_hz');
+    const mgrBjToken = await loginAs('mgr_bj');
+    const mgrSzToken = await loginAs('mgr_sz');
+    const regionToken = await loginAs('region_east');
+    const gmToken = await loginAs('gm');
+    const hrToken = await loginAs('hr');
+    const financeToken = await loginAs('finance');
+
+    // 2. Submitting employees see their own applications and live statuses via tab=mine and Dashboard
+    const hkMineLeaves = await req('GET', '/api/leaves?tab=mine', { token: staffShHkToken });
+    assert.ok(hkMineLeaves.data.leaves.some((l: any) => l.request_no === 'LV-202611-002' && l.status === 'PENDING_APPROVAL'));
+
+    const hkMineReimb = await req('GET', '/api/reimbursements?tab=mine', { token: staffShHkToken });
+    assert.ok(hkMineReimb.data.reimbursements.some((r: any) => r.claim_no === 'BX-202611-009' && r.status === 'PENDING_APPROVAL'));
+
+    const engMineReimb = await req('GET', '/api/reimbursements?tab=mine', { token: staffShEngToken });
+    assert.ok(engMineReimb.data.reimbursements.some((r: any) => r.claim_no === 'BX-202611-010' && r.status === 'APPROVED'));
+
+    const hzMineAdv = await req('GET', '/api/advances?tab=mine', { token: staffHzToken });
+    assert.ok(hzMineAdv.data.advances.some((a: any) => a.advance_no === 'ADV-202611-004' && a.status === 'PENDING_APPROVAL'));
+
+    const szDash = await req('GET', '/api/dashboard/summary', { token: mgrSzToken });
+    assert.ok(szDash.data.myApplications.some((i: any) => i.code === 'BX-202611-013' && i.status === 'PENDING_APPROVAL'));
+
+    // 3. Approvers see previously approved/handled items across all 4 workflows via tab=handled & Dashboard
+    const hzHandledReimb = await req('GET', '/api/reimbursements?tab=handled', { token: mgrHzToken });
+    assert.ok(
+      hzHandledReimb.data.reimbursements.some(
+        (r: any) => r.claim_no === 'BX-202611-011' && r.my_last_action === 'APPROVE' && r.status === 'PENDING_APPROVAL'
+      )
+    );
+    const hzHandledLeaves = await req('GET', '/api/leaves?tab=handled', { token: mgrHzToken });
+    assert.ok(hzHandledLeaves.data.leaves.some((l: any) => l.request_no === 'LV-202611-005'));
+    const hzHandledAdv = await req('GET', '/api/advances?tab=handled', { token: mgrHzToken });
+    assert.ok(hzHandledAdv.data.advances.some((a: any) => a.advance_no === 'ADV-202611-004'));
+
+    const regHandledHc = await req('GET', '/api/recruitment/headcounts?tab=handled', { token: regionToken });
+    assert.ok(regHandledHc.data.headcounts.some((hc: any) => hc.request_no === 'HC-202611-003'));
+
+    const hrHandledHc = await req('GET', '/api/recruitment/headcounts?tab=handled', { token: hrToken });
+    assert.ok(hrHandledHc.data.headcounts.some((hc: any) => hc.request_no === 'HC-202611-002' && hc.status === 'APPROVED'));
+
+    const finDash = await req('GET', '/api/dashboard/summary', { token: financeToken });
+    assert.ok(finDash.data.myHandledApprovals.length > 0);
+
+    // 4. Dynamic status propagation: mgr_bj approves BX-202611-012 -> appears in mgr_bj handled as PENDING_APPROVAL (at GM) -> gm approves -> both mgr_bj handled & staff_bj_fo mine show APPROVED
+    const bjPending = await req('GET', '/api/reimbursements?tab=pending', { token: mgrBjToken });
+    const bx12 = bjPending.data.reimbursements.find((r: any) => r.claim_no === 'BX-202611-012');
+    assert.ok(bx12);
+
+    assert.equal(
+      (await req('POST', `/api/reimbursements/${bx12.id}/action`, { token: mgrBjToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+
+    const bjHandledAfterMgr = await req('GET', '/api/reimbursements?tab=handled', { token: mgrBjToken });
+    const bx12AtGm = bjHandledAfterMgr.data.reimbursements.find((r: any) => r.id === bx12.id);
+    assert.ok(bx12AtGm);
+    assert.equal(bx12AtGm.status, 'PENDING_APPROVAL');
+    assert.equal(bx12AtGm.my_last_action, 'APPROVE');
+
+    assert.equal(
+      (await req('POST', `/api/reimbursements/${bx12.id}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+
+    const bjHandledAfterGm = await req('GET', '/api/reimbursements?tab=handled', { token: mgrBjToken });
+    const bx12Approved = bjHandledAfterGm.data.reimbursements.find((r: any) => r.id === bx12.id);
+    assert.equal(bx12Approved.status, 'APPROVED');
+    assert.match(bx12Approved.status_detail, /待财务付款/);
+
+    const staffBjDash = await req('GET', '/api/dashboard/summary', { token: staffBjFoToken });
+    const bx12StaffView = staffBjDash.data.myApplications.find((i: any) => i.code === 'BX-202611-012');
+    assert.ok(bx12StaffView);
+    assert.equal(bx12StaffView.status, 'APPROVED');
   });
 });

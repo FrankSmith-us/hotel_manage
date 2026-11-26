@@ -1,8 +1,14 @@
 import { Router } from 'express';
 import { getDb } from '../../db';
 import { asyncHandler, authenticate, getScopeFilter } from '../middleware/auth';
-import { canUserActOnStep, isUserReturnTarget } from '../services/workflowEngine';
-import { UserRole } from '../types';
+import {
+  buildStatusDetail,
+  canUserActOnStep,
+  getUserLastHandledAction,
+  getWorkflowStepsWithActors,
+  isUserReturnTarget,
+} from '../services/workflowEngine';
+import { BizType, UserRole } from '../types';
 import { addDays, currentYearMonth, offsetYearMonth, roundMoney, todayStr } from '../utils/numbers';
 
 const router = Router();
@@ -313,6 +319,458 @@ router.get(
     otherInbox.sort(sortByUrgencyThenNewest);
     const inbox = [...expenseInbox, ...otherInbox];
 
+    // 5c. Track "我申请的" & "我审批过的" across all 4 workflows with live status
+    type TrackedWorkflowItem = {
+      biz_type: BizType;
+      biz_id: number;
+      code: string;
+      title: string;
+      hotel_name: string;
+      applicant_name: string;
+      amount: number | null;
+      status: string;
+      status_detail: string;
+      urgency: 'NORMAL' | 'URGENT';
+      my_action?: string | null;
+      my_acted_at?: string | null;
+      created_at: string;
+      updated_at: string;
+    };
+
+    const loadMyApplications = async (): Promise<TrackedWorkflowItem[]> => {
+      const list: TrackedWorkflowItem[] = [];
+      const myClaims = await db.query<{
+        id: number;
+        claim_no: string;
+        title: string;
+        total_amount: number;
+        status: string;
+        current_step: number;
+        total_steps: number;
+        urgency: string;
+        payment_ref: string | null;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+        returned_to_name: string | null;
+      }>(
+        `SELECT r.id, r.claim_no, r.title, r.total_amount, r.status, r.current_step, r.total_steps,
+                r.urgency, r.payment_ref, r.created_at, r.updated_at,
+                h.name AS hotel_name, rt.display_name AS returned_to_name
+         FROM reimbursements r
+         JOIN hotels h ON h.id = r.hotel_id
+         LEFT JOIN users rt ON rt.id = r.returned_to_user_id
+         WHERE r.applicant_id = ?
+         ORDER BY r.id DESC
+         LIMIT 10`,
+        [user.id]
+      );
+      for (const r of myClaims) {
+        const pendingStep =
+          r.status === 'PENDING_APPROVAL'
+            ? await db.queryOne<{ step_name: string }>(
+                `SELECT step_name FROM approval_steps WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND status = 'PENDING' ORDER BY step_order ASC LIMIT 1`,
+                [r.id]
+              )
+            : null;
+        list.push({
+          biz_type: 'REIMBURSEMENT',
+          biz_id: r.id,
+          code: r.claim_no,
+          title: r.title,
+          hotel_name: r.hotel_name,
+          applicant_name: user.display_name,
+          amount: Number(r.total_amount),
+          status: r.status,
+          status_detail: buildStatusDetail({
+            bizType: 'REIMBURSEMENT',
+            status: r.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: r.current_step,
+            totalSteps: r.total_steps,
+            returnedToName: r.returned_to_name,
+            paymentRef: r.payment_ref,
+          }),
+          urgency: r.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+        });
+      }
+
+      const myAdvances = await db.query<{
+        id: number;
+        advance_no: string;
+        purpose: string;
+        amount: number;
+        status: string;
+        current_step: number;
+        urgency: string;
+        payment_ref: string | null;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+      }>(
+        `SELECT a.id, a.advance_no, a.purpose, a.amount, a.status, a.current_step, a.urgency, a.payment_ref,
+                a.created_at, a.updated_at, h.name AS hotel_name
+         FROM cash_advances a
+         JOIN hotels h ON h.id = a.hotel_id
+         WHERE a.applicant_id = ?
+         ORDER BY a.id DESC
+         LIMIT 10`,
+        [user.id]
+      );
+      for (const a of myAdvances) {
+        const steps = await getWorkflowStepsWithActors(db, 'CASH_ADVANCE', a.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        list.push({
+          biz_type: 'CASH_ADVANCE',
+          biz_id: a.id,
+          code: a.advance_no,
+          title: a.purpose,
+          hotel_name: a.hotel_name,
+          applicant_name: user.display_name,
+          amount: Number(a.amount),
+          status: a.status,
+          status_detail: buildStatusDetail({
+            bizType: 'CASH_ADVANCE',
+            status: a.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: a.current_step,
+            totalSteps: steps.length,
+            paymentRef: a.payment_ref,
+          }),
+          urgency: a.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+          created_at: a.created_at,
+          updated_at: a.updated_at,
+        });
+      }
+
+      if (user.employee_id) {
+        const myLeaves = await db.query<{
+          id: number;
+          request_no: string;
+          reason: string;
+          status: string;
+          current_step: number;
+          urgency: string;
+          created_at: string;
+          updated_at: string;
+          hotel_name: string;
+        }>(
+          `SELECT l.id, l.request_no, l.reason, l.status, l.current_step, l.urgency, l.created_at, l.updated_at, h.name AS hotel_name
+           FROM leave_requests l
+           JOIN hotels h ON h.id = l.hotel_id
+           WHERE l.employee_id = ?
+           ORDER BY l.id DESC
+           LIMIT 10`,
+          [user.employee_id]
+        );
+        for (const l of myLeaves) {
+          const steps = await getWorkflowStepsWithActors(db, 'LEAVE', l.id);
+          const pendingStep = steps.find((s) => s.status === 'PENDING');
+          list.push({
+            biz_type: 'LEAVE',
+            biz_id: l.id,
+            code: l.request_no,
+            title: l.reason,
+            hotel_name: l.hotel_name,
+            applicant_name: user.display_name,
+            amount: null,
+            status: l.status,
+            status_detail: buildStatusDetail({
+              bizType: 'LEAVE',
+              status: l.status,
+              currentStepName: pendingStep?.step_name ?? null,
+              currentStep: l.current_step,
+              totalSteps: steps.length,
+            }),
+            urgency: l.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+            created_at: l.created_at,
+            updated_at: l.updated_at,
+          });
+        }
+      }
+
+      const myHcs = await db.query<{
+        id: number;
+        request_no: string;
+        position: string;
+        headcount: number;
+        status: string;
+        current_step: number;
+        urgency: string;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+      }>(
+        `SELECT hc.id, hc.request_no, hc.position, hc.headcount, hc.status, hc.current_step, hc.urgency,
+                hc.created_at, hc.updated_at, h.name AS hotel_name
+         FROM headcount_requests hc
+         JOIN hotels h ON h.id = hc.hotel_id
+         WHERE hc.applicant_id = ?
+         ORDER BY hc.id DESC
+         LIMIT 10`,
+        [user.id]
+      );
+      for (const hc of myHcs) {
+        const steps = await getWorkflowStepsWithActors(db, 'HEADCOUNT', hc.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        list.push({
+          biz_type: 'HEADCOUNT',
+          biz_id: hc.id,
+          code: hc.request_no,
+          title: `补编 ${hc.position} × ${hc.headcount}人`,
+          hotel_name: hc.hotel_name,
+          applicant_name: user.display_name,
+          amount: null,
+          status: hc.status,
+          status_detail: buildStatusDetail({
+            bizType: 'HEADCOUNT',
+            status: hc.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: hc.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: hc.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+          created_at: hc.created_at,
+          updated_at: hc.updated_at,
+        });
+      }
+
+      list.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.biz_id - a.biz_id);
+      return list.slice(0, 20);
+    };
+
+    const loadMyHandledApprovals = async (): Promise<TrackedWorkflowItem[]> => {
+      const list: TrackedWorkflowItem[] = [];
+      const handledClaims = await db.query<{
+        id: number;
+        claim_no: string;
+        title: string;
+        total_amount: number;
+        status: string;
+        current_step: number;
+        total_steps: number;
+        urgency: string;
+        payment_ref: string | null;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+        applicant_name: string;
+        returned_to_name: string | null;
+      }>(
+        `SELECT r.id, r.claim_no, r.title, r.total_amount, r.status, r.current_step, r.total_steps,
+                r.urgency, r.payment_ref, r.created_at, r.updated_at,
+                h.name AS hotel_name, u.display_name AS applicant_name, rt.display_name AS returned_to_name
+         FROM reimbursements r
+         JOIN hotels h ON h.id = r.hotel_id
+         JOIN users u ON u.id = r.applicant_id
+         LEFT JOIN users rt ON rt.id = r.returned_to_user_id
+         WHERE EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'REIMBURSEMENT' AND s.biz_id = r.id AND s.acted_by = ?)
+            OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'REIMBURSEMENT' AND l.biz_id = r.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'RETURN', 'REJECT', 'PAY'))
+         ORDER BY r.id DESC
+         LIMIT 10`,
+        [user.id, user.id]
+      );
+      for (const r of handledClaims) {
+        const pendingStep =
+          r.status === 'PENDING_APPROVAL'
+            ? await db.queryOne<{ step_name: string }>(
+                `SELECT step_name FROM approval_steps WHERE biz_type = 'REIMBURSEMENT' AND biz_id = ? AND status = 'PENDING' ORDER BY step_order ASC LIMIT 1`,
+                [r.id]
+              )
+            : null;
+        const act = await getUserLastHandledAction(db, 'REIMBURSEMENT', r.id, user.id);
+        list.push({
+          biz_type: 'REIMBURSEMENT',
+          biz_id: r.id,
+          code: r.claim_no,
+          title: r.title,
+          hotel_name: r.hotel_name,
+          applicant_name: r.applicant_name,
+          amount: Number(r.total_amount),
+          status: r.status,
+          status_detail: buildStatusDetail({
+            bizType: 'REIMBURSEMENT',
+            status: r.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: r.current_step,
+            totalSteps: r.total_steps,
+            returnedToName: r.returned_to_name,
+            paymentRef: r.payment_ref,
+          }),
+          urgency: r.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+          my_action: act.my_last_action,
+          my_acted_at: act.my_acted_at,
+          created_at: r.created_at,
+          updated_at: r.updated_at,
+        });
+      }
+
+      const handledAdvances = await db.query<{
+        id: number;
+        advance_no: string;
+        purpose: string;
+        amount: number;
+        status: string;
+        current_step: number;
+        urgency: string;
+        payment_ref: string | null;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+        applicant_name: string;
+      }>(
+        `SELECT a.id, a.advance_no, a.purpose, a.amount, a.status, a.current_step, a.urgency, a.payment_ref,
+                a.created_at, a.updated_at, h.name AS hotel_name, u.display_name AS applicant_name
+         FROM cash_advances a
+         JOIN hotels h ON h.id = a.hotel_id
+         JOIN users u ON u.id = a.applicant_id
+         WHERE EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'CASH_ADVANCE' AND s.biz_id = a.id AND s.acted_by = ?)
+            OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'CASH_ADVANCE' AND l.biz_id = a.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'REJECT', 'DISBURSE'))
+         ORDER BY a.id DESC
+         LIMIT 10`,
+        [user.id, user.id]
+      );
+      for (const a of handledAdvances) {
+        const steps = await getWorkflowStepsWithActors(db, 'CASH_ADVANCE', a.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        const act = await getUserLastHandledAction(db, 'CASH_ADVANCE', a.id, user.id);
+        list.push({
+          biz_type: 'CASH_ADVANCE',
+          biz_id: a.id,
+          code: a.advance_no,
+          title: a.purpose,
+          hotel_name: a.hotel_name,
+          applicant_name: a.applicant_name,
+          amount: Number(a.amount),
+          status: a.status,
+          status_detail: buildStatusDetail({
+            bizType: 'CASH_ADVANCE',
+            status: a.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: a.current_step,
+            totalSteps: steps.length,
+            paymentRef: a.payment_ref,
+          }),
+          urgency: a.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+          my_action: act.my_last_action,
+          my_acted_at: act.my_acted_at,
+          created_at: a.created_at,
+          updated_at: a.updated_at,
+        });
+      }
+
+      const handledLeaves = await db.query<{
+        id: number;
+        request_no: string;
+        reason: string;
+        status: string;
+        current_step: number;
+        urgency: string;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+        emp_name: string;
+      }>(
+        `SELECT l.id, l.request_no, l.reason, l.status, l.current_step, l.urgency, l.created_at, l.updated_at,
+                h.name AS hotel_name, e.name AS emp_name
+         FROM leave_requests l
+         JOIN hotels h ON h.id = l.hotel_id
+         JOIN employees e ON e.id = l.employee_id
+         WHERE EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'LEAVE' AND s.biz_id = l.id AND s.acted_by = ?)
+            OR EXISTS (SELECT 1 FROM approval_logs al WHERE al.biz_type = 'LEAVE' AND al.biz_id = l.id AND al.actor_id = ? AND al.action IN ('APPROVE', 'REJECT'))
+         ORDER BY l.id DESC
+         LIMIT 10`,
+        [user.id, user.id]
+      );
+      for (const l of handledLeaves) {
+        const steps = await getWorkflowStepsWithActors(db, 'LEAVE', l.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        const act = await getUserLastHandledAction(db, 'LEAVE', l.id, user.id);
+        list.push({
+          biz_type: 'LEAVE',
+          biz_id: l.id,
+          code: l.request_no,
+          title: l.reason,
+          hotel_name: l.hotel_name,
+          applicant_name: l.emp_name,
+          amount: null,
+          status: l.status,
+          status_detail: buildStatusDetail({
+            bizType: 'LEAVE',
+            status: l.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: l.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: l.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+          my_action: act.my_last_action,
+          my_acted_at: act.my_acted_at,
+          created_at: l.created_at,
+          updated_at: l.updated_at,
+        });
+      }
+
+      const handledHcs = await db.query<{
+        id: number;
+        request_no: string;
+        position: string;
+        headcount: number;
+        status: string;
+        current_step: number;
+        urgency: string;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+        applicant_name: string;
+      }>(
+        `SELECT hc.id, hc.request_no, hc.position, hc.headcount, hc.status, hc.current_step, hc.urgency,
+                hc.created_at, hc.updated_at, h.name AS hotel_name, u.display_name AS applicant_name
+         FROM headcount_requests hc
+         JOIN hotels h ON h.id = hc.hotel_id
+         JOIN users u ON u.id = hc.applicant_id
+         WHERE EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'HEADCOUNT' AND s.biz_id = hc.id AND s.acted_by = ?)
+            OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'HEADCOUNT' AND l.biz_id = hc.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'REJECT'))
+         ORDER BY hc.id DESC
+         LIMIT 10`,
+        [user.id, user.id]
+      );
+      for (const hc of handledHcs) {
+        const steps = await getWorkflowStepsWithActors(db, 'HEADCOUNT', hc.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        const act = await getUserLastHandledAction(db, 'HEADCOUNT', hc.id, user.id);
+        list.push({
+          biz_type: 'HEADCOUNT',
+          biz_id: hc.id,
+          code: hc.request_no,
+          title: `补编 ${hc.position} × ${hc.headcount}人`,
+          hotel_name: hc.hotel_name,
+          applicant_name: hc.applicant_name,
+          amount: null,
+          status: hc.status,
+          status_detail: buildStatusDetail({
+            bizType: 'HEADCOUNT',
+            status: hc.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: hc.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: hc.urgency === 'URGENT' ? 'URGENT' : 'NORMAL',
+          my_action: act.my_last_action,
+          my_acted_at: act.my_acted_at,
+          created_at: hc.created_at,
+          updated_at: hc.updated_at,
+        });
+      }
+
+      list.sort((a, b) => (b.my_acted_at || b.updated_at).localeCompare(a.my_acted_at || a.updated_at) || b.biz_id - a.biz_id);
+      return list.slice(0, 20);
+    };
+
+    const myApplications = await loadMyApplications();
+    const myHandledApprovals = await loadMyHandledApprovals();
+
     // 6. 6-month expense trend
     const months = [-5, -4, -3, -2, -1, 0].map((d) => offsetYearMonth(curYm, d));
     const trend: Array<{ month: string; paid: number; pending: number }> = [];
@@ -359,10 +817,14 @@ router.get(
         budgetExecutionPct,
         activeHeadcount: Number(empRow?.cnt || 0),
         complianceAlertsCount: alertEmployees.length,
+        myApplicationsCount: myApplications.length,
+        myHandledCount: myHandledApprovals.length,
       },
       expenseInbox: expenseInbox.slice(0, 8),
       otherInbox: otherInbox.slice(0, 8),
       inbox: inbox.slice(0, 10),
+      myApplications,
+      myHandledApprovals,
       complianceAlerts: alertEmployees,
       expenseTrend: trend,
       hotelBreakdown: hotelBreakdown.map((h) => ({

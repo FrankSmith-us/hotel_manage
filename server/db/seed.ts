@@ -515,7 +515,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       empIds[e.emp_no] = res.insertId;
     }
 
-    // 5. Demo Users
+    // 5. Demo Users (first 8 IDs preserved; all 16 seeded employees have login accounts)
     const userIds: Record<string, number> = {};
     const userDefs: Array<{
       username: string;
@@ -533,6 +533,14 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       { username: 'mgr_sh', empNo: 'YQ-1001', display_name: '沈佳妮', role: 'STORE_MANAGER', hotel: 'SH-JA', region: 'EAST' },
       { username: 'mgr_bj', empNo: 'YQ-3001', display_name: '高建国', role: 'STORE_MANAGER', hotel: 'BJ-GM', region: 'NORTH' },
       { username: 'staff_sh', empNo: 'YQ-1002', display_name: '陆子轩', role: 'STAFF', hotel: 'SH-JA', region: 'EAST' },
+      { username: 'staff_sh_hk', empNo: 'YQ-1003', display_name: '赵小燕', role: 'STAFF', hotel: 'SH-JA', region: 'EAST' },
+      { username: 'staff_sh_eng', empNo: 'YQ-1004', display_name: '孙伟强', role: 'STAFF', hotel: 'SH-JA', region: 'EAST' },
+      { username: 'staff_sh_fb', empNo: 'YQ-1005', display_name: '吴婷婷', role: 'STAFF', hotel: 'SH-JA', region: 'EAST' },
+      { username: 'mgr_hz', empNo: 'YQ-2001', display_name: '顾文博', role: 'STORE_MANAGER', hotel: 'HZ-XH', region: 'EAST' },
+      { username: 'staff_hz', empNo: 'YQ-2002', display_name: '方思琪', role: 'STAFF', hotel: 'HZ-XH', region: 'EAST' },
+      { username: 'staff_bj_fo', empNo: 'YQ-3002', display_name: '刘思雨', role: 'STAFF', hotel: 'BJ-GM', region: 'NORTH' },
+      { username: 'staff_bj_eng', empNo: 'YQ-3003', display_name: '马志鹏', role: 'STAFF', hotel: 'BJ-GM', region: 'NORTH' },
+      { username: 'mgr_sz', empNo: 'YQ-4001', display_name: '陈晓东', role: 'STORE_MANAGER', hotel: 'SZ-NS', region: 'SOUTH' },
     ];
 
     for (const u of userDefs) {
@@ -543,6 +551,40 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       );
       userIds[u.username] = res.insertId;
     }
+
+    const actorUsernameForStep = (hotelCode: string, role: UserRole): string => {
+      if (role === 'STORE_MANAGER') {
+        if (hotelCode === 'SH-JA') return 'mgr_sh';
+        if (hotelCode === 'HZ-XH') return 'mgr_hz';
+        if (hotelCode === 'BJ-GM') return 'mgr_bj';
+        if (hotelCode === 'SZ-NS') return 'mgr_sz';
+        return 'mgr_sh';
+      }
+      if (role === 'REGIONAL_MANAGER') {
+        if (hotelCode === 'SH-JA' || hotelCode === 'HZ-XH') return 'region_east';
+        return 'gm';
+      }
+      if (role === 'GENERAL_MANAGER') return 'gm';
+      if (role === 'HR_MANAGER') return 'hr';
+      if (role === 'FINANCE') return 'finance';
+      if (role === 'HQ_ADMIN') return 'admin';
+      return 'gm';
+    };
+
+    const insertLog = async (
+      bizType: string,
+      bizId: number,
+      action: string,
+      actorUsername: string,
+      comment: string
+    ) => {
+      const u = userDefs.find((x) => x.username === actorUsername)!;
+      await tx.execute(
+        `INSERT INTO approval_logs (biz_type, biz_id, action, actor_id, actor_name, actor_role, comment, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [bizType, bizId, action, userIds[actorUsername], u.display_name, u.role, comment, ts]
+      );
+    };
 
     // Assign region managers: EAST has dedicated region_east; NORTH, SOUTH, HQ are concurrently managed by GM
     await tx.execute('UPDATE regions SET manager_user_id = ? WHERE id = ?', [userIds['region_east'], regionIds['EAST']]);
@@ -608,15 +650,31 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       await tx.execute(
         `INSERT INTO shift_schedules (employee_id, home_hotel_id, assigned_hotel_id, shift_date, shift_type, is_cross_store, notes, created_by, created_at, updated_at)
          VALUES (?, ?, ?, ?, 'NIGHT', 0, '夜审值班', ?, ?, ?)`,
-        [empIds['YQ-2002'], hotelIds['HZ-XH'], hotelIds['HZ-XH'], `${prevYm}-${String(day).padStart(2, '0')}`, userIds['region_east'], ts, ts]
+        [empIds['YQ-2002'], hotelIds['HZ-XH'], hotelIds['HZ-XH'], `${prevYm}-${String(day).padStart(2, '0')}`, userIds['mgr_hz'], ts, ts]
       );
     }
 
     // 8. Leave Requests
-    const leaveSeeds = [
+    const leaveSeeds: Array<{
+      request_no: string;
+      empNo: string;
+      applicantUser: string;
+      hotel: string;
+      type: string;
+      start: string;
+      end: string;
+      days: number;
+      hours: number;
+      reason: string;
+      status: string;
+      currentStep: number;
+      applicantRole: UserRole;
+      approver: string | null;
+    }> = [
       {
         request_no: 'LV-202611-001',
         empNo: 'YQ-1002',
+        applicantUser: 'staff_sh',
         hotel: 'SH-JA',
         type: 'OVERTIME',
         start: `${curYm}-08`,
@@ -625,12 +683,14 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         hours: 6,
         reason: '进博会团队入住高峰前厅加班接待',
         status: 'APPROVED',
-        applicantRole: 'STAFF' as UserRole,
+        currentStep: 1,
+        applicantRole: 'STAFF',
         approver: 'mgr_sh',
       },
       {
         request_no: 'LV-202611-002',
         empNo: 'YQ-1003',
+        applicantUser: 'staff_sh_hk',
         hotel: 'SH-JA',
         type: 'ANNUAL',
         start: addDays(today, 5),
@@ -639,12 +699,14 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         hours: 16,
         reason: '个人年假安排返乡探亲',
         status: 'PENDING_APPROVAL',
-        applicantRole: 'STAFF' as UserRole,
+        currentStep: 1,
+        applicantRole: 'STAFF',
         approver: null,
       },
       {
         request_no: 'LV-202611-003',
         empNo: 'YQ-1004',
+        applicantUser: 'staff_sh_eng',
         hotel: 'SH-JA',
         type: 'SICK',
         start: `${curYm}-04`,
@@ -653,12 +715,14 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         hours: 8,
         reason: '急性肠胃炎就医休息',
         status: 'APPROVED',
-        applicantRole: 'STAFF' as UserRole,
+        currentStep: 1,
+        applicantRole: 'STAFF',
         approver: 'mgr_sh',
       },
       {
         request_no: 'LV-202611-004',
         empNo: 'YQ-1001',
+        applicantUser: 'mgr_sh',
         hotel: 'SH-JA',
         type: 'COMP_OFF',
         start: addDays(today, 8),
@@ -667,14 +731,47 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         hours: 16,
         reason: '节假日值班调休',
         status: 'PENDING_APPROVAL',
-        applicantRole: 'STORE_MANAGER' as UserRole,
+        currentStep: 1,
+        applicantRole: 'STORE_MANAGER',
         approver: null,
+      },
+      {
+        request_no: 'LV-202611-005',
+        empNo: 'YQ-2002',
+        applicantUser: 'staff_hz',
+        hotel: 'HZ-XH',
+        type: 'ANNUAL',
+        start: addDays(today, 10),
+        end: addDays(today, 12),
+        days: 3,
+        hours: 24,
+        reason: '年度带薪休假旅游',
+        status: 'PENDING_APPROVAL',
+        currentStep: 2,
+        applicantRole: 'STAFF',
+        approver: null,
+      },
+      {
+        request_no: 'LV-202611-006',
+        empNo: 'YQ-3002',
+        applicantUser: 'staff_bj_fo',
+        hotel: 'BJ-GM',
+        type: 'OVERTIME',
+        start: `${curYm}-10`,
+        end: `${curYm}-10`,
+        days: 0,
+        hours: 4,
+        reason: '大型会议团夜审及退房高峰加班',
+        status: 'APPROVED',
+        currentStep: 1,
+        applicantRole: 'STAFF',
+        approver: 'mgr_bj',
       },
     ];
     for (const l of leaveSeeds) {
       const res = await tx.execute(
         `INSERT INTO leave_requests (request_no, employee_id, hotel_id, leave_type, start_date, end_date, days, hours, reason, status, current_step, approver_id, approved_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           l.request_no,
           empIds[l.empNo],
@@ -686,6 +783,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
           l.hours,
           l.reason,
           l.status,
+          l.currentStep,
           l.approver ? userIds[l.approver] : null,
           l.status === 'APPROVED' ? ts : null,
           ts,
@@ -698,11 +796,26 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         buildLeaveRoute({ applicantRole: l.applicantRole, days: l.days })
       );
       await replaceApprovalSteps(tx, 'LEAVE', res.insertId, resolvedSteps.steps);
-      if (l.status === 'APPROVED') {
-        await tx.execute(
-          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '同意' WHERE biz_type = 'LEAVE' AND biz_id = ?`,
-          [userIds['mgr_sh'], ts, res.insertId]
-        );
+      await insertLog('LEAVE', res.insertId, 'SUBMIT', l.applicantUser, l.reason);
+      if (resolvedSteps.skippedRegionalManager && resolvedSteps.skipReason) {
+        await insertLog('LEAVE', res.insertId, 'AUTO_SKIP', l.applicantUser, resolvedSteps.skipReason);
+      }
+      for (const st of resolvedSteps.steps) {
+        if (l.status === 'APPROVED' || st.stepOrder < l.currentStep) {
+          const actorUname = actorUsernameForStep(l.hotel, st.approverRole);
+          await tx.execute(
+            `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '同意'
+             WHERE biz_type = 'LEAVE' AND biz_id = ? AND step_order = ?`,
+            [userIds[actorUname], ts, res.insertId, st.stepOrder]
+          );
+          await insertLog('LEAVE', res.insertId, 'APPROVE', actorUname, '同意');
+        } else if (l.status === 'PENDING_APPROVAL') {
+          const stepStatus = st.stepOrder === l.currentStep ? 'PENDING' : 'WAITING';
+          await tx.execute(
+            `UPDATE approval_steps SET status = ? WHERE biz_type = 'LEAVE' AND biz_id = ? AND step_order = ?`,
+            [stepStatus, res.insertId, st.stepOrder]
+          );
+        }
       }
     }
 
@@ -725,6 +838,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       buildHeadcountRoute({ headcount: 2, urgency: 'URGENT' })
     );
     await replaceApprovalSteps(tx, 'HEADCOUNT', hc1.insertId, hc1Resolved.steps);
+    await insertLog('HEADCOUNT', hc1.insertId, 'SUBMIT', 'mgr_sh', '静安旗舰店入住率达92%，急需增补客房清扫人员');
 
     const hc2 = await tx.execute(
       `INSERT INTO headcount_requests (request_no, hotel_id, department_id, position, headcount, urgency, salary_range, reason, applicant_id, status, current_step, created_at, updated_at)
@@ -737,10 +851,48 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       buildHeadcountRoute({ headcount: 1, urgency: 'NORMAL' })
     );
     await replaceApprovalSteps(tx, 'HEADCOUNT', hc2.insertId, hc2Resolved.steps);
-    await tx.execute(
-      `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ? WHERE biz_type = 'HEADCOUNT' AND biz_id = ?`,
-      [userIds['hr'], ts, hc2.insertId]
+    await insertLog('HEADCOUNT', hc2.insertId, 'SUBMIT', 'mgr_bj', '国贸商务店VIP商务客人增多，补充礼宾岗位');
+    if (hc2Resolved.skippedRegionalManager && hc2Resolved.skipReason) {
+      await insertLog('HEADCOUNT', hc2.insertId, 'AUTO_SKIP', 'mgr_bj', hc2Resolved.skipReason);
+    }
+    for (const st of hc2Resolved.steps) {
+      const actorUname = actorUsernameForStep('BJ-GM', st.approverRole);
+      await tx.execute(
+        `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '同意补编'
+         WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND step_order = ?`,
+        [userIds[actorUname], ts, hc2.insertId, st.stepOrder]
+      );
+      await insertLog('HEADCOUNT', hc2.insertId, 'APPROVE', actorUname, '同意补编');
+    }
+
+    const hc3 = await tx.execute(
+      `INSERT INTO headcount_requests (request_no, hotel_id, department_id, position, headcount, urgency, salary_range, reason, applicant_id, status, current_step, created_at, updated_at)
+       VALUES ('HC-202611-003', ?, ?, '前厅接待员', 1, 'NORMAL', '5800-6800元/月', '西湖精品店周末客流攀升，补充前厅轮班接待', ?, 'PENDING_APPROVAL', 2, ?, ?)`,
+      [hotelIds['HZ-XH'], deptIds['HZ-XH:FO'], userIds['mgr_hz'], ts, ts]
     );
+    const hc3Resolved = await resolveApprovalRoute(
+      tx,
+      hotelIds['HZ-XH'],
+      buildHeadcountRoute({ headcount: 1, urgency: 'NORMAL' })
+    );
+    await replaceApprovalSteps(tx, 'HEADCOUNT', hc3.insertId, hc3Resolved.steps);
+    await insertLog('HEADCOUNT', hc3.insertId, 'SUBMIT', 'mgr_hz', '西湖精品店周末客流攀升，补充前厅轮班接待');
+    for (const st of hc3Resolved.steps) {
+      if (st.stepOrder < 2) {
+        const actorUname = actorUsernameForStep('HZ-XH', st.approverRole);
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '区域审核同意'
+           WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND step_order = ?`,
+          [userIds[actorUname], ts, hc3.insertId, st.stepOrder]
+        );
+        await insertLog('HEADCOUNT', hc3.insertId, 'APPROVE', actorUname, '区域审核同意');
+      } else {
+        await tx.execute(
+          `UPDATE approval_steps SET status = ? WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND step_order = ?`,
+          [st.stepOrder === 2 ? 'PENDING' : 'WAITING', hc3.insertId, st.stepOrder]
+        );
+      }
+    }
 
     const candDefs = [
       { hcId: hc1.insertId, hotel: 'SH-JA', dept: 'HK', name: '周敏', phone: '13900001122', pos: '客房服务员', sal: 6000, stage: 'INTERVIEW', notes: '曾任四星酒店客房领班，沟通踏实' },
@@ -787,7 +939,17 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     );
     const adv1Resolved = await resolveApprovalRoute(tx, hotelIds['SH-JA'], buildCashAdvanceRoute({ applicantRole: 'STORE_MANAGER', amount: 3000 }));
     await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv1.insertId, adv1Resolved.steps);
-    await tx.execute(`UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ? WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ?`, [userIds['finance'], ts, adv1.insertId]);
+    await insertLog('CASH_ADVANCE', adv1.insertId, 'SUBMIT', 'mgr_sh', '上海静安旗舰店11月前台零星采购备用金');
+    for (const st of adv1Resolved.steps) {
+      const actorUname = actorUsernameForStep('SH-JA', st.approverRole);
+      await tx.execute(
+        `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '同意'
+         WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND step_order = ?`,
+        [userIds[actorUname], ts, adv1.insertId, st.stepOrder]
+      );
+      await insertLog('CASH_ADVANCE', adv1.insertId, 'APPROVE', actorUname, '同意');
+    }
+    await insertLog('CASH_ADVANCE', adv1.insertId, 'DISBURSE', 'finance', '已放款，流水号：PAY-ADV-20261101');
 
     const adv2 = await tx.execute(
       `INSERT INTO cash_advances (advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount, purpose, expected_settle_date, status, current_step, payment_ref, disbursed_at, created_at, updated_at)
@@ -796,7 +958,17 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     );
     const adv2Resolved = await resolveApprovalRoute(tx, hotelIds['SH-JA'], buildCashAdvanceRoute({ applicantRole: 'STAFF', amount: 2000 }));
     await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv2.insertId, adv2Resolved.steps);
-    await tx.execute(`UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ? WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ?`, [userIds['finance'], ts, adv2.insertId]);
+    await insertLog('CASH_ADVANCE', adv2.insertId, 'SUBMIT', 'staff_sh', '前厅主管赴杭州西湖店跨店培训差旅预支');
+    for (const st of adv2Resolved.steps) {
+      const actorUname = actorUsernameForStep('SH-JA', st.approverRole);
+      await tx.execute(
+        `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '同意'
+         WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND step_order = ?`,
+        [userIds[actorUname], ts, adv2.insertId, st.stepOrder]
+      );
+      await insertLog('CASH_ADVANCE', adv2.insertId, 'APPROVE', actorUname, '同意');
+    }
+    await insertLog('CASH_ADVANCE', adv2.insertId, 'DISBURSE', 'finance', '已放款，流水号：PAY-ADV-20261108');
 
     const adv3 = await tx.execute(
       `INSERT INTO cash_advances (advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount, purpose, expected_settle_date, urgency, status, current_step, created_at, updated_at)
@@ -805,6 +977,35 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     );
     const adv3Resolved = await resolveApprovalRoute(tx, hotelIds['BJ-GM'], buildCashAdvanceRoute({ applicantRole: 'STORE_MANAGER', amount: 4500 }));
     await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv3.insertId, adv3Resolved.steps);
+    await insertLog('CASH_ADVANCE', adv3.insertId, 'SUBMIT', 'mgr_bj', '北京国贸店冬季供暖设备应急备用金');
+    if (adv3Resolved.skippedRegionalManager && adv3Resolved.skipReason) {
+      await insertLog('CASH_ADVANCE', adv3.insertId, 'AUTO_SKIP', 'mgr_bj', adv3Resolved.skipReason);
+    }
+
+    const adv4 = await tx.execute(
+      `INSERT INTO cash_advances (advance_no, applicant_id, employee_id, hotel_id, advance_type, amount, offset_amount, purpose, expected_settle_date, status, current_step, created_at, updated_at)
+       VALUES ('ADV-202611-004', ?, ?, ?, 'TRAVEL', 1200.00, 0.00, '杭州西湖店夜审专员赴上海总部系统培训差旅借款', ?, 'PENDING_APPROVAL', 2, ?, ?)`,
+      [userIds['staff_hz'], empIds['YQ-2002'], hotelIds['HZ-XH'], addDays(today, 18), ts, ts]
+    );
+    const adv4Resolved = await resolveApprovalRoute(tx, hotelIds['HZ-XH'], buildCashAdvanceRoute({ applicantRole: 'STAFF', amount: 1200 }));
+    await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv4.insertId, adv4Resolved.steps);
+    await insertLog('CASH_ADVANCE', adv4.insertId, 'SUBMIT', 'staff_hz', '杭州西湖店夜审专员赴上海总部系统培训差旅借款');
+    for (const st of adv4Resolved.steps) {
+      if (st.stepOrder < 2) {
+        const actorUname = actorUsernameForStep('HZ-XH', st.approverRole);
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '门店店长审核同意'
+           WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND step_order = ?`,
+          [userIds[actorUname], ts, adv4.insertId, st.stepOrder]
+        );
+        await insertLog('CASH_ADVANCE', adv4.insertId, 'APPROVE', actorUname, '门店店长审核同意');
+      } else {
+        await tx.execute(
+          `UPDATE approval_steps SET status = ? WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND step_order = ?`,
+          [st.stepOrder === 2 ? 'PENDING' : 'WAITING', adv4.insertId, st.stepOrder]
+        );
+      }
+    }
 
     // 13. Reimbursements (covering all statuses, risk flags, offset, and invoice samples)
     async function insertClaim(cfg: {
@@ -945,15 +1146,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
       if (cfg.status !== 'DRAFT') {
         await replaceApprovalSteps(tx, 'REIMBURSEMENT', claimId, route);
-        const actorByRole = (role: UserRole): number => {
-          if (role === 'STORE_MANAGER') {
-            return cfg.hotel === 'BJ-GM' ? userIds['mgr_bj'] : userIds['mgr_sh'];
-          }
-          if (role === 'REGIONAL_MANAGER') return userIds['region_east'];
-          if (role === 'GENERAL_MANAGER') return userIds['gm'];
-          if (role === 'HQ_ADMIN') return userIds['admin'];
-          return userIds['gm'];
-        };
+        const actorByRole = (role: UserRole): number => userIds[actorUsernameForStep(cfg.hotel, role)];
         for (const step of route) {
           if (cfg.status === 'APPROVED' || cfg.status === 'PAID' || step.stepOrder < cfg.currentStep) {
             await tx.execute(
@@ -1322,6 +1515,233 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         },
       ],
       logs: [{ action: 'SAVE_DRAFT', actor: 'staff_sh', comment: '保存报销草稿' }],
+    });
+
+    // Additional realistic claims ensuring every employee & branch has rich applied/approved tracking
+    await insertClaim({
+      claim_no: 'BX-202610-004',
+      title: '北京国贸店10月配电房备件采购',
+      applicant: 'staff_bj_eng',
+      empNo: 'YQ-3003',
+      hotel: 'BJ-GM',
+      dept: 'ENG',
+      month: prevYm,
+      status: 'PAID',
+      currentStep: 3,
+      paymentType: 'PERSONAL',
+      payeeName: '马志鹏',
+      payeeBank: '工商银行北京朝阳支行',
+      payeeAccount: '6222020200003003',
+      paymentChannel: 'BANK_TRANSFER',
+      paymentRef: 'TXN-20261031-11',
+      items: [
+        {
+          category: 'MAINTENANCE',
+          date: `${prevYm}-26`,
+          desc: '应急照明电源模块及配电开关备件',
+          amount: 1680,
+          invoiceNo: 'INV-2026-99302',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'staff_bj_eng', comment: '提交配电房备件采购报销' },
+        { action: 'AUTO_SKIP', actor: 'staff_bj_eng', comment: '区域经理与总经理为同一人（周志远），已自动跳过区域经理审核，直达总经理审批' },
+        { action: 'APPROVE', actor: 'mgr_bj', comment: '核验入库无误' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理终审通过' },
+        { action: 'PAY', actor: 'finance', comment: '已打款至员工个人账户' },
+      ],
+    });
+
+    await insertClaim({
+      claim_no: 'BX-202611-009',
+      title: '上海静安店11月客房深度保洁耗材采购',
+      applicant: 'staff_sh_hk',
+      empNo: 'YQ-1003',
+      hotel: 'SH-JA',
+      dept: 'HK',
+      month: curYm,
+      status: 'PENDING_APPROVAL',
+      currentStep: 2,
+      items: [
+        {
+          category: 'LINEN_SUPPLIES',
+          date: `${curYm}-14`,
+          desc: '客房除螨消杀药剂及布草去渍剂补货',
+          amount: 1480,
+          invoiceNo: 'INV-2026-55410',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'staff_sh_hk', comment: '提交客房保洁耗材报销' },
+        { action: 'APPROVE', actor: 'mgr_sh', comment: '店长确认耗材已入库，呈区域经理复核' },
+      ],
+    });
+
+    await insertClaim({
+      claim_no: 'BX-202611-010',
+      title: '上海静安店11月水泵密封件应急更换',
+      applicant: 'staff_sh_eng',
+      empNo: 'YQ-1004',
+      hotel: 'SH-JA',
+      dept: 'ENG',
+      month: curYm,
+      status: 'APPROVED',
+      currentStep: 2,
+      items: [
+        {
+          category: 'MAINTENANCE',
+          date: `${curYm}-15`,
+          desc: '负一层生活水泵机械密封件与止回阀采购',
+          amount: 620,
+          invoiceNo: 'INV-2026-55422',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'staff_sh_eng', comment: '提交工程维保零星配件报销' },
+        { action: 'APPROVE', actor: 'mgr_sh', comment: '现场已修复验收，同意' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理审批通过，转财务付款' },
+      ],
+    });
+
+    await insertClaim({
+      claim_no: 'BX-202611-011',
+      title: '杭州西湖店11月大堂茶歇及欢迎水果采购',
+      applicant: 'staff_hz',
+      empNo: 'YQ-2002',
+      hotel: 'HZ-XH',
+      dept: 'FO',
+      month: curYm,
+      status: 'PENDING_APPROVAL',
+      currentStep: 3,
+      items: [
+        {
+          category: 'FB_PROCUREMENT',
+          date: `${curYm}-13`,
+          desc: '西湖龙井茶包及行政房欢迎时令水果采购',
+          amount: 1350,
+          invoiceNo: 'INV-2026-77418',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'staff_hz', comment: '提交茶歇水果采购报销' },
+        { action: 'APPROVE', actor: 'mgr_hz', comment: '门店核实无误，呈区域经理复核' },
+        { action: 'APPROVE', actor: 'region_east', comment: '同意，呈总经理终审' },
+      ],
+    });
+
+    await insertClaim({
+      claim_no: 'BX-202611-012',
+      title: '北京国贸店11月前台礼宾雨伞与行李牌补货',
+      applicant: 'staff_bj_fo',
+      empNo: 'YQ-3002',
+      hotel: 'BJ-GM',
+      dept: 'FO',
+      month: curYm,
+      status: 'PENDING_APPROVAL',
+      currentStep: 1,
+      items: [
+        {
+          category: 'LINEN_SUPPLIES',
+          date: `${curYm}-16`,
+          desc: '定制LOGO长柄迎宾伞及行李寄存牌',
+          amount: 390,
+          invoiceNo: 'INV-2026-99405',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'staff_bj_fo', comment: '提交前台迎宾物资报销' },
+        { action: 'AUTO_SKIP', actor: 'staff_bj_fo', comment: '区域经理与总经理为同一人（周志远），已自动跳过区域经理审核，直达总经理审批' },
+      ],
+    });
+
+    await insertClaim({
+      claim_no: 'BX-202611-013',
+      title: '深圳南山店11月高新园区企业协议客户沙龙推广费',
+      applicant: 'mgr_sz',
+      empNo: 'YQ-4001',
+      hotel: 'SZ-NS',
+      dept: 'ADM',
+      month: curYm,
+      status: 'PENDING_APPROVAL',
+      currentStep: 1,
+      items: [
+        {
+          category: 'MARKETING',
+          date: `${curYm}-15`,
+          desc: '大客户推介会物料印刷及茶歇招待费用',
+          amount: 2150,
+          invoiceNo: 'INV-2026-44108',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'mgr_sz', comment: '提交企业客户沙龙推广报销' },
+        { action: 'AUTO_SKIP', actor: 'mgr_sz', comment: '区域经理与总经理为同一人（周志远），已自动跳过区域经理审核，直达总经理审批' },
+      ],
+    });
+
+    await insertClaim({
+      claim_no: 'BX-202611-014',
+      title: '上海静安店11月早餐厅烘焙原料急采',
+      applicant: 'staff_sh_fb',
+      empNo: 'YQ-1005',
+      hotel: 'SH-JA',
+      dept: 'FB',
+      month: curYm,
+      status: 'PAID',
+      currentStep: 2,
+      paymentType: 'PERSONAL',
+      payeeName: '吴婷婷',
+      payeeBank: '招商银行上海分行',
+      payeeAccount: '6225880100002005',
+      paymentChannel: 'BANK_TRANSFER',
+      paymentRef: 'TXN-20261116-05',
+      items: [
+        {
+          category: 'FB_PROCUREMENT',
+          date: `${curYm}-11`,
+          desc: '黄油、淡奶油及进口面粉补货垫付',
+          amount: 480,
+          invoiceNo: 'INV-2026-55290',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'staff_sh_fb', comment: '提交早餐厅原料垫付报销' },
+        { action: 'APPROVE', actor: 'mgr_sh', comment: '确认已入库使用' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理终审通过' },
+        { action: 'PAY', actor: 'finance', comment: '已向吴婷婷个人账户打款 ¥480.00' },
+      ],
+    });
+
+    await insertClaim({
+      claim_no: 'BX-202611-015',
+      title: '集团HR中心11月华东门店巡店招聘差旅费',
+      applicant: 'hr',
+      empNo: 'YQ-0002',
+      hotel: 'HQ-001',
+      dept: 'HR',
+      month: curYm,
+      status: 'PAID',
+      currentStep: 1,
+      paymentType: 'PERSONAL',
+      payeeName: '林婉清',
+      payeeBank: '招商银行上海分行',
+      payeeAccount: '6225880100001002',
+      paymentChannel: 'BANK_TRANSFER',
+      paymentRef: 'TXN-20261117-02',
+      items: [
+        {
+          category: 'TRAVEL_TRAINING',
+          date: `${curYm}-12`,
+          desc: '沪杭高铁差旅及校招场地物料费',
+          amount: 960,
+          invoiceNo: 'INV-2026-10208',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'hr', comment: '提交巡店招聘差旅报销' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理终审通过' },
+        { action: 'PAY', actor: 'finance', comment: '已完成报销打款' },
+      ],
     });
   });
 

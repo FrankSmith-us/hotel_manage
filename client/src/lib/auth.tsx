@@ -21,6 +21,7 @@ export interface DemoAccount {
   display_name: string;
   role: string;
   role_label: string;
+  position?: string | null;
   hotel_name: string | null;
   region_name: string | null;
 }

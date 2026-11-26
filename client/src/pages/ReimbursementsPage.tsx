@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   Check,
@@ -18,7 +19,7 @@ import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
 import { apiFetch, downloadCsv } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { currentYearMonth, EXPENSE_CATEGORIES, formatMoney, todayStr } from '../lib/format';
+import { ACTION_LABEL_MAP, currentYearMonth, EXPENSE_CATEGORIES, formatMoney, todayStr } from '../lib/format';
 
 interface ReimbursementRow {
   id: number;
@@ -40,6 +41,9 @@ interface ReimbursementRow {
   current_step: number;
   total_steps: number;
   current_step_name: string | null;
+  status_detail?: string;
+  my_last_action?: string | null;
+  my_acted_at?: string | null;
   risk_flags: string;
   risk_summary: string | null;
   returned_to_step?: number | null;
@@ -125,8 +129,12 @@ interface ClaimDetail {
 export function ReimbursementsPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [tab, setTab] = useState<'pending' | 'mine' | 'all'>('pending');
+  const initialTab = searchParams.get('tab');
+  const [tab, setTab] = useState<'pending' | 'mine' | 'handled' | 'all'>(
+    initialTab === 'mine' || initialTab === 'handled' || initialTab === 'all' ? initialTab : 'pending'
+  );
   const [statusFilter, setStatusFilter] = useState('');
   const [keyword, setKeyword] = useState('');
   const [riskOnly, setRiskOnly] = useState(false);
@@ -315,7 +323,7 @@ export function ReimbursementsPage() {
     setFormOpen(true);
   };
 
-  const openDetail = async (id: number) => {
+  const openDetail = useCallback(async (id: number) => {
     try {
       const data = await apiFetch<ClaimDetail>(`/api/reimbursements/${id}`);
       setDetail(data);
@@ -325,7 +333,21 @@ export function ReimbursementsPage() {
     } catch (err) {
       showToast(err instanceof Error ? err.message : '加载详情失败', 'error');
     }
-  };
+  }, [showToast]);
+
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t === 'pending' || t === 'mine' || t === 'handled' || t === 'all') {
+      setTab(t);
+    }
+    const oid = searchParams.get('openId');
+    if (oid) {
+      openDetail(Number(oid));
+      const next = new URLSearchParams(searchParams);
+      next.delete('openId');
+      setSearchParams(next, { replace: true });
+    }
+  }, [searchParams, openDetail, setSearchParams]);
 
   const handleUploadAttachment = async (idx: number, file: File) => {
     const fd = new FormData();
@@ -508,10 +530,11 @@ export function ReimbursementsPage() {
 
       {/* Tabs & Filters */}
       <div className="bg-white rounded-2xl border border-stone-200/90 p-4 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-        <div className="flex items-center gap-1.5 bg-stone-100 p-1 rounded-xl w-fit">
+        <div className="flex items-center gap-1.5 bg-stone-100 p-1 rounded-xl w-fit flex-wrap">
           {[
             { key: 'pending', label: '待我处理' },
             { key: 'mine', label: '我的报销' },
+            { key: 'handled', label: '我审批过的' },
             { key: 'all', label: '全部报销单' },
           ].map((t) => (
             <button
@@ -663,21 +686,44 @@ export function ReimbursementsPage() {
                       </div>
                     </td>
                     <td className="px-4 py-3.5">
-                      <StatusBadge status={r.status} />
-                      {r.current_step_name && (
-                        <div className="text-[11px] text-stone-500 mt-1">
-                          第{r.current_step}/{r.total_steps}步：{r.current_step_name}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <StatusBadge status={r.status} />
+                        {r.my_last_action && (
+                          <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+                            {ACTION_LABEL_MAP[r.my_last_action] || r.my_last_action}
+                          </span>
+                        )}
+                      </div>
+                      {r.status_detail ? (
+                        <div
+                          className={`text-[11px] mt-1 ${
+                            r.status === 'RETURNED'
+                              ? 'text-orange-700 font-medium'
+                              : r.status === 'APPROVED'
+                                ? 'text-emerald-700 font-medium'
+                                : 'text-stone-500'
+                          }`}
+                        >
+                          {r.status_detail}
                         </div>
-                      )}
-                      {r.status === 'RETURNED' && (
-                        <div className="text-[11px] text-orange-700 font-medium mt-1">
-                          已退回至：{r.returned_to_name || '申请人'}
-                        </div>
-                      )}
-                      {r.status === 'APPROVED' && (
-                        <div className="text-[11px] text-emerald-700 font-medium mt-1">
-                          总经理已审 · 待财务付款
-                        </div>
+                      ) : (
+                        <>
+                          {r.current_step_name && (
+                            <div className="text-[11px] text-stone-500 mt-1">
+                              第{r.current_step}/{r.total_steps}步：{r.current_step_name}
+                            </div>
+                          )}
+                          {r.status === 'RETURNED' && (
+                            <div className="text-[11px] text-orange-700 font-medium mt-1">
+                              已退回至：{r.returned_to_name || '申请人'}
+                            </div>
+                          )}
+                          {r.status === 'APPROVED' && (
+                            <div className="text-[11px] text-emerald-700 font-medium mt-1">
+                              总经理已审 · 待财务付款
+                            </div>
+                          )}
+                        </>
                       )}
                     </td>
                     <td className="px-5 py-3.5 text-right">

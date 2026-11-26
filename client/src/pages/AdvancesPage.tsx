@@ -1,11 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Banknote, Check, Plus, XCircle } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
 import { apiFetch } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { formatMoney, todayStr } from '../lib/format';
+import { ACTION_LABEL_MAP, formatMoney, todayStr } from '../lib/format';
+
+interface StepSummary {
+  step_order: number;
+  step_name: string;
+  status: string;
+  actor_name: string | null;
+}
 
 interface AdvanceRow {
   id: number;
@@ -21,6 +29,9 @@ interface AdvanceRow {
   urgency?: 'NORMAL' | 'URGENT';
   status: string;
   current_step_name: string | null;
+  status_detail?: string;
+  my_last_action?: string | null;
+  steps?: StepSummary[];
   payment_ref: string | null;
   canApprove: boolean;
 }
@@ -28,7 +39,11 @@ interface AdvanceRow {
 export function AdvancesPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const [tab, setTab] = useState<'all' | 'mine' | 'pending'>('all');
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab');
+  const [tab, setTab] = useState<'all' | 'mine' | 'pending' | 'handled'>(
+    initialTab === 'mine' || initialTab === 'pending' || initialTab === 'handled' ? initialTab : 'all'
+  );
   const [rows, setRows] = useState<AdvanceRow[]>([]);
   const [hotels, setHotels] = useState<Array<{ id: number; name: string }>>([]);
   const [open, setOpen] = useState(false);
@@ -47,6 +62,13 @@ export function AdvancesPage() {
     const data = await apiFetch<{ advances: AdvanceRow[] }>(`/api/advances?tab=${tab}`);
     setRows(data.advances);
   }, [tab]);
+
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t === 'all' || t === 'mine' || t === 'pending' || t === 'handled') {
+      setTab(t);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     load();
@@ -131,11 +153,12 @@ export function AdvancesPage() {
         </button>
       </div>
 
-      <div className="flex items-center gap-1.5 bg-stone-200/60 p-1 rounded-xl w-fit">
+      <div className="flex items-center gap-1.5 bg-stone-200/60 p-1 rounded-xl w-fit flex-wrap">
         {[
           { key: 'all', label: '全部借款单' },
           { key: 'pending', label: '待我审批' },
           { key: 'mine', label: '我的申请' },
+          { key: 'handled', label: '我审批过的' },
         ].map((t) => (
           <button
             key={t.key}
@@ -191,9 +214,37 @@ export function AdvancesPage() {
                   <div className="text-sky-700 font-medium">余 {formatMoney(r.available_balance)}</div>
                 </td>
                 <td className="px-4 py-3.5">
-                  <StatusBadge status={r.status} />
-                  {r.current_step_name && (
-                    <div className="text-[11px] text-stone-500 mt-1">{r.current_step_name}</div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <StatusBadge status={r.status} />
+                    {r.my_last_action && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        {ACTION_LABEL_MAP[r.my_last_action] || r.my_last_action}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-stone-500 mt-1">
+                    {r.status_detail || r.current_step_name || ''}
+                  </div>
+                  {r.steps && r.steps.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {r.steps.map((s) => (
+                        <span
+                          key={s.step_order}
+                          className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                            s.status === 'APPROVED'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : s.status === 'PENDING'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : s.status === 'REJECTED'
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : 'bg-stone-50 text-stone-400 border-stone-200'
+                          }`}
+                        >
+                          {s.step_order}.{s.step_name}
+                          {s.actor_name ? `(${s.actor_name})` : ''}
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </td>
                 <td className="px-5 py-3.5 text-right space-x-2">

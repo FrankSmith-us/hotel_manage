@@ -12,8 +12,11 @@ import {
 import { logApprovalAction } from '../services/auditService';
 import {
   buildCashAdvanceRoute,
+  buildStatusDetail,
   canUserActOnStep,
   getAvailableAdvanceBalance,
+  getUserLastHandledAction,
+  getWorkflowStepsWithActors,
   replaceApprovalSteps,
   resolveApprovalRoute,
 } from '../services/workflowEngine';
@@ -37,6 +40,12 @@ router.get(
     if (tab === 'mine') {
       conditions.push('a.applicant_id = ?');
       params.push(user.id);
+    } else if (tab === 'handled') {
+      conditions.push(
+        `(EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'CASH_ADVANCE' AND s.biz_id = a.id AND s.acted_by = ?)
+          OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'CASH_ADVANCE' AND l.biz_id = a.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'REJECT', 'DISBURSE')))`
+      );
+      params.push(user.id, user.id);
     } else if (tab === 'available') {
       conditions.push(`a.status = 'DISBURSED'`);
       if (req.query.hotelId) {
@@ -114,10 +123,27 @@ router.get(
 
       if (tab === 'pending' && !canApprove) continue;
 
+      const steps = await getWorkflowStepsWithActors(db, 'CASH_ADVANCE', row.id);
+      const handledInfo =
+        tab === 'handled'
+          ? await getUserLastHandledAction(db, 'CASH_ADVANCE', row.id, user.id)
+          : { my_last_action: null, my_acted_at: null };
+
       enriched.push({
         ...row,
         available_balance: availableBalance,
         current_step_name: pendingStep?.step_name ?? null,
+        steps,
+        status_detail: buildStatusDetail({
+          bizType: 'CASH_ADVANCE',
+          status: row.status,
+          currentStepName: pendingStep?.step_name ?? null,
+          currentStep: row.current_step,
+          totalSteps: steps.length,
+          paymentRef: row.payment_ref,
+        }),
+        my_last_action: handledInfo.my_last_action,
+        my_acted_at: handledInfo.my_acted_at,
         canApprove,
       });
     }

@@ -90,11 +90,14 @@ router.get(
       username: string;
       display_name: string;
       role: UserRole;
+      position: string | null;
       hotel_name: string | null;
       region_name: string | null;
     }>(
-      `SELECT u.id, u.username, u.display_name, u.role, h.name AS hotel_name, r.name AS region_name
+      `SELECT u.id, u.username, u.display_name, u.role, e.position AS position,
+              h.name AS hotel_name, r.name AS region_name
        FROM users u
+       LEFT JOIN employees e ON e.id = u.employee_id
        LEFT JOIN hotels h ON h.id = u.hotel_id
        LEFT JOIN regions r ON r.id = u.region_id
        WHERE u.is_active = 1

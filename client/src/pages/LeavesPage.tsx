@@ -1,11 +1,19 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Check, Plus, XCircle } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
 import { apiFetch } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { LEAVE_TYPE_MAP, todayStr } from '../lib/format';
+import { ACTION_LABEL_MAP, LEAVE_TYPE_MAP, todayStr } from '../lib/format';
+
+interface StepSummary {
+  step_order: number;
+  step_name: string;
+  status: string;
+  actor_name: string | null;
+}
 
 interface LeaveRow {
   id: number;
@@ -22,13 +30,20 @@ interface LeaveRow {
   urgency?: 'NORMAL' | 'URGENT';
   status: string;
   current_step_name: string | null;
+  status_detail?: string;
+  my_last_action?: string | null;
+  steps?: StepSummary[];
   canApprove: boolean;
 }
 
 export function LeavesPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const [tab, setTab] = useState<'all' | 'pending' | 'mine'>('all');
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab');
+  const [tab, setTab] = useState<'all' | 'pending' | 'mine' | 'handled'>(
+    initialTab === 'pending' || initialTab === 'mine' || initialTab === 'handled' ? initialTab : 'all'
+  );
   const [rows, setRows] = useState<LeaveRow[]>([]);
   const [open, setOpen] = useState(false);
 
@@ -44,6 +59,13 @@ export function LeavesPage() {
     const d = await apiFetch<{ leaves: LeaveRow[] }>(`/api/leaves?tab=${tab}`);
     setRows(d.leaves);
   }, [tab]);
+
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t === 'all' || t === 'pending' || t === 'mine' || t === 'handled') {
+      setTab(t);
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     load();
@@ -104,11 +126,12 @@ export function LeavesPage() {
         </button>
       </div>
 
-      <div className="flex items-center gap-1.5 bg-stone-200/60 p-1 rounded-xl w-fit">
+      <div className="flex items-center gap-1.5 bg-stone-200/60 p-1 rounded-xl w-fit flex-wrap">
         {[
           { key: 'all', label: '全部记录' },
           { key: 'pending', label: '待我审批' },
           { key: 'mine', label: '我的申请' },
+          { key: 'handled', label: '我审批过的' },
         ].map((t) => (
           <button
             key={t.key}
@@ -167,9 +190,37 @@ export function LeavesPage() {
                   </span>
                 </td>
                 <td className="px-4 py-3.5">
-                  <StatusBadge status={r.status} />
-                  {r.current_step_name && (
-                    <div className="text-[11px] text-stone-500 mt-1">{r.current_step_name}</div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <StatusBadge status={r.status} />
+                    {r.my_last_action && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+                        {ACTION_LABEL_MAP[r.my_last_action] || r.my_last_action}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-stone-500 mt-1">
+                    {r.status_detail || r.current_step_name || ''}
+                  </div>
+                  {r.steps && r.steps.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {r.steps.map((s) => (
+                        <span
+                          key={s.step_order}
+                          className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                            s.status === 'APPROVED'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : s.status === 'PENDING'
+                                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                : s.status === 'REJECTED'
+                                  ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                  : 'bg-stone-50 text-stone-400 border-stone-200'
+                          }`}
+                        >
+                          {s.step_order}.{s.step_name}
+                          {s.actor_name ? `(${s.actor_name})` : ''}
+                        </span>
+                      ))}
+                    </div>
                   )}
                 </td>
                 <td className="px-5 py-3.5 text-right space-x-2">

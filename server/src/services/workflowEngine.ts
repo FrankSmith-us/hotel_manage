@@ -349,3 +349,123 @@ export async function getAvailableAdvanceBalance(
     availableBalance: Math.max(0, available),
   };
 }
+
+export interface WorkflowStepSummary {
+  step_order: number;
+  step_name: string;
+  approver_role: UserRole;
+  status: string;
+  actor_name: string | null;
+  acted_at: string | null;
+}
+
+export async function getWorkflowStepsWithActors(
+  db: DbQueryRunner,
+  bizType: BizType,
+  bizId: number
+): Promise<WorkflowStepSummary[]> {
+  return db.query<WorkflowStepSummary>(
+    `SELECT s.step_order, s.step_name, s.approver_role, s.status,
+            u.display_name AS actor_name, s.acted_at
+     FROM approval_steps s
+     LEFT JOIN users u ON u.id = s.acted_by
+     WHERE s.biz_type = ? AND s.biz_id = ?
+     ORDER BY s.step_order ASC`,
+    [bizType, bizId]
+  );
+}
+
+export async function getUserLastHandledAction(
+  db: DbQueryRunner,
+  bizType: BizType,
+  bizId: number,
+  userId: number
+): Promise<{ my_last_action: string | null; my_acted_at: string | null }> {
+  const log = await db.queryOne<{ action: string; created_at: string }>(
+    `SELECT action, created_at
+     FROM approval_logs
+     WHERE biz_type = ? AND biz_id = ? AND actor_id = ?
+       AND action IN ('APPROVE', 'RETURN', 'REJECT', 'PAY', 'DISBURSE')
+     ORDER BY id DESC LIMIT 1`,
+    [bizType, bizId, userId]
+  );
+  if (log) {
+    return { my_last_action: log.action, my_acted_at: log.created_at };
+  }
+  const step = await db.queryOne<{ status: string; acted_at: string | null }>(
+    `SELECT status, acted_at
+     FROM approval_steps
+     WHERE biz_type = ? AND biz_id = ? AND acted_by = ?
+     ORDER BY step_order DESC LIMIT 1`,
+    [bizType, bizId, userId]
+  );
+  if (step) {
+    const action =
+      step.status === 'APPROVED'
+        ? 'APPROVE'
+        : step.status === 'RETURNED'
+          ? 'RETURN'
+          : step.status === 'REJECTED'
+            ? 'REJECT'
+            : null;
+    return { my_last_action: action, my_acted_at: step.acted_at };
+  }
+  return { my_last_action: null, my_acted_at: null };
+}
+
+export async function hasUserActedOnBiz(
+  db: DbQueryRunner,
+  bizType: BizType,
+  bizId: number,
+  userId: number
+): Promise<boolean> {
+  const stepHit = await db.queryOne<{ id: number }>(
+    `SELECT id FROM approval_steps WHERE biz_type = ? AND biz_id = ? AND acted_by = ? LIMIT 1`,
+    [bizType, bizId, userId]
+  );
+  if (stepHit) return true;
+  const logHit = await db.queryOne<{ id: number }>(
+    `SELECT id FROM approval_logs
+     WHERE biz_type = ? AND biz_id = ? AND actor_id = ?
+       AND action IN ('APPROVE', 'RETURN', 'REJECT', 'PAY', 'DISBURSE')
+     LIMIT 1`,
+    [bizType, bizId, userId]
+  );
+  return Boolean(logHit);
+}
+
+export function buildStatusDetail(params: {
+  bizType: BizType;
+  status: string;
+  currentStepName?: string | null;
+  currentStep?: number;
+  totalSteps?: number;
+  returnedToName?: string | null;
+  paymentRef?: string | null;
+}): string {
+  const { bizType, status, currentStepName, currentStep, totalSteps, returnedToName, paymentRef } = params;
+  if (status === 'DRAFT') return '草稿（待提交）';
+  if (status === 'CANCELLED') return '申请人已撤销';
+  if (status === 'REJECTED') return '审批已驳回';
+  if (status === 'RETURNED') {
+    return `已退回至：${returnedToName || '申请人'}（待修改重提）`;
+  }
+  if (status === 'PENDING_APPROVAL') {
+    const stepProg =
+      currentStep && totalSteps && totalSteps > 0 ? `（第${currentStep}/${totalSteps}步）` : '';
+    return currentStepName ? `待${currentStepName}${stepProg}` : '审批处理中';
+  }
+  if (bizType === 'REIMBURSEMENT') {
+    if (status === 'APPROVED') return '总经理已终审 · 待财务付款';
+    if (status === 'PAID') return paymentRef ? `财务已打款（${paymentRef}）` : '财务已打款核销';
+  } else if (bizType === 'CASH_ADVANCE') {
+    if (status === 'APPROVED') return '审批已通过 · 待财务放款';
+    if (status === 'DISBURSED') return paymentRef ? `已放款待冲销（${paymentRef}）` : '已放款 · 待报销冲销';
+    if (status === 'SETTLED') return '已全额冲销结清';
+  } else if (bizType === 'LEAVE') {
+    if (status === 'APPROVED') return '审批已通过（已生效）';
+  } else if (bizType === 'HEADCOUNT') {
+    if (status === 'APPROVED') return '补编已批准 · 可推进招聘';
+  }
+  return status;
+}

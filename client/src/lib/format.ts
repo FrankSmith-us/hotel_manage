@@ -51,6 +51,14 @@ export const LEAVE_TYPE_MAP: Record<string, string> = {
   OVERTIME: '加班申请',
 };
 
+export const ACTION_LABEL_MAP: Record<string, string> = {
+  APPROVE: '我已同意',
+  RETURN: '我已退回修改',
+  REJECT: '我已驳回',
+  PAY: '我已打款',
+  DISBURSE: '我已放款',
+};
+
 export const STATUS_META: Record<string, { label: string; cls: string }> = {
   DRAFT: { label: '草稿', cls: 'bg-stone-100 text-stone-600 border-stone-200' },
   PENDING_APPROVAL: { label: '审批中', cls: 'bg-amber-50 text-amber-700 border-amber-200' },

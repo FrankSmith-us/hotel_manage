@@ -14,8 +14,11 @@ import { logApprovalAction } from '../services/auditService';
 import { evaluateReimbursementRisks, getStoreBudgetSummary } from '../services/budgetService';
 import {
   buildReimbursementRoute,
+  buildStatusDetail,
   canUserActOnStep,
   getAvailableAdvanceBalance,
+  getUserLastHandledAction,
+  hasUserActedOnBiz,
   isUserReturnTarget,
   replaceApprovalSteps,
   resolveApprovalRoute,
@@ -170,6 +173,12 @@ router.get(
     if (tab === 'mine') {
       conditions.push(`(r.applicant_id = ? OR (r.status = 'RETURNED' AND r.returned_to_user_id = ?))`);
       params.push(user.id, user.id);
+    } else if (tab === 'handled') {
+      conditions.push(
+        `(EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'REIMBURSEMENT' AND s.biz_id = r.id AND s.acted_by = ?)
+          OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'REIMBURSEMENT' AND l.biz_id = r.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'RETURN', 'REJECT', 'PAY')))`
+      );
+      params.push(user.id, user.id);
     } else if (tab === 'payout_queue') {
       if (!['HQ_ADMIN', 'FINANCE'].includes(user.role)) {
         throw new AppError(403, '仅财务与管理员可查看待打款核销队列');
@@ -278,9 +287,25 @@ router.get(
 
       if (tab === 'pending' && !canApprove && !(r.status === 'RETURNED' && canEdit)) continue;
 
+      const handledInfo =
+        tab === 'handled'
+          ? await getUserLastHandledAction(db, 'REIMBURSEMENT', r.id, user.id)
+          : { my_last_action: null, my_acted_at: null };
+
       enriched.push({
         ...r,
         current_step_name: pendingStep?.step_name ?? null,
+        status_detail: buildStatusDetail({
+          bizType: 'REIMBURSEMENT',
+          status: r.status,
+          currentStepName: pendingStep?.step_name ?? null,
+          currentStep: r.current_step,
+          totalSteps: r.total_steps,
+          returnedToName: r.returned_to_name,
+          paymentRef: r.payment_ref,
+        }),
+        my_last_action: handledInfo.my_last_action,
+        my_acted_at: handledInfo.my_acted_at,
         canApprove,
         canEdit,
       });
@@ -409,7 +434,8 @@ router.get(
     const isOwner = claim.applicant_id === user.id;
     const isReturnTarget = await isUserReturnTarget(db, user, claim);
     const hasHotelAccess = await canAccessHotel(user, claim.hotel_id);
-    if (!isOwner && !isReturnTarget && !hasHotelAccess && user.role !== 'FINANCE' && user.role !== 'HQ_ADMIN' && user.role !== 'GENERAL_MANAGER') {
+    const hasActed = await hasUserActedOnBiz(db, 'REIMBURSEMENT', id, user.id);
+    if (!isOwner && !isReturnTarget && !hasActed && !hasHotelAccess && user.role !== 'FINANCE' && user.role !== 'HQ_ADMIN' && user.role !== 'GENERAL_MANAGER') {
       throw new AppError(403, '无权查看此报销单');
     }
 
