@@ -1,4 +1,5 @@
 import { DbQueryRunner } from '../../db/adapter';
+import { BUSINESS_RULES } from '../config/businessRules';
 import { AuthUser, BizType, UserRole } from '../types';
 import { nowIso, roundMoney, todayStr } from '../utils/numbers';
 
@@ -20,7 +21,7 @@ export function buildReimbursementRoute(params: {
 
   if (applicantRole === 'STAFF') {
     steps.push({ stepName: '门店店长审批', approverRole: 'STORE_MANAGER' });
-    if (totalAmount > 1000 || hasOverBudget) {
+    if (totalAmount > BUSINESS_RULES.reimbursement.staffRegionThreshold || hasOverBudget) {
       steps.push({ stepName: '区域经理复核', approverRole: 'REGIONAL_MANAGER' });
     }
     steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
@@ -28,7 +29,8 @@ export function buildReimbursementRoute(params: {
     steps.push({ stepName: '区域经理审批', approverRole: 'REGIONAL_MANAGER' });
     steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
   } else if (applicantRole === 'GENERAL_MANAGER') {
-    steps.push({ stepName: '集团系统管理员复核', approverRole: 'HQ_ADMIN' });
+    steps.push({ stepName: '集团财务负责人复核', approverRole: 'FINANCE' });
+    steps.push({ stepName: '董事长终审', approverRole: 'CHAIRMAN' });
   } else {
     // FINANCE, HQ_ADMIN, HR_MANAGER, REGIONAL_MANAGER
     steps.push({ stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' });
@@ -354,9 +356,19 @@ export async function resolveApprovalRoute(
   }
 
   // Deduplicate repeated approverUserId (keep the last/highest step for that approver)
+  // Also drop CHAIRMAN step when no active CHAIRMAN account exists and annotate previous step
   const deduped: typeof resolvedCandidates = [];
   for (let i = 0; i < resolvedCandidates.length; i++) {
     const cur = resolvedCandidates[i];
+    if (cur.approverRole === 'CHAIRMAN' && cur.approverUserId === null) {
+      if (deduped.length > 0) {
+        const prev = deduped[deduped.length - 1];
+        prev.skipReason = prev.skipReason
+          ? `${prev.skipReason}；未配置董事长账号，财务复核后需线下签批`
+          : '未配置董事长账号，财务复核后需线下签批';
+      }
+      continue;
+    }
     const hasLaterSameUser =
       cur.approverUserId !== null &&
       resolvedCandidates.slice(i + 1).some((later) => later.approverUserId === cur.approverUserId);

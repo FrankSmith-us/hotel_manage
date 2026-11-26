@@ -190,6 +190,45 @@ router.post(
     const db = getDb();
     const ts = nowIso();
     const requestNo = generateCode('LV');
+
+    // D-02: GENERAL_MANAGER leave uses filing/auto-approve mode
+    if (user.role === 'GENERAL_MANAGER') {
+      const leaveId = await db.transaction(async (tx) => {
+        const ins = await tx.execute(
+          `INSERT INTO leave_requests (
+            request_no, employee_id, hotel_id, leave_type, start_date, end_date,
+            days, hours, reason, urgency, status, current_step, approval_remark, approved_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'APPROVED', 0, '总经理休假备案制自动通过并抄送HR', ?, ?, ?)`,
+          [
+            requestNo,
+            user.employee_id,
+            user.hotel_id,
+            body.leave_type,
+            body.start_date,
+            body.end_date,
+            effectiveDays,
+            body.hours,
+            body.reason,
+            body.urgency,
+            ts,
+            ts,
+            ts,
+          ]
+        );
+        await logApprovalAction(tx, {
+          bizType: 'LEAVE',
+          bizId: ins.insertId,
+          action: 'AUTO_APPROVE',
+          actor: user,
+          comment: '总经理休假备案制自动通过并抄送HR',
+        });
+        return ins.insertId;
+      });
+      const leave = await db.queryOne('SELECT * FROM leave_requests WHERE id = ?', [leaveId]);
+      res.status(201).json({ leave });
+      return;
+    }
+
     const resolved = await resolveApprovalRoute(
       db,
       user.hotel_id,

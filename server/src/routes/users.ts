@@ -198,6 +198,7 @@ router.patch(
 const updateRoleSchema = z.object({
   role: z.enum([
     'HQ_ADMIN',
+    'CHAIRMAN',
     'GENERAL_MANAGER',
     'HR_MANAGER',
     'FINANCE',

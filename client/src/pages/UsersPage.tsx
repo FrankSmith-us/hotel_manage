@@ -25,6 +25,7 @@ interface UserRow {
 
 const ROLES = [
   { value: 'HQ_ADMIN', label: '集团系统管理员' },
+  { value: 'CHAIRMAN', label: '董事长' },
   { value: 'GENERAL_MANAGER', label: '集团总经理' },
   { value: 'HR_MANAGER', label: '集团HR总监' },
   { value: 'FINANCE', label: '集团财务经理' },

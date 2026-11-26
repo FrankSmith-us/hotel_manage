@@ -1564,4 +1564,47 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       await req('PATCH', `/api/users/${mgrHzUser.id}/status`, { token: adminToken, body: { is_active: true } });
     }
   });
+
+  it('T1-03: GM reimbursement routes to FINANCE/CHAIRMAN (never HQ_ADMIN) and GM leave auto-approves', async () => {
+    const gmToken = await loginAs('gm');
+    const finToken = await loginAs('finance');
+    const ym = currentYearMonth();
+
+    // 1. GM reimbursement routes to FINANCE (CHAIRMAN dropped with offline sign-off note when unconfigured)
+    const gmClaim = await req('POST', '/api/reimbursements', {
+      token: gmToken,
+      body: {
+        title: '总经理差旅费报销路由测试',
+        hotel_id: 1,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '周志远',
+        payee_bank: '招商银行上海分行',
+        payee_account: '6225880100001001',
+        submit: true,
+        items: [{ category: 'TRAVEL_TRAINING', expense_date: todayStr(), description: '差旅', amount: 180 }],
+      },
+    });
+    assert.equal(gmClaim.status, 201);
+    const detail = await req('GET', `/api/reimbursements/${gmClaim.data.claim.id}`, { token: gmToken });
+    assert.equal(detail.status, 200);
+    assert.ok(!detail.data.approvalSteps.some((s: any) => s.approver_role === 'HQ_ADMIN'));
+    assert.equal(detail.data.approvalSteps[0].approver_role, 'FINANCE');
+    assert.equal((await req('POST', `/api/reimbursements/${gmClaim.data.claim.id}/action`, { token: finToken, body: { action: 'APPROVE' } })).status, 200);
+
+    // 2. GM leave auto-approves immediately under filing mode
+    const gmLeave = await req('POST', '/api/leaves', {
+      token: gmToken,
+      body: {
+        leave_type: 'ANNUAL',
+        start_date: todayStr(),
+        end_date: todayStr(),
+        days: 1,
+        hours: 8,
+        reason: '总经理年假备案测试',
+      },
+    });
+    assert.equal(gmLeave.status, 201);
+    assert.equal(gmLeave.data.leave.status, 'APPROVED');
+  });
 });

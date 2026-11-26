@@ -1,5 +1,6 @@
 export type UserRole =
   | 'HQ_ADMIN'
+  | 'CHAIRMAN'
   | 'GENERAL_MANAGER'
   | 'HR_MANAGER'
   | 'FINANCE'
@@ -51,6 +52,7 @@ export const EXPENSE_CATEGORY_LABELS: Record<ExpenseCategory, string> = {
 
 export const ROLE_LABELS: Record<UserRole, string> = {
   HQ_ADMIN: '集团系统管理员',
+  CHAIRMAN: '董事长',
   GENERAL_MANAGER: '集团总经理',
   HR_MANAGER: '集团HR总监',
   FINANCE: '集团财务经理',
