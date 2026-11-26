@@ -35,11 +35,18 @@ interface ManagerCandidate {
   role: string;
 }
 
+interface RegionOption {
+  id: number;
+  code: string;
+  name: string;
+}
+
 export function OrganizationPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
-  const canManage = ['HQ_ADMIN', 'GENERAL_MANAGER', 'HR_MANAGER'].includes(user?.role || '');
+  const canManageRegion = ['HQ_ADMIN', 'GENERAL_MANAGER'].includes(user?.role || '');
   const [regions, setRegions] = useState<RegionNode[]>([]);
+  const [regionOptions, setRegionOptions] = useState<RegionOption[]>([]);
   const [candidates, setCandidates] = useState<ManagerCandidate[]>([]);
   const [open, setOpen] = useState(false);
 
@@ -48,19 +55,25 @@ export function OrganizationPage() {
 
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
-  const [regionId, setRegionId] = useState(2);
+  const [regionId, setRegionId] = useState(0);
   const [city, setCity] = useState('');
   const [address, setAddress] = useState('');
   const [phone, setPhone] = useState('');
   const [roomCount, setRoomCount] = useState(120);
 
   const load = () => {
-    apiFetch<{ regions: RegionNode[]; managerCandidates: ManagerCandidate[] }>('/api/organization/tree').then(
-      (d) => {
-        setRegions(d.regions);
-        setCandidates(d.managerCandidates || []);
-      }
-    );
+    apiFetch<{ regions: RegionNode[]; regionOptions?: RegionOption[]; managerCandidates: ManagerCandidate[] }>(
+      '/api/organization/tree'
+    ).then((d) => {
+      setRegions(d.regions);
+      const opts =
+        d.regionOptions && d.regionOptions.length > 0
+          ? d.regionOptions
+          : d.regions.filter((r) => r.code !== 'HQ').map((r) => ({ id: r.id, code: r.code, name: r.name }));
+      setRegionOptions(opts);
+      setRegionId((prev) => (opts.some((o) => o.id === prev) ? prev : opts[0]?.id || 0));
+      setCandidates(d.managerCandidates || []);
+    });
   };
 
   useEffect(() => {
@@ -147,7 +160,7 @@ export function OrganizationPage() {
                 </span>
               )}
             </div>
-            {canManage && reg.code !== 'HQ' && (
+            {canManageRegion && reg.code !== 'HQ' && (
               <button
                 onClick={() => {
                   setEditingRegion(reg);
@@ -240,10 +253,13 @@ export function OrganizationPage() {
                 value={regionId}
                 onChange={(e) => setRegionId(Number(e.target.value))}
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+                required
               >
-                <option value={2}>华东大区</option>
-                <option value={3}>华北大区</option>
-                <option value={4}>华南大区</option>
+                {regionOptions.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                  </option>
+                ))}
               </select>
             </div>
             <div>

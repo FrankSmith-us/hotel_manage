@@ -123,7 +123,13 @@ router.get(
       })
       .filter((r) => r.hotels.length > 0);
 
-    res.json({ regions: tree, managerCandidates });
+    res.json({
+      regions: tree,
+      regionOptions: regions
+        .filter((r) => r.code !== 'HQ')
+        .map((r) => ({ id: r.id, code: r.code, name: r.name })),
+      managerCandidates,
+    });
   })
 );
 
@@ -218,6 +224,15 @@ router.post(
   asyncHandler(async (req, res) => {
     const body = createHotelSchema.parse(req.body);
     const db = getDb();
+    const region = await db.queryOne<{ id: number }>('SELECT id FROM regions WHERE id = ?', [body.region_id]);
+    if (!region) {
+      throw new AppError(400, '所选大区不存在，请刷新页面后重试');
+    }
+    const normalizedCode = body.code.trim().toUpperCase();
+    const existingCode = await db.queryOne<{ id: number }>('SELECT id FROM hotels WHERE code = ?', [normalizedCode]);
+    if (existingCode) {
+      throw new AppError(409, '门店编码已存在，请更换其他编码');
+    }
     const ts = nowIso();
     const today = todayStr();
 
@@ -225,7 +240,17 @@ router.post(
       const resInsert = await tx.execute(
         `INSERT INTO hotels (code, name, region_id, city, address, phone, room_count, is_hq, status, opened_at, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'ACTIVE', ?, ?)`,
-        [body.code.toUpperCase(), body.name, body.region_id, body.city, body.address, body.phone, body.room_count, today, ts]
+        [
+          normalizedCode,
+          body.name.trim(),
+          body.region_id,
+          body.city.trim(),
+          body.address.trim(),
+          body.phone.trim(),
+          body.room_count,
+          today,
+          ts,
+        ]
       );
       const hid = resInsert.insertId;
       for (const d of [

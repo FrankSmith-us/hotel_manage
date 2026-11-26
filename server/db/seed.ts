@@ -56,6 +56,16 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     ];
     for (const t of tables) {
       await db.execute(`DELETE FROM ${t}`);
+      if (db.dialect === 'mysql') {
+        await db.execute(`ALTER TABLE ${t} AUTO_INCREMENT = 1`);
+      }
+    }
+    if (db.dialect === 'sqlite') {
+      try {
+        await db.execute('DELETE FROM sqlite_sequence');
+      } catch {
+        // Ignore if sqlite_sequence has not been initialized yet
+      }
     }
   }
 

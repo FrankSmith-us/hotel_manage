@@ -49,6 +49,14 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     res.status(409).json({ error: '数据记录已存在或编号重复' });
     return;
   }
+  if (
+    errCode === 'ER_NO_REFERENCED_ROW_2' ||
+    errCode === 'SQLITE_CONSTRAINT_FOREIGNKEY' ||
+    (errCode === 'ERR_SQLITE_ERROR' && msg.includes('FOREIGN KEY constraint failed'))
+  ) {
+    res.status(400).json({ error: '关联的基础数据不存在，请刷新页面后重试' });
+    return;
+  }
 
   console.error('[Unhandled Error]', err);
   res.status(500).json({ error: '服务器内部错误，请稍后重试' });

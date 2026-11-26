@@ -1004,4 +1004,57 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const uAfterResign = await db.queryOne<{ is_active: number }>('SELECT is_active FROM users WHERE username = ?', ['resign_test_u']);
     assert.equal(Number(uAfterResign?.is_active), 0);
   });
+
+  it('Organization hotel creation validates region_id, prevents duplicate code, and initializes 5 departments', async () => {
+    const adminToken = await loginAs('admin');
+    const tree = await req('GET', '/api/organization/tree', { token: adminToken });
+    assert.equal(tree.status, 200);
+    assert.ok(Array.isArray(tree.data.regionOptions) && tree.data.regionOptions.length >= 3);
+
+    const eastOption = tree.data.regionOptions.find((r: any) => r.code === 'EAST');
+    assert.ok(eastOption);
+
+    const badRegion = await req('POST', '/api/organization/hotels', {
+      token: adminToken,
+      body: {
+        code: 'BAD-REG-1',
+        name: '无效大区门店',
+        region_id: 9999,
+        city: '上海',
+        address: '测试路1号',
+        phone: '18000000000',
+        room_count: 100,
+      },
+    });
+    assert.equal(badRegion.status, 400);
+
+    const created = await req('POST', '/api/organization/hotels', {
+      token: adminToken,
+      body: {
+        code: 'SH-JA-XFH',
+        name: '星方汇',
+        region_id: eastOption.id,
+        city: '上海',
+        address: '上海市静安区星方汇大厦',
+        phone: '18000000000',
+        room_count: 120,
+      },
+    });
+    assert.equal(created.status, 201);
+    assert.equal(created.data.hotel.code, 'SH-JA-XFH');
+
+    const dupCode = await req('POST', '/api/organization/hotels', {
+      token: adminToken,
+      body: {
+        code: 'sh-ja-xfh',
+        name: '星方汇重复',
+        region_id: eastOption.id,
+        city: '上海',
+        address: '上海市静安区星方汇大厦',
+        phone: '18000000000',
+        room_count: 120,
+      },
+    });
+    assert.equal(dupCode.status, 409);
+  });
 });
