@@ -18,6 +18,7 @@ export interface AuthUser {
   hotel_name?: string | null;
   hotel_code?: string | null;
   region_name?: string | null;
+  must_change_password?: boolean;
 }
 
 export type BizType =
@@ -27,7 +28,7 @@ export type BizType =
   | 'CASH_ADVANCE'
   | 'ONBOARDING'
   | 'OFFBOARDING';
-export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL';
+export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL' | 'USER';
 
 export type ExpenseCategory =
   | 'LINEN_SUPPLIES'

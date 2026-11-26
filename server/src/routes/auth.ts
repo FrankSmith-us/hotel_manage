@@ -5,6 +5,7 @@ import { getDb } from '../../db';
 import { isDemoSwitchEnabled } from '../config/env';
 import { AppError, asyncHandler, authenticate, signToken } from '../middleware/auth';
 import { ROLE_LABELS, UserRole } from '../types';
+import { nowIso } from '../utils/numbers';
 
 const router = Router();
 
@@ -50,6 +51,7 @@ router.post(
       hotel_name: string | null;
       hotel_code: string | null;
       region_name: string | null;
+      must_change_password: number;
     }>(
       `SELECT u.*, h.name AS hotel_name, h.code AS hotel_code, r.name AS region_name
        FROM users u
@@ -85,8 +87,43 @@ router.post(
         hotel_name: user.hotel_name,
         hotel_code: user.hotel_code,
         region_name: user.region_name,
+        must_change_password: Boolean(user.must_change_password),
       },
     });
+  })
+);
+
+const changePasswordSchema = z.object({
+  old_password: z.string().min(1, '请输入原密码'),
+  new_password: z
+    .string()
+    .min(8, '新密码长度至少 8 位')
+    .max(64)
+    .regex(/^(?=.*[A-Za-z])(?=.*\d).+$/, '新密码必须同时包含字母和数字'),
+});
+
+router.post(
+  '/change-password',
+  authenticate,
+  asyncHandler(async (req, res) => {
+    const { old_password, new_password } = changePasswordSchema.parse(req.body);
+    if (old_password === new_password) {
+      throw new AppError(400, '新密码不能与原密码相同');
+    }
+    const db = getDb();
+    const userRow = await db.queryOne<{ id: number; password_hash: string }>(
+      'SELECT id, password_hash FROM users WHERE id = ?',
+      [req.user!.id]
+    );
+    if (!userRow || !bcrypt.compareSync(old_password, userRow.password_hash)) {
+      throw new AppError(400, '原密码不正确');
+    }
+    const newHash = bcrypt.hashSync(new_password, 10);
+    await db.execute(
+      'UPDATE users SET password_hash = ?, must_change_password = 0, password_changed_at = ? WHERE id = ?',
+      [newHash, nowIso(), req.user!.id]
+    );
+    res.json({ ok: true });
   })
 );
 
@@ -159,6 +196,7 @@ router.post(
       hotel_name: string | null;
       hotel_code: string | null;
       region_name: string | null;
+      must_change_password: number;
     }>(
       `SELECT u.id, u.username, u.display_name, u.role, u.employee_id, u.hotel_id, u.region_id, u.is_active,
               h.name AS hotel_name, h.code AS hotel_code, r.name AS region_name
@@ -186,6 +224,7 @@ router.post(
         hotel_name: user.hotel_name,
         hotel_code: user.hotel_code,
         region_name: user.region_name,
+        must_change_password: Boolean(user.must_change_password),
       },
     });
   })

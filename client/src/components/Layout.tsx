@@ -8,16 +8,20 @@ import {
   CreditCard,
   FileSpreadsheet,
   Hotel,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Menu,
   Receipt,
   Settings,
+  Shield,
   UserPlus,
   Users,
   Wallet,
   X,
 } from 'lucide-react';
+import { Modal } from './Modal';
+import { useToast } from './Toast';
 import { apiFetch } from '../lib/api';
 import { useAuth } from '../lib/auth';
 
@@ -66,6 +70,12 @@ const NAV_GROUPS: NavGroup[] = [
     label: '系统管理',
     items: [
       {
+        to: '/users',
+        label: '账号与权限管理',
+        icon: <Shield className="w-4 h-4" />,
+        roles: ['HQ_ADMIN', 'HR_MANAGER'],
+      },
+      {
         to: '/system-config',
         label: '系统配置与基础数据',
         icon: <Settings className="w-4 h-4" />,
@@ -77,9 +87,14 @@ const NAV_GROUPS: NavGroup[] = [
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, demoAccounts, demoSwitchEnabled, switchDemoAccount, logout } = useAuth();
+  const { showToast } = useToast();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [switcherQuery, setSwitcherQuery] = useState('');
+  const [pwOpen, setPwOpen] = useState(false);
+  const [oldPw, setOldPw] = useState('');
+  const [newPw, setNewPw] = useState('');
+  const [confirmPw, setConfirmPw] = useState('');
   const [alertCounts, setAlertCounts] = useState({
     pendingExpenseCount: 0,
     urgentExpenseCount: 0,
@@ -102,6 +117,33 @@ export function Layout({ children }: { children: React.ReactNode }) {
       .then((d) => setAlertCounts(d.kpis))
       .catch(() => {});
   }, [user?.id, location.pathname]);
+
+  useEffect(() => {
+    if (user?.must_change_password && !demoSwitchEnabled) {
+      setPwOpen(true);
+    }
+  }, [user?.id, user?.must_change_password, demoSwitchEnabled]);
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPw !== confirmPw) {
+      showToast('两次输入的新密码不一致', 'error');
+      return;
+    }
+    try {
+      await apiFetch('/api/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ old_password: oldPw, new_password: newPw }),
+      });
+      showToast('密码已更新，请牢记新密码');
+      setPwOpen(false);
+      setOldPw('');
+      setNewPw('');
+      setConfirmPw('');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '修改密码失败', 'error');
+    }
+  };
 
   const handleSwitch = async (username: string) => {
     await switchDemoAccount(username);
@@ -177,13 +219,22 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 {user?.role_label} · {user?.hotel_name || user?.region_name || '集团'}
               </div>
             </div>
-            <button
-              onClick={logout}
-              title="退出登录"
-              className="p-2 rounded-lg text-stone-400 hover:text-rose-300 hover:bg-stone-800 transition-colors"
-            >
-              <LogOut className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPwOpen(true)}
+                title="修改密码"
+                className="p-2 rounded-lg text-stone-400 hover:text-amber-300 hover:bg-stone-800 transition-colors"
+              >
+                <KeyRound className="w-4 h-4" />
+              </button>
+              <button
+                onClick={logout}
+                title="退出登录"
+                className="p-2 rounded-lg text-stone-400 hover:text-rose-300 hover:bg-stone-800 transition-colors"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       </aside>
@@ -310,6 +361,54 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
         <main className="flex-1 p-4 lg:p-8 max-w-[1440px] w-full mx-auto">{children}</main>
       </div>
+
+      <Modal open={pwOpen} onClose={() => setPwOpen(false)} title="修改登录密码">
+        <form onSubmit={handleChangePassword} className="space-y-4">
+          {user?.must_change_password && !demoSwitchEnabled && (
+            <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800">
+              当前账号为初始或重置密码，请修改后再继续使用系统功能。
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">原密码 *</label>
+            <input
+              type="password"
+              value={oldPw}
+              onChange={(e) => setOldPw(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">新密码（至少8位，含字母和数字）*</label>
+            <input
+              type="password"
+              value={newPw}
+              onChange={(e) => setNewPw(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">确认新密码 *</label>
+            <input
+              type="password"
+              value={confirmPw}
+              onChange={(e) => setConfirmPw(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
+              required
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setPwOpen(false)} className="px-4 py-2 rounded-xl border text-sm">
+              取消
+            </button>
+            <button type="submit" className="px-5 py-2 rounded-xl bg-brand-600 text-white text-sm font-semibold">
+              确认修改
+            </button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

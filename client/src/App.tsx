@@ -14,6 +14,7 @@ import { RecruitmentPage } from './pages/RecruitmentPage';
 import { ReimbursementsPage } from './pages/ReimbursementsPage';
 import { SchedulesPage } from './pages/SchedulesPage';
 import { SystemConfigPage } from './pages/SystemConfigPage';
+import { UsersPage } from './pages/UsersPage';
 
 function AppRoutes() {
   const { user, loading } = useAuth();
@@ -43,6 +44,7 @@ function AppRoutes() {
         <Route path="/leaves" element={<LeavesPage />} />
         <Route path="/payroll" element={<PayrollPage />} />
         <Route path="/recruitment" element={<RecruitmentPage />} />
+        <Route path="/users" element={<UsersPage />} />
         <Route path="/system-config" element={<SystemConfigPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

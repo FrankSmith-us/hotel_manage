@@ -22,6 +22,7 @@ import recruitmentRouter from './routes/recruitment';
 import reimbursementsRouter from './routes/reimbursements';
 import reportsRouter from './routes/reports';
 import schedulesRouter from './routes/schedules';
+import usersRouter from './routes/users';
 
 export function createApp() {
   const app = express();
@@ -87,6 +88,7 @@ export function createApp() {
   });
 
   app.use('/api/auth', authRouter);
+  app.use('/api/users', usersRouter);
   app.use('/api/master-data', masterDataRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/organization', organizationRouter);

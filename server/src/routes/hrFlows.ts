@@ -26,6 +26,7 @@ import { UserRole } from '../types';
 import {
   addDays,
   generateCode,
+  generateTempPassword,
   isoDateSchema,
   nowIso,
   randomTokenSuffix,
@@ -386,7 +387,8 @@ router.post(
     const probationEnd = addDays(hireDate, 90);
     const contractEnd = ob.contract_end_date || addDays(hireDate, 730);
     const username = `staff_${randomTokenSuffix(3).toLowerCase()}`;
-    const defaultPassHash = bcrypt.hashSync('Hotel@2026', 8);
+    const tempPassword = generateTempPassword();
+    const defaultPassHash = bcrypt.hashSync(tempPassword, 8);
 
     const result = await db.transaction(async (tx) => {
       const insEmp = await tx.execute(
@@ -430,14 +432,16 @@ router.post(
       );
 
       let createdUsername: string | null = null;
+      let createdTempPassword: string | null = null;
       if (ob.create_user_account) {
         const hotel = await tx.queryOne<{ region_id: number }>('SELECT region_id FROM hotels WHERE id = ?', [ob.hotel_id]);
         await tx.execute(
-          `INSERT INTO users (username, password_hash, display_name, role, employee_id, hotel_id, region_id, is_active, created_at)
-           VALUES (?, ?, ?, 'STAFF', ?, ?, ?, 1, ?)`,
+          `INSERT INTO users (username, password_hash, display_name, role, employee_id, hotel_id, region_id, is_active, must_change_password, created_at)
+           VALUES (?, ?, ?, 'STAFF', ?, ?, ?, 1, 1, ?)`,
           [username, defaultPassHash, ob.candidate_name, insEmp.insertId, ob.hotel_id, hotel?.region_id ?? null, ts]
         );
         createdUsername = username;
+        createdTempPassword = tempPassword;
       }
 
       await tx.execute(
@@ -455,7 +459,12 @@ router.post(
         comment: `完成入职建档，工号 ${empNo}${createdUsername ? `，已开通账号 ${createdUsername}` : ''}`,
       });
 
-      return { employeeId: insEmp.insertId, empNo, username: createdUsername };
+      return {
+        employeeId: insEmp.insertId,
+        empNo,
+        username: createdUsername,
+        temp_password: createdTempPassword,
+      };
     });
 
     res.json({ ok: true, ...result });

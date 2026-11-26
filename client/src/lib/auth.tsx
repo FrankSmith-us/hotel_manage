@@ -13,6 +13,7 @@ export interface UserInfo {
   hotel_name: string | null;
   hotel_code: string | null;
   region_name: string | null;
+  must_change_password?: boolean;
 }
 
 export interface DemoAccount {

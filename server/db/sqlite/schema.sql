@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS users (
   hotel_id INTEGER REFERENCES hotels(id),
   region_id INTEGER REFERENCES regions(id),
   is_active INTEGER NOT NULL DEFAULT 1,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  password_changed_at TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);

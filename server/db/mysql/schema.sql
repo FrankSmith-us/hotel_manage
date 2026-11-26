@@ -87,6 +87,8 @@ CREATE TABLE IF NOT EXISTS users (
   hotel_id BIGINT NULL,
   region_id BIGINT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
+  must_change_password TINYINT(1) NOT NULL DEFAULT 0,
+  password_changed_at VARCHAR(32) NULL,
   created_at VARCHAR(32) NOT NULL,
   INDEX idx_users_role (role),
   CONSTRAINT fk_users_employee FOREIGN KEY (employee_id) REFERENCES employees(id),

@@ -40,9 +40,9 @@ async function req(
   return { status: res.status, data, text };
 }
 
-async function loginAs(username: string): Promise<string> {
+async function loginAs(username: string, password = 'Hotel@2026'): Promise<string> {
   const res = await req('POST', '/api/auth/login', {
-    body: { username, password: 'Hotel@2026' },
+    body: { username, password },
   });
   assert.equal(res.status, 200, `Login failed for ${username}: ${res.text}`);
   return res.data.token;
@@ -1290,8 +1290,8 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.ok(obComplete.data.employeeId);
     assert.ok(obComplete.data.username);
 
-    // Newly onboarded employee account can log in
-    const newStaffToken = await loginAs(obComplete.data.username);
+    // Newly onboarded employee account can log in with generated temp password
+    const newStaffToken = await loginAs(obComplete.data.username, obComplete.data.temp_password);
     assert.ok(newStaffToken);
 
     // 2. Offboarding workflow + archiving: staff_sh_hk (YQ-1002) submits or mgr_sh submits for seeded/new employee
@@ -1359,5 +1359,59 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const expectedBj = new Date(Date.now() + 8 * 3600_000).toISOString().replace('T', ' ').slice(0, 19);
     const diffMs = Math.abs(Date.parse(bjStr.replace(' ', 'T') + 'Z') - Date.parse(expectedBj.replace(' ', 'T') + 'Z'));
     assert.ok(diffMs <= 5000, `Expected Beijing time ${expectedBj}, got ${bjStr}`);
+  });
+
+  it('T1-01: self-service password change, admin reset-password guard, and user management RBAC', async () => {
+    const adminToken = await loginAs('admin');
+    const staffToken = await loginAs('staff_sh');
+
+    // STAFF cannot access /api/users
+    assert.equal((await req('GET', '/api/users', { token: staffToken })).status, 403);
+
+    // Admin cannot deactivate self
+    const meRes = await req('GET', '/api/auth/me', { token: adminToken });
+    const selfDisable = await req('PATCH', `/api/users/${meRes.data.user.id}/status`, {
+      token: adminToken,
+      body: { is_active: false },
+    });
+    assert.equal(selfDisable.status, 400);
+
+    // Reset staff_hz password -> must_change_password = 1 -> blocked in prod mode until changed
+    const usersRes = await req('GET', '/api/users', { token: adminToken });
+    assert.equal(usersRes.status, 200);
+    const staffHz = usersRes.data.users.find((u: any) => u.username === 'staff_hz');
+    assert.ok(staffHz);
+
+    const resetRes = await req('POST', `/api/users/${staffHz.id}/reset-password`, { token: adminToken });
+    assert.equal(resetRes.status, 200);
+    const tempPw = resetRes.data.temp_password;
+    assert.ok(tempPw && tempPw.length >= 8);
+
+    const prevDemo = process.env.DEMO_ROLE_SWITCH;
+    process.env.DEMO_ROLE_SWITCH = 'false';
+    try {
+      const hzToken = await loginAs('staff_hz', tempPw);
+      // Accessing non-auth API is blocked with 403 PASSWORD_CHANGE_REQUIRED
+      const blockedDash = await req('GET', '/api/dashboard/summary', { token: hzToken });
+      assert.equal(blockedDash.status, 403);
+
+      // Change password succeeds, old temp password fails, new password works
+      const chRes = await req('POST', '/api/auth/change-password', {
+        token: hzToken,
+        body: { old_password: tempPw, new_password: 'NewPass2026!' },
+      });
+      assert.equal(chRes.status, 200);
+
+      const oldLogin = await req('POST', '/api/auth/login', {
+        body: { username: 'staff_hz', password: tempPw },
+      });
+      assert.equal(oldLogin.status, 401);
+
+      const newToken = await loginAs('staff_hz', 'NewPass2026!');
+      const okDash = await req('GET', '/api/dashboard/summary', { token: newToken });
+      assert.equal(okDash.status, 200);
+    } finally {
+      process.env.DEMO_ROLE_SWITCH = prevDemo;
+    }
   });
 });

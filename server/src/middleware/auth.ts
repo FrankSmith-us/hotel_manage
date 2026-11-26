@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import { getDb } from '../../db';
-import { env } from '../config/env';
+import { env, isDemoSwitchEnabled } from '../config/env';
 import { AuthUser, UserRole } from '../types';
 
 declare global {
@@ -52,8 +52,11 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
   }
 
   const db = getDb();
-  const user = await db.queryOne<AuthUser & { is_active: number }>(
-    `SELECT u.id, u.username, u.display_name, u.role, u.employee_id, u.hotel_id, u.region_id, u.is_active,
+  const user = await db.queryOne<
+    Omit<AuthUser, 'must_change_password'> & { is_active: number; must_change_password: number }
+  >(
+    `SELECT u.id, u.username, u.display_name, u.role, u.employee_id, u.hotel_id, u.region_id,
+            u.is_active, u.must_change_password,
             h.name AS hotel_name, h.code AS hotel_code, r.name AS region_name
      FROM users u
      LEFT JOIN hotels h ON h.id = u.hotel_id
@@ -77,7 +80,15 @@ export const authenticate = asyncHandler(async (req, _res, next) => {
     hotel_name: user.hotel_name ?? null,
     hotel_code: user.hotel_code ?? null,
     region_name: user.region_name ?? null,
+    must_change_password: Boolean(user.must_change_password),
   };
+
+  if (req.user.must_change_password && !isDemoSwitchEnabled()) {
+    const pathOnly = req.originalUrl.split('?')[0];
+    if (pathOnly !== '/api/auth/me' && pathOnly !== '/api/auth/change-password') {
+      throw new AppError(403, '请先修改初始密码后再继续操作', { code: 'PASSWORD_CHANGE_REQUIRED' });
+    }
+  }
   next();
 });
 

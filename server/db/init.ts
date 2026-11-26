@@ -69,6 +69,13 @@ export async function initSchema(db: DbAdapter): Promise<void> {
         await db.execute(`ALTER TABLE employees ADD COLUMN ${colName} ${colDef}`);
       }
     }
+    const uCols = new Set((await db.query<{ name: string }>('PRAGMA table_info(users)')).map((c) => c.name));
+    if (!uCols.has('must_change_password')) {
+      await db.execute('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!uCols.has('password_changed_at')) {
+      await db.execute('ALTER TABLE users ADD COLUMN password_changed_at TEXT');
+    }
   } else {
     const col = await db.queryOne<{ cnt: number }>(
       `SELECT COUNT(*) AS cnt
@@ -125,6 +132,8 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['employees', 'education', 'VARCHAR(32) NULL'],
       ['employees', 'marital_status', 'VARCHAR(24) NULL'],
       ['employees', 'political_status', 'VARCHAR(24) NULL'],
+      ['users', 'must_change_password', 'TINYINT(1) NOT NULL DEFAULT 0'],
+      ['users', 'password_changed_at', 'VARCHAR(32) NULL'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt

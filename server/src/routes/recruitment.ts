@@ -507,8 +507,8 @@ router.post(
       );
 
       await tx.execute(
-        `INSERT INTO users (username, password_hash, display_name, role, employee_id, hotel_id, region_id, is_active, created_at)
-         VALUES (?, ?, ?, 'STAFF', ?, ?, ?, 1, ?)`,
+        `INSERT INTO users (username, password_hash, display_name, role, employee_id, hotel_id, region_id, is_active, must_change_password, created_at)
+         VALUES (?, ?, ?, 'STAFF', ?, ?, ?, 1, 1, ?)`,
         [username, passwordHash, cand.name, empRes.insertId, cand.hotel_id, hotel?.region_id ?? null, ts]
       );
 
