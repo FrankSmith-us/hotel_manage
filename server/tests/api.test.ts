@@ -77,7 +77,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 17);
+    assert.equal(mysqlTables.length, 18);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -171,6 +171,10 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         expense_month: ym,
         cash_advance_id: adv2.id,
         offset_amount: 1000,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
         submit: true,
         items: [
           {
@@ -197,6 +201,10 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         expense_month: ym,
         cash_advance_id: adv2.id,
         offset_amount: 1500,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
         submit: true,
         items: [
           { category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 1600 },
@@ -221,6 +229,10 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         expense_month: ym,
         cash_advance_id: adv2.id,
         offset_amount: 2000,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
         submit: true,
         items: [
           {
@@ -371,6 +383,10 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         title: '北京国贸店直达总经理测试单',
         hotel_id: 4,
         expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '高建国',
+        payee_bank: '招商银行北京国贸支行',
+        payee_account: '6225880200003001',
         submit: true,
         items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 2000 }],
       },
@@ -429,5 +445,74 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       token: adminToken,
       body: { manager_user_id: regEastUser.id },
     });
+  });
+
+  it('Supports CORPORATE/PERSONAL payees, recalls saved accounts, and auto-saves new accounts only after Finance payout', async () => {
+    const mgrBjToken = await loginAs('mgr_bj');
+    const gmToken = await loginAs('gm');
+    const financeToken = await loginAs('finance');
+    const ym = currentYearMonth();
+
+    // 1. Missing payee fields must fail validation (400)
+    const missingPayee = await req('POST', '/api/reimbursements', {
+      token: mgrBjToken,
+      body: {
+        title: '缺少收款人测试',
+        hotel_id: 4,
+        expense_month: ym,
+        payment_type: 'CORPORATE',
+        submit: true,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 300 }],
+      },
+    });
+    assert.equal(missingPayee.status, 400);
+
+    // 2. Submit new CORPORATE vendor account -> NOT in saved payees yet before payout
+    const newCorpAcc = '999888777666';
+    const corpClaim = await req('POST', '/api/reimbursements', {
+      token: mgrBjToken,
+      body: {
+        title: '新增对公供应商付款测试',
+        hotel_id: 4,
+        expense_month: ym,
+        payment_type: 'CORPORATE',
+        payee_name: '北京恒信设施维保有限公司',
+        payee_bank: '浦发银行北京分行',
+        payee_account: newCorpAcc,
+        submit: true,
+        items: [{ category: 'MAINTENANCE', expense_date: todayStr(), description: '消防阀更换', amount: 880 }],
+      },
+    });
+    assert.equal(corpClaim.status, 201);
+    const claimId = corpClaim.data.claim.id;
+
+    const beforePay = await req('GET', '/api/reimbursements/payees?paymentType=CORPORATE', { token: mgrBjToken });
+    assert.equal(beforePay.status, 200);
+    assert.ok(!beforePay.data.payees.some((p: any) => p.account_number === newCorpAcc));
+
+    // 3. GM approves -> Finance pays -> account is automatically saved under CORPORATE
+    assert.equal(
+      (await req('POST', `/api/reimbursements/${claimId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    assert.equal(
+      (
+        await req('POST', '/api/reimbursements/payout', {
+          token: financeToken,
+          body: { reimbursement_ids: [claimId], payment_channel: 'BANK_TRANSFER', payment_ref: 'TXN-CORP-1' },
+        })
+      ).status,
+      200
+    );
+
+    const afterPayCorp = await req('GET', '/api/reimbursements/payees?paymentType=CORPORATE', { token: mgrBjToken });
+    const savedCorp = afterPayCorp.data.payees.find((p: any) => p.account_number === newCorpAcc);
+    assert.ok(savedCorp);
+    assert.equal(savedCorp.account_name, '北京恒信设施维保有限公司');
+    assert.equal(Number(savedCorp.paid_count), 1);
+
+    // Ensure CORPORATE account does not leak into PERSONAL list
+    const afterPayPers = await req('GET', '/api/reimbursements/payees?paymentType=PERSONAL', { token: mgrBjToken });
+    assert.ok(!afterPayPers.data.payees.some((p: any) => p.account_number === newCorpAcc));
   });
 });

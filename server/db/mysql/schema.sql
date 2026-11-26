@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS reimbursements (
   risk_flags VARCHAR(120) NOT NULL DEFAULT '',
   risk_summary VARCHAR(500) NULL,
   remarks VARCHAR(500) NULL,
+  payment_type VARCHAR(24) NOT NULL DEFAULT 'PERSONAL',
   payee_name VARCHAR(80) NOT NULL,
   payee_bank VARCHAR(80) NULL,
   payee_account VARCHAR(64) NULL,
@@ -327,6 +328,22 @@ CREATE TABLE IF NOT EXISTS approval_logs (
   comment VARCHAR(500) NULL,
   created_at VARCHAR(32) NOT NULL,
   INDEX idx_logs_biz (biz_type, biz_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS payee_accounts (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  payment_type VARCHAR(24) NOT NULL,
+  account_name VARCHAR(120) NOT NULL,
+  account_number VARCHAR(64) NOT NULL,
+  bank_name VARCHAR(120) NOT NULL,
+  hotel_id BIGINT NULL,
+  last_paid_at VARCHAR(32) NOT NULL,
+  paid_count INT NOT NULL DEFAULT 1,
+  created_by BIGINT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_payee_type_acc (payment_type, account_number),
+  INDEX idx_payee_type (payment_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

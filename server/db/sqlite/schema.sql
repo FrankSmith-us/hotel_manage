@@ -241,6 +241,7 @@ CREATE TABLE IF NOT EXISTS reimbursements (
   risk_flags TEXT NOT NULL DEFAULT '',
   risk_summary TEXT,
   remarks TEXT,
+  payment_type TEXT NOT NULL DEFAULT 'PERSONAL',
   payee_name TEXT NOT NULL,
   payee_bank TEXT,
   payee_account TEXT,
@@ -299,3 +300,19 @@ CREATE TABLE IF NOT EXISTS approval_logs (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_logs_biz ON approval_logs(biz_type, biz_id, created_at);
+
+CREATE TABLE IF NOT EXISTS payee_accounts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  payment_type TEXT NOT NULL,
+  account_name TEXT NOT NULL,
+  account_number TEXT NOT NULL,
+  bank_name TEXT NOT NULL,
+  hotel_id INTEGER,
+  last_paid_at TEXT NOT NULL,
+  paid_count INTEGER NOT NULL DEFAULT 1,
+  created_by INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(payment_type, account_number)
+);
+CREATE INDEX IF NOT EXISTS idx_payee_type ON payee_accounts(payment_type);

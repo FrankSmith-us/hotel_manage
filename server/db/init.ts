@@ -21,6 +21,10 @@ export async function initSchema(db: DbAdapter): Promise<void> {
     if (!cols.some((c) => c.name === 'manager_user_id')) {
       await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id INTEGER');
     }
+    const rCols = await db.query<{ name: string }>('PRAGMA table_info(reimbursements)');
+    if (!rCols.some((c) => c.name === 'payment_type')) {
+      await db.execute(`ALTER TABLE reimbursements ADD COLUMN payment_type TEXT NOT NULL DEFAULT 'PERSONAL'`);
+    }
   } else {
     const col = await db.queryOne<{ cnt: number }>(
       `SELECT COUNT(*) AS cnt
@@ -29,6 +33,16 @@ export async function initSchema(db: DbAdapter): Promise<void> {
     );
     if (!col || Number(col.cnt) === 0) {
       await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id BIGINT NULL AFTER name');
+    }
+    const rCol = await db.queryOne<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'reimbursements' AND COLUMN_NAME = 'payment_type'`
+    );
+    if (!rCol || Number(rCol.cnt) === 0) {
+      await db.execute(
+        `ALTER TABLE reimbursements ADD COLUMN payment_type VARCHAR(24) NOT NULL DEFAULT 'PERSONAL' AFTER remarks`
+      );
     }
   }
 }

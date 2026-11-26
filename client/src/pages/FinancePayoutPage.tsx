@@ -26,6 +26,10 @@ interface QueueRow {
   hotel_name: string;
   applicant_name: string;
   expense_month: string;
+  payment_type: 'CORPORATE' | 'PERSONAL';
+  payee_name: string;
+  payee_bank: string | null;
+  payee_account: string | null;
   total_amount: number;
   offset_amount: number;
   net_pay_amount: number;
@@ -231,6 +235,7 @@ export function FinancePayoutPage() {
                   </th>
                   <th className="px-4 py-3">单号 / 标题</th>
                   <th className="px-4 py-3">门店 / 报销人</th>
+                  <th className="px-4 py-3">收款账户（对公/对私）</th>
                   <th className="px-4 py-3 text-right">报销总额</th>
                   <th className="px-4 py-3 text-right">冲销借款</th>
                   <th className="px-4 py-3 text-right">本次实付</th>
@@ -239,7 +244,7 @@ export function FinancePayoutPage() {
               <tbody className="divide-y divide-stone-100">
                 {queue.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="py-12 text-center text-stone-400">
+                    <td colSpan={7} className="py-12 text-center text-stone-400">
                       暂无待打款单据
                     </td>
                   </tr>
@@ -264,6 +269,23 @@ export function FinancePayoutPage() {
                       <td className="px-4 py-3">
                         <div>{q.hotel_name}</div>
                         <div className="text-xs text-stone-500">{q.applicant_name}</div>
+                      </td>
+                      <td className="px-4 py-3 text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`px-1.5 py-0.5 rounded font-medium ${
+                              q.payment_type === 'CORPORATE'
+                                ? 'bg-indigo-50 text-indigo-700'
+                                : 'bg-amber-50 text-amber-700'
+                            }`}
+                          >
+                            {q.payment_type === 'CORPORATE' ? '对公' : '对私'}
+                          </span>
+                          <span className="font-medium text-stone-900">{q.payee_name}</span>
+                        </div>
+                        <div className="text-stone-500 mt-0.5 font-mono">
+                          {q.payee_bank || '-'} · {q.payee_account || '-'}
+                        </div>
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums">{formatMoney(q.total_amount)}</td>
                       <td className="px-4 py-3 text-right tabular-nums text-sky-700">

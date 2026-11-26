@@ -52,12 +52,43 @@ const claimPayloadSchema = z.object({
   cash_advance_id: z.number().int().positive().nullable().optional(),
   offset_amount: z.number().min(0).default(0),
   remarks: z.string().optional().nullable(),
-  payee_name: z.string().min(1).optional(),
-  payee_bank: z.string().optional().nullable(),
-  payee_account: z.string().optional().nullable(),
+  payment_type: z.enum(['CORPORATE', 'PERSONAL']).default('PERSONAL'),
+  payee_name: z.string().trim().min(1, '请填写收款人账户名称'),
+  payee_bank: z.string().trim().min(2, '请填写开户银行'),
+  payee_account: z.string().trim().min(4, '请填写收款账户号码'),
   submit: z.boolean().default(false),
   items: z.array(itemSchema).min(1, '至少添加一条费用明细'),
 });
+
+// List saved payee accounts (populated automatically after Finance completes payout)
+router.get(
+  '/payees',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const conditions = ['1=1'];
+    const params: unknown[] = [];
+
+    if (req.query.paymentType) {
+      conditions.push('payment_type = ?');
+      params.push(String(req.query.paymentType));
+    }
+    if (req.query.keyword) {
+      const kw = `%${String(req.query.keyword).trim()}%`;
+      conditions.push('(account_name LIKE ? OR account_number LIKE ? OR bank_name LIKE ?)');
+      params.push(kw, kw, kw);
+    }
+
+    const payees = await db.query(
+      `SELECT id, payment_type, account_name, account_number, bank_name, hotel_id, last_paid_at, paid_count
+       FROM payee_accounts
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY paid_count DESC, last_paid_at DESC`,
+      params
+    );
+
+    res.json({ payees });
+  })
+);
 
 // Upload invoice/receipt attachment
 router.post(
@@ -291,13 +322,17 @@ router.get(
     );
 
     const csv = buildCsv(
-      ['报销单号', '报销标题', '所属门店', '报销人', '费用月份', '报销总额', '冲销借款', '实付金额', '状态', '风控预警', '打款流水号', '打款时间', '创建时间'],
-      rows.map((r) => [
+      ['报销单号', '报销标题', '所属门店', '报销人', '费用月份', '打款类型', '收款人账户名称', '开户银行', '账户号码', '报销总额', '冲销借款', '实付金额', '状态', '风控预警', '打款流水号', '打款时间', '创建时间'],
+      rows.map((r: any) => [
         r.claim_no,
         r.title,
         r.hotel_name,
         r.applicant_name,
         r.expense_month,
+        r.payment_type === 'CORPORATE' ? '对公' : '对私',
+        r.payee_name,
+        r.payee_bank || '',
+        r.payee_account || '',
         r.total_amount,
         r.offset_amount,
         r.net_pay_amount,
@@ -488,8 +523,8 @@ router.post(
         `INSERT INTO reimbursements (
           claim_no, title, applicant_id, employee_id, hotel_id, department_id, expense_month,
           total_amount, cash_advance_id, offset_amount, net_pay_amount, status, current_step, total_steps,
-          risk_flags, risk_summary, remarks, payee_name, payee_bank, payee_account, submitted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          risk_flags, risk_summary, remarks, payment_type, payee_name, payee_bank, payee_account, submitted_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           claimNo,
           body.title,
@@ -508,9 +543,10 @@ router.post(
           risks.riskFlags.join(','),
           risks.riskSummary || null,
           body.remarks ?? null,
-          body.payee_name || emp?.name || user.display_name,
-          body.payee_bank ?? emp?.bank_name ?? null,
-          body.payee_account ?? emp?.bank_account ?? null,
+          body.payment_type,
+          body.payee_name,
+          body.payee_bank,
+          body.payee_account,
           body.submit ? ts : null,
           ts,
           ts,
@@ -644,7 +680,7 @@ router.put(
          SET title = ?, hotel_id = ?, department_id = ?, expense_month = ?, total_amount = ?,
              cash_advance_id = ?, offset_amount = ?, net_pay_amount = ?, status = ?,
              current_step = ?, total_steps = ?, risk_flags = ?, risk_summary = ?, remarks = ?,
-             payee_name = COALESCE(?, payee_name), payee_bank = ?, payee_account = ?,
+             payment_type = ?, payee_name = ?, payee_bank = ?, payee_account = ?,
              submitted_at = COALESCE(submitted_at, ?), updated_at = ?
          WHERE id = ?`,
         [
@@ -662,9 +698,10 @@ router.put(
           risks.riskFlags.join(','),
           risks.riskSummary || null,
           body.remarks ?? null,
-          body.payee_name ?? null,
-          body.payee_bank ?? null,
-          body.payee_account ?? null,
+          body.payment_type,
+          body.payee_name,
+          body.payee_bank,
+          body.payee_account,
           body.submit ? ts : null,
           ts,
           id,
@@ -885,12 +922,18 @@ router.post(
       for (const claimId of body.reimbursement_ids) {
         const claim = await tx.queryOne<{
           id: number;
+          hotel_id: number;
           status: string;
           cash_advance_id: number | null;
           offset_amount: number;
           net_pay_amount: number;
+          payment_type: string;
+          payee_name: string;
+          payee_bank: string | null;
+          payee_account: string | null;
         }>(
-          `SELECT id, status, cash_advance_id, offset_amount, net_pay_amount
+          `SELECT id, hotel_id, status, cash_advance_id, offset_amount, net_pay_amount,
+                  payment_type, payee_name, payee_bank, payee_account
            FROM reimbursements WHERE id = ?${tx.forUpdateSuffix()}`,
           [claimId]
         );
@@ -906,6 +949,49 @@ router.post(
            WHERE id = ?`,
           [body.payment_channel, body.payment_ref, req.user!.id, ts, ts, claimId]
         );
+
+        // Save or update payee account in payee_accounts once Finance completes payout
+        if (claim.payee_account && claim.payee_bank && claim.payee_name) {
+          const pType = claim.payment_type || 'PERSONAL';
+          const existingPayee = await tx.queryOne<{ id: number; paid_count: number }>(
+            'SELECT id, paid_count FROM payee_accounts WHERE payment_type = ? AND account_number = ?',
+            [pType, claim.payee_account]
+          );
+          if (existingPayee) {
+            await tx.execute(
+              `UPDATE payee_accounts
+               SET account_name = ?, bank_name = ?, hotel_id = ?, last_paid_at = ?, paid_count = ?, updated_at = ?
+               WHERE id = ?`,
+              [
+                claim.payee_name,
+                claim.payee_bank,
+                claim.hotel_id,
+                ts,
+                Number(existingPayee.paid_count || 0) + 1,
+                ts,
+                existingPayee.id,
+              ]
+            );
+          } else {
+            await tx.execute(
+              `INSERT INTO payee_accounts (
+                payment_type, account_name, account_number, bank_name, hotel_id,
+                last_paid_at, paid_count, created_by, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+              [
+                pType,
+                claim.payee_name,
+                claim.payee_account,
+                claim.payee_bank,
+                claim.hotel_id,
+                ts,
+                req.user!.id,
+                ts,
+                ts,
+              ]
+            );
+          }
+        }
 
         if (claim.cash_advance_id && Number(claim.offset_amount) > 0) {
           const adv = await tx.queryOne<{ id: number; amount: number; offset_amount: number }>(

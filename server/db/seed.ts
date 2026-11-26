@@ -35,6 +35,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
   if (options.reset) {
     const tables = [
+      'payee_accounts',
       'approval_logs',
       'approval_steps',
       'reimbursement_items',
@@ -822,6 +823,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       riskSummary?: string | null;
       paymentChannel?: string | null;
       paymentRef?: string | null;
+      paymentType?: 'CORPORATE' | 'PERSONAL';
+      payeeName?: string;
+      payeeBank?: string;
+      payeeAccount?: string;
       items: Array<{
         category: string;
         date: string;
@@ -849,13 +854,18 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       );
       const route = resolvedRoute.steps;
 
+      const payeeType = cfg.paymentType || 'PERSONAL';
+      const payeeName = cfg.payeeName || emp.name;
+      const payeeBank = cfg.payeeBank || emp.bank_name;
+      const payeeAccount = cfg.payeeAccount || emp.bank_account;
+
       const res = await tx.execute(
         `INSERT INTO reimbursements (
           claim_no, title, applicant_id, employee_id, hotel_id, department_id, expense_month,
           total_amount, cash_advance_id, offset_amount, net_pay_amount, status, current_step, total_steps,
-          risk_flags, risk_summary, payee_name, payee_bank, payee_account, payment_channel, payment_ref,
+          risk_flags, risk_summary, payment_type, payee_name, payee_bank, payee_account, payment_channel, payment_ref,
           paid_by, paid_at, submitted_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           cfg.claim_no,
           cfg.title,
@@ -873,9 +883,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
           cfg.status === 'DRAFT' ? 0 : route.length,
           cfg.riskFlags || '',
           cfg.riskSummary ?? null,
-          emp.name,
-          emp.bank_name,
-          emp.bank_account,
+          payeeType,
+          payeeName,
+          payeeBank,
+          payeeAccount,
           cfg.paymentChannel ?? null,
           cfg.paymentRef ?? null,
           cfg.status === 'PAID' ? userIds['finance'] : null,
@@ -886,6 +897,25 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         ]
       );
       const claimId = res.insertId;
+
+      if (cfg.status === 'PAID' && payeeAccount && payeeBank) {
+        const exPayee = await tx.queryOne<{ id: number; paid_count: number }>(
+          'SELECT id, paid_count FROM payee_accounts WHERE payment_type = ? AND account_number = ?',
+          [payeeType, payeeAccount]
+        );
+        if (exPayee) {
+          await tx.execute(
+            `UPDATE payee_accounts SET paid_count = ?, last_paid_at = ?, updated_at = ? WHERE id = ?`,
+            [Number(exPayee.paid_count || 0) + 1, ts, ts, exPayee.id]
+          );
+        } else {
+          await tx.execute(
+            `INSERT INTO payee_accounts (payment_type, account_name, account_number, bank_name, hotel_id, last_paid_at, paid_count, created_by, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+            [payeeType, payeeName, payeeAccount, payeeBank, hotelIds[cfg.hotel], ts, userIds['finance'], ts, ts]
+          );
+        }
+      }
 
       for (const it of cfg.items) {
         await tx.execute(
@@ -949,7 +979,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       }
     }
 
-    // Paid claims (previous month + current month) for analytics & duplicate check
+    // Paid claims (previous month + current month) for analytics, duplicate check & saved payees
     await insertClaim({
       claim_no: 'BX-202610-001',
       title: '上海静安店10月布草洗涤及客耗品补货',
@@ -962,6 +992,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       currentStep: 2,
       cashAdvanceId: adv1.insertId,
       offsetAmount: 1200,
+      paymentType: 'CORPORATE',
+      payeeName: '洁雅布草洗涤服务有限公司',
+      payeeBank: '中国银行上海市静安支行',
+      payeeAccount: '4533781200091882',
       paymentChannel: 'BANK_TRANSFER',
       paymentRef: 'TXN-20261028-01',
       items: [
@@ -1000,6 +1034,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       month: prevYm,
       status: 'PAID',
       currentStep: 2,
+      paymentType: 'CORPORATE',
+      payeeName: '华北暖通机电维保工程有限公司',
+      payeeBank: '工商银行北京国贸支行',
+      payeeAccount: '0200041609200188731',
       paymentChannel: 'BANK_TRANSFER',
       paymentRef: 'TXN-20261029-02',
       items: [
@@ -1020,6 +1058,39 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
     });
 
+    await insertClaim({
+      claim_no: 'BX-202610-003',
+      title: '前厅主管10月零星采购垫付报销',
+      applicant: 'staff_sh',
+      empNo: 'YQ-1002',
+      hotel: 'SH-JA',
+      dept: 'FO',
+      month: prevYm,
+      status: 'PAID',
+      currentStep: 2,
+      paymentType: 'PERSONAL',
+      payeeName: '陆子轩',
+      payeeBank: '招商银行静安支行',
+      payeeAccount: '6225880100002002',
+      paymentChannel: 'BANK_TRANSFER',
+      paymentRef: 'TXN-20261030-09',
+      items: [
+        {
+          category: 'OTHER',
+          date: `${prevYm}-25`,
+          desc: '大堂应急药品与雨具垫付采购',
+          amount: 320,
+          invoiceNo: 'INV-2026-88150',
+        },
+      ],
+      logs: [
+        { action: 'SUBMIT', actor: 'staff_sh', comment: '提交个人垫付报销' },
+        { action: 'APPROVE', actor: 'mgr_sh', comment: '同意' },
+        { action: 'APPROVE', actor: 'gm', comment: '总经理审批通过' },
+        { action: 'PAY', actor: 'finance', comment: '已向个人账户打款' },
+      ],
+    });
+
     // Current month PAID
     await insertClaim({
       claim_no: 'BX-202611-001',
@@ -1031,6 +1102,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       month: curYm,
       status: 'PAID',
       currentStep: 1,
+      paymentType: 'CORPORATE',
+      payeeName: '国网浙江省电力有限公司杭州供电公司',
+      payeeBank: '建设银行杭州西湖支行',
+      payeeAccount: '33001616235050008812',
       paymentChannel: 'BANK_TRANSFER',
       paymentRef: 'TXN-20261112-03',
       items: [
@@ -1049,7 +1124,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
     });
 
-    // APPROVED -> in Finance Payout Queue
+    // APPROVED -> in Finance Payout Queue (brand new vendor account, auto-saved once Finance pays)
     await insertClaim({
       claim_no: 'BX-202611-002',
       title: '上海静安店11月早餐厅有机食材采购',
@@ -1060,6 +1135,10 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       month: curYm,
       status: 'APPROVED',
       currentStep: 3,
+      paymentType: 'CORPORATE',
+      payeeName: '绿源有机食品配送有限公司',
+      payeeBank: '招商银行上海静安支行',
+      payeeAccount: '121928374610901',
       items: [
         {
           category: 'FB_PROCUREMENT',

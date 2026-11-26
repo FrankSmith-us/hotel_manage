@@ -28,6 +28,10 @@ interface ReimbursementRow {
   hotel_name: string;
   applicant_name: string;
   expense_month: string;
+  payment_type: 'CORPORATE' | 'PERSONAL';
+  payee_name: string;
+  payee_bank: string | null;
+  payee_account: string | null;
   total_amount: number;
   offset_amount: number;
   net_pay_amount: number;
@@ -39,6 +43,15 @@ interface ReimbursementRow {
   risk_summary: string | null;
   canApprove: boolean;
   created_at: string;
+}
+
+interface SavedPayee {
+  id: number;
+  payment_type: 'CORPORATE' | 'PERSONAL';
+  account_name: string;
+  account_number: string;
+  bank_name: string;
+  paid_count: number;
 }
 
 interface ClaimItemForm {
@@ -135,6 +148,11 @@ export function ReimbursementsPage() {
   const [cashAdvanceId, setCashAdvanceId] = useState<number | ''>('');
   const [offsetAmount, setOffsetAmount] = useState<number>(0);
   const [remarks, setRemarks] = useState('');
+  const [paymentType, setPaymentType] = useState<'CORPORATE' | 'PERSONAL'>('PERSONAL');
+  const [payeeName, setPayeeName] = useState('');
+  const [payeeBank, setPayeeBank] = useState('');
+  const [payeeAccount, setPayeeAccount] = useState('');
+  const [savedPayees, setSavedPayees] = useState<SavedPayee[]>([]);
   const [items, setItems] = useState<ClaimItemForm[]>([
     {
       category: 'LINEN_SUPPLIES',
@@ -213,6 +231,23 @@ export function ReimbursementsPage() {
     }
   };
 
+  const loadSavedPayees = useCallback(async (pType: 'CORPORATE' | 'PERSONAL') => {
+    try {
+      const data = await apiFetch<{ payees: SavedPayee[] }>(
+        `/api/reimbursements/payees?paymentType=${pType}`
+      );
+      setSavedPayees(data.payees);
+    } catch {
+      setSavedPayees([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (formOpen) {
+      loadSavedPayees(paymentType);
+    }
+  }, [formOpen, paymentType, loadSavedPayees]);
+
   const openCreateModal = () => {
     const defaultHid = user?.hotel_id || hotels[0]?.id || 2;
     setEditingId(null);
@@ -222,6 +257,10 @@ export function ReimbursementsPage() {
     setCashAdvanceId('');
     setOffsetAmount(0);
     setRemarks('');
+    setPaymentType('PERSONAL');
+    setPayeeName('');
+    setPayeeBank('');
+    setPayeeAccount('');
     setItems([
       {
         category: 'LINEN_SUPPLIES',
@@ -245,6 +284,10 @@ export function ReimbursementsPage() {
     setCashAdvanceId(d.claim.cash_advance_id ?? '');
     setOffsetAmount(Number(d.claim.offset_amount || 0));
     setRemarks(d.claim.remarks || '');
+    setPaymentType(d.claim.payment_type || 'PERSONAL');
+    setPayeeName(d.claim.payee_name || '');
+    setPayeeBank(d.claim.payee_bank || '');
+    setPayeeAccount(d.claim.payee_account || '');
     setItems(
       d.items.map((it) => ({
         category: it.category,
@@ -296,6 +339,10 @@ export function ReimbursementsPage() {
       showToast('请填写报销单标题', 'error');
       return;
     }
+    if (!payeeName.trim() || !payeeBank.trim() || !payeeAccount.trim()) {
+      showToast('请完整填写收款人账户名称、开户银行及账户号码', 'error');
+      return;
+    }
     if (items.some((it) => !it.description.trim() || Number(it.amount) <= 0)) {
       showToast('请完善每条费用明细的说明与金额（须大于 0）', 'error');
       return;
@@ -310,6 +357,10 @@ export function ReimbursementsPage() {
         cash_advance_id: cashAdvanceId === '' ? null : Number(cashAdvanceId),
         offset_amount: Number(offsetAmount || 0),
         remarks: remarks.trim() || null,
+        payment_type: paymentType,
+        payee_name: payeeName.trim(),
+        payee_bank: payeeBank.trim(),
+        payee_account: payeeAccount.trim(),
         submit,
         items: items.map((it) => ({
           ...it,
@@ -538,7 +589,21 @@ export function ReimbursementsPage() {
                     </td>
                     <td className="px-4 py-3.5">
                       <div className="text-stone-800">{r.hotel_name}</div>
-                      <div className="text-xs text-stone-500">{r.applicant_name}</div>
+                      <div className="text-xs text-stone-500 flex items-center gap-1.5 mt-0.5">
+                        <span>{r.applicant_name}</span>
+                        <span
+                          className={`px-1.5 py-0.2 rounded text-[10px] font-medium ${
+                            r.payment_type === 'CORPORATE'
+                              ? 'bg-indigo-50 text-indigo-700'
+                              : 'bg-amber-50 text-amber-700'
+                          }`}
+                        >
+                          {r.payment_type === 'CORPORATE' ? '对公' : '对私'}
+                        </span>
+                        <span className="truncate max-w-[110px]" title={r.payee_name}>
+                          {r.payee_name}
+                        </span>
+                      </div>
                     </td>
                     <td className="px-4 py-3.5 text-stone-600 tabular-nums">{r.expense_month}</td>
                     <td className="px-4 py-3.5 text-right font-semibold text-stone-900 tabular-nums">
@@ -659,6 +724,104 @@ export function ReimbursementsPage() {
                 placeholder="选填：采购背景或特殊说明"
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
               />
+            </div>
+          </div>
+
+          {/* Payee Account Section (Corporate / Personal) */}
+          <div className="p-4 rounded-xl border border-stone-200 bg-stone-50/70 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <span className="text-xs font-semibold text-stone-800">收款账户信息 *</span>
+                <span className="text-[11px] text-stone-500 ml-2">
+                  财务完成打款后，新账户将自动保存以便下次快速调出
+                </span>
+              </div>
+              <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-stone-200 w-fit">
+                <button
+                  type="button"
+                  onClick={() => setPaymentType('CORPORATE')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    paymentType === 'CORPORATE'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-stone-600 hover:bg-stone-100'
+                  }`}
+                >
+                  对公（向对公账户打款）
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentType('PERSONAL')}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    paymentType === 'PERSONAL'
+                      ? 'bg-brand-600 text-white'
+                      : 'text-stone-600 hover:bg-stone-100'
+                  }`}
+                >
+                  对私（向个人账户打款）
+                </button>
+              </div>
+            </div>
+
+            {savedPayees.length > 0 && (
+              <div>
+                <label className="block text-[11px] font-medium text-stone-600 mb-1">
+                  从已打款{paymentType === 'CORPORATE' ? '对公' : '对私'}账户快速调出
+                </label>
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const picked = savedPayees.find((p) => String(p.id) === e.target.value);
+                    if (picked) {
+                      setPayeeName(picked.account_name);
+                      setPayeeBank(picked.bank_name);
+                      setPayeeAccount(picked.account_number);
+                    }
+                  }}
+                  className="w-full px-3 py-2 rounded-xl border border-brand-200 bg-brand-50/40 text-xs text-stone-800"
+                >
+                  <option value="">-- 选择历史已打款账户自动填充（共 {savedPayees.length} 个）--</option>
+                  {savedPayees.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.account_name} · {p.bank_name} · {p.account_number}（已打款 {p.paid_count} 次）
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-[11px] font-medium text-stone-700 mb-1">
+                  {paymentType === 'CORPORATE' ? '收款公司/对公户名 *' : '收款人姓名 *'}
+                </label>
+                <input
+                  type="text"
+                  value={payeeName}
+                  onChange={(e) => setPayeeName(e.target.value)}
+                  placeholder={paymentType === 'CORPORATE' ? '如：洁雅布草洗涤有限公司' : '如：陆子轩'}
+                  className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-stone-700 mb-1">开户银行 *</label>
+                <input
+                  type="text"
+                  value={payeeBank}
+                  onChange={(e) => setPayeeBank(e.target.value)}
+                  placeholder="如：招商银行上海静安支行"
+                  className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-medium text-stone-700 mb-1">收款账户号码 *</label>
+                <input
+                  type="text"
+                  value={payeeAccount}
+                  onChange={(e) => setPayeeAccount(e.target.value)}
+                  placeholder="输入银行账号/卡号"
+                  className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white font-mono"
+                />
+              </div>
             </div>
           </div>
 
@@ -987,6 +1150,24 @@ export function ReimbursementsPage() {
                 {detail.cashAdvance.purpose}，借款总额 {formatMoney(detail.cashAdvance.amount)}）
               </div>
             )}
+
+            <div className="p-3.5 rounded-xl bg-stone-50 border border-stone-200 text-xs flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`px-2 py-0.5 rounded-md font-semibold ${
+                    detail.claim.payment_type === 'CORPORATE'
+                      ? 'bg-indigo-100 text-indigo-800'
+                      : 'bg-amber-100 text-amber-800'
+                  }`}
+                >
+                  {detail.claim.payment_type === 'CORPORATE' ? '对公打款' : '对私打款'}
+                </span>
+                <span className="font-semibold text-stone-900">{detail.claim.payee_name}</span>
+              </div>
+              <div className="text-stone-600 font-mono">
+                {detail.claim.payee_bank || '-'} · {detail.claim.payee_account || '-'}
+              </div>
+            </div>
 
             {/* Items */}
             <div>
