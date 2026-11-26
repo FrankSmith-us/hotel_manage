@@ -59,14 +59,63 @@ async function recordMasterAudit(
   );
 }
 
+async function ensureSequenceFloor(tx: DbQueryRunner, seqKey: string, floorVal: number): Promise<void> {
+  const safeFloor = Math.max(0, Math.floor(Number(floorVal || 0)));
+  const ts = nowIso();
+  const row = await tx.queryOne<{ last_val: number }>(
+    `SELECT last_val FROM master_data_sequences WHERE seq_key = ?${tx.forUpdateSuffix()}`,
+    [seqKey]
+  );
+  if (!row) {
+    await tx.execute(`INSERT INTO master_data_sequences (seq_key, last_val, updated_at) VALUES (?, ?, ?)`, [
+      seqKey,
+      safeFloor,
+      ts,
+    ]);
+  } else if (safeFloor > Number(row.last_val || 0)) {
+    await tx.execute(`UPDATE master_data_sequences SET last_val = ?, updated_at = ? WHERE seq_key = ?`, [
+      safeFloor,
+      ts,
+      seqKey,
+    ]);
+  }
+}
+
+async function nextMasterSortOrder(tx: DbQueryRunner, seqKey: string, currentTableMax: number): Promise<number> {
+  const ts = nowIso();
+  const row = await tx.queryOne<{ last_val: number }>(
+    `SELECT last_val FROM master_data_sequences WHERE seq_key = ?${tx.forUpdateSuffix()}`,
+    [seqKey]
+  );
+  const nextVal = Math.max(Number(row?.last_val || 0), Number(currentTableMax || 0)) + 1;
+  if (!row) {
+    await tx.execute(`INSERT INTO master_data_sequences (seq_key, last_val, updated_at) VALUES (?, ?, ?)`, [
+      seqKey,
+      nextVal,
+      ts,
+    ]);
+  } else {
+    await tx.execute(`UPDATE master_data_sequences SET last_val = ?, updated_at = ? WHERE seq_key = ?`, [
+      nextVal,
+      ts,
+      seqKey,
+    ]);
+  }
+  return nextVal;
+}
+
 // Public-to-authenticated options endpoint for dropdowns across the app
 router.get(
   '/options',
   asyncHandler(async (_req, res) => {
     const db = getDb();
-    const regions = await db.query<{ id: number; code: string; name: string; manager_user_id: number | null }>(
-      `SELECT id, code, name, manager_user_id FROM regions ORDER BY id ASC`
-    );
+    const regions = await db.query<{
+      id: number;
+      code: string;
+      name: string;
+      manager_user_id: number | null;
+      sort_order: number;
+    }>(`SELECT id, code, name, manager_user_id, sort_order FROM regions ORDER BY sort_order ASC, id ASC`);
     const cities = await db.query<{ id: number; region_id: number; code: string; name: string; sort_order: number }>(
       `SELECT id, region_id, code, name, sort_order FROM cities WHERE is_active = 1 ORDER BY sort_order ASC, id ASC`
     );
@@ -197,9 +246,14 @@ router.get(
   asyncHandler(async (_req, res) => {
     const db = getDb();
 
-    const regionsRaw = await db.query<{ id: number; code: string; name: string; manager_user_id: number | null; created_at: string }>(
-      'SELECT * FROM regions ORDER BY id ASC'
-    );
+    const regionsRaw = await db.query<{
+      id: number;
+      code: string;
+      name: string;
+      manager_user_id: number | null;
+      sort_order: number;
+      created_at: string;
+    }>('SELECT * FROM regions ORDER BY sort_order ASC, id ASC');
     const regions = [];
     for (const r of regionsRaw) {
       const cCnt = Number((await db.queryOne<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM cities WHERE region_id = ?', [r.id]))?.cnt || 0);
@@ -430,6 +484,7 @@ router.get(
 const regionSchema = z.object({
   code: z.string().trim().min(2).max(32),
   name: z.string().trim().min(2).max(100),
+  sort_order: z.number().int().min(0).optional(),
 });
 
 router.post(
@@ -443,7 +498,14 @@ router.post(
     const region = await db.transaction(async (tx) => {
       const dup = await tx.queryOne<{ id: number }>('SELECT id FROM regions WHERE code = ?', [code]);
       if (dup) throw new AppError(409, '大区编码已存在');
-      const ins = await tx.execute('INSERT INTO regions (code, name, created_at) VALUES (?, ?, ?)', [code, body.name, ts]);
+      const maxRow = await tx.queryOne<{ max_val: number }>('SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM regions');
+      const sortOrder = await nextMasterSortOrder(tx, 'REGION', Number(maxRow?.max_val || 0));
+      const ins = await tx.execute('INSERT INTO regions (code, name, sort_order, created_at) VALUES (?, ?, ?, ?)', [
+        code,
+        body.name,
+        sortOrder,
+        ts,
+      ]);
       const created = await tx.queryOne('SELECT * FROM regions WHERE id = ?', [ins.insertId]);
       await recordMasterAudit(tx, req.user!, {
         entityType: 'REGION',
@@ -468,14 +530,19 @@ router.put(
     const code = body.code.toUpperCase();
     const db = getDb();
     const region = await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; code: string; name: string }>('SELECT * FROM regions WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; code: string; name: string; sort_order: number }>(
+        'SELECT * FROM regions WHERE id = ?',
+        [id]
+      );
       if (!existing) throw new AppError(404, '大区不存在');
       if (existing.code === 'HQ' && code !== 'HQ') {
         throw new AppError(400, '系统内置集团总部大区编码不可修改');
       }
       const dup = await tx.queryOne<{ id: number }>('SELECT id FROM regions WHERE code = ? AND id != ?', [code, id]);
       if (dup) throw new AppError(409, '大区编码已存在');
-      await tx.execute('UPDATE regions SET code = ?, name = ? WHERE id = ?', [code, body.name, id]);
+      const nextSort = body.sort_order !== undefined ? body.sort_order : Number(existing.sort_order || 0);
+      await ensureSequenceFloor(tx, 'REGION', nextSort);
+      await tx.execute('UPDATE regions SET code = ?, name = ?, sort_order = ? WHERE id = ?', [code, body.name, nextSort, id]);
       const updated = await tx.queryOne('SELECT * FROM regions WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
         entityType: 'REGION',
@@ -498,7 +565,10 @@ router.delete(
     const id = Number(req.params.id);
     const db = getDb();
     await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; code: string; name: string }>('SELECT * FROM regions WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; code: string; name: string; sort_order: number }>(
+        'SELECT * FROM regions WHERE id = ?',
+        [id]
+      );
       if (!existing) throw new AppError(404, '大区不存在');
       if (existing.code === 'HQ') throw new AppError(400, '系统内置集团总部大区禁止删除');
 
@@ -509,6 +579,7 @@ router.delete(
         throw new AppError(409, `该大区存在关联数据（${cCnt} 个城市、${hCnt} 家门店、${uCnt} 个账号），禁止直接删除`);
       }
 
+      await ensureSequenceFloor(tx, 'REGION', Number(existing.sort_order || 0));
       await tx.execute('DELETE FROM regions WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
         entityType: 'REGION',
@@ -528,7 +599,7 @@ const citySchema = z.object({
   region_id: z.number().int().positive(),
   code: z.string().trim().min(2).max(32),
   name: z.string().trim().min(1).max(64),
-  sort_order: z.number().int().min(0).default(0),
+  sort_order: z.number().int().min(0).optional(),
   is_active: z.boolean().default(true),
 });
 
@@ -545,10 +616,12 @@ router.post(
       if (!reg) throw new AppError(400, '所属大区不存在');
       const dup = await tx.queryOne<{ id: number }>('SELECT id FROM cities WHERE code = ?', [code]);
       if (dup) throw new AppError(409, '城市编码已存在');
+      const maxRow = await tx.queryOne<{ max_val: number }>('SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM cities');
+      const sortOrder = await nextMasterSortOrder(tx, 'CITY', Number(maxRow?.max_val || 0));
       const ins = await tx.execute(
         `INSERT INTO cities (region_id, code, name, sort_order, is_active, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [body.region_id, code, body.name, body.sort_order, body.is_active ? 1 : 0, ts, ts]
+        [body.region_id, code, body.name, sortOrder, body.is_active ? 1 : 0, ts, ts]
       );
       const created = await tx.queryOne('SELECT * FROM cities WHERE id = ?', [ins.insertId]);
       await recordMasterAudit(tx, req.user!, {
@@ -575,15 +648,17 @@ router.put(
     const db = getDb();
     const ts = nowIso();
     const city = await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number }>('SELECT * FROM cities WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; sort_order: number }>('SELECT * FROM cities WHERE id = ?', [id]);
       if (!existing) throw new AppError(404, '城市不存在');
       const reg = await tx.queryOne<{ id: number }>('SELECT id FROM regions WHERE id = ?', [body.region_id]);
       if (!reg) throw new AppError(400, '所属大区不存在');
       const dup = await tx.queryOne<{ id: number }>('SELECT id FROM cities WHERE code = ? AND id != ?', [code, id]);
       if (dup) throw new AppError(409, '城市编码已存在');
+      const nextSort = body.sort_order !== undefined ? body.sort_order : Number(existing.sort_order || 0);
+      await ensureSequenceFloor(tx, 'CITY', nextSort);
       await tx.execute(
         `UPDATE cities SET region_id = ?, code = ?, name = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?`,
-        [body.region_id, code, body.name, body.sort_order, body.is_active ? 1 : 0, ts, id]
+        [body.region_id, code, body.name, nextSort, body.is_active ? 1 : 0, ts, id]
       );
       const updated = await tx.queryOne('SELECT * FROM cities WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
@@ -607,13 +682,17 @@ router.delete(
     const id = Number(req.params.id);
     const db = getDb();
     await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; code: string; name: string }>('SELECT * FROM cities WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; code: string; name: string; sort_order: number }>(
+        'SELECT * FROM cities WHERE id = ?',
+        [id]
+      );
       if (!existing) throw new AppError(404, '城市不存在');
       const dCnt = Number((await tx.queryOne<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM districts WHERE city_id = ?', [id]))?.cnt || 0);
       const hCnt = Number((await tx.queryOne<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM hotels WHERE city_id = ?', [id]))?.cnt || 0);
       if (dCnt + hCnt > 0) {
         throw new AppError(409, `该城市存在关联数据（${dCnt} 个城区、${hCnt} 家门店），禁止直接删除`);
       }
+      await ensureSequenceFloor(tx, 'CITY', Number(existing.sort_order || 0));
       await tx.execute('DELETE FROM cities WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
         entityType: 'CITY',
@@ -633,7 +712,7 @@ const districtSchema = z.object({
   city_id: z.number().int().positive(),
   code: z.string().trim().min(2).max(32),
   name: z.string().trim().min(1).max(64),
-  sort_order: z.number().int().min(0).default(0),
+  sort_order: z.number().int().min(0).optional(),
   is_active: z.boolean().default(true),
 });
 
@@ -650,10 +729,15 @@ router.post(
       if (!city) throw new AppError(400, '所属城市不存在');
       const dup = await tx.queryOne<{ id: number }>('SELECT id FROM districts WHERE code = ?', [code]);
       if (dup) throw new AppError(409, '城区编码已存在');
+      const maxRow = await tx.queryOne<{ max_val: number }>(
+        'SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM districts WHERE city_id = ?',
+        [body.city_id]
+      );
+      const sortOrder = await nextMasterSortOrder(tx, `DISTRICT:${body.city_id}`, Number(maxRow?.max_val || 0));
       const ins = await tx.execute(
         `INSERT INTO districts (city_id, code, name, sort_order, is_active, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [body.city_id, code, body.name, body.sort_order, body.is_active ? 1 : 0, ts, ts]
+        [body.city_id, code, body.name, sortOrder, body.is_active ? 1 : 0, ts, ts]
       );
       const created = await tx.queryOne('SELECT * FROM districts WHERE id = ?', [ins.insertId]);
       await recordMasterAudit(tx, req.user!, {
@@ -680,15 +764,30 @@ router.put(
     const db = getDb();
     const ts = nowIso();
     const district = await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number }>('SELECT * FROM districts WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; city_id: number; sort_order: number }>(
+        'SELECT * FROM districts WHERE id = ?',
+        [id]
+      );
       if (!existing) throw new AppError(404, '城区不存在');
       const city = await tx.queryOne<{ id: number }>('SELECT id FROM cities WHERE id = ?', [body.city_id]);
       if (!city) throw new AppError(400, '所属城市不存在');
       const dup = await tx.queryOne<{ id: number }>('SELECT id FROM districts WHERE code = ? AND id != ?', [code, id]);
       if (dup) throw new AppError(409, '城区编码已存在');
+      let nextSort: number;
+      if (Number(existing.city_id) !== Number(body.city_id)) {
+        await ensureSequenceFloor(tx, `DISTRICT:${existing.city_id}`, Number(existing.sort_order || 0));
+        const maxRow = await tx.queryOne<{ max_val: number }>(
+          'SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM districts WHERE city_id = ?',
+          [body.city_id]
+        );
+        nextSort = await nextMasterSortOrder(tx, `DISTRICT:${body.city_id}`, Number(maxRow?.max_val || 0));
+      } else {
+        nextSort = body.sort_order !== undefined ? body.sort_order : Number(existing.sort_order || 0);
+        await ensureSequenceFloor(tx, `DISTRICT:${body.city_id}`, nextSort);
+      }
       await tx.execute(
         `UPDATE districts SET city_id = ?, code = ?, name = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?`,
-        [body.city_id, code, body.name, body.sort_order, body.is_active ? 1 : 0, ts, id]
+        [body.city_id, code, body.name, nextSort, body.is_active ? 1 : 0, ts, id]
       );
       const updated = await tx.queryOne('SELECT * FROM districts WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
@@ -712,12 +811,16 @@ router.delete(
     const id = Number(req.params.id);
     const db = getDb();
     await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; code: string; name: string }>('SELECT * FROM districts WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; city_id: number; code: string; name: string; sort_order: number }>(
+        'SELECT * FROM districts WHERE id = ?',
+        [id]
+      );
       if (!existing) throw new AppError(404, '城区不存在');
       const hCnt = Number((await tx.queryOne<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM hotels WHERE district_id = ?', [id]))?.cnt || 0);
       if (hCnt > 0) {
         throw new AppError(409, `该城区已关联 ${hCnt} 家门店，禁止直接删除`);
       }
+      await ensureSequenceFloor(tx, `DISTRICT:${existing.city_id}`, Number(existing.sort_order || 0));
       await tx.execute('DELETE FROM districts WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
         entityType: 'DISTRICT',
@@ -738,7 +841,7 @@ const deptTplSchema = z.object({
   code: z.string().trim().min(2).max(32),
   name: z.string().trim().min(2).max(80),
   category: z.enum(['FRONT_OFFICE', 'HOUSEKEEPING', 'ENGINEERING', 'FB', 'ADMIN']).default('ADMIN'),
-  sort_order: z.number().int().min(0).default(0),
+  sort_order: z.number().int().min(0).optional(),
   is_active: z.boolean().default(true),
 });
 
@@ -756,10 +859,15 @@ router.post(
         [body.org_level, code]
       );
       if (dup) throw new AppError(409, `该层级下部门编码 ${code} 已存在`);
+      const maxRow = await tx.queryOne<{ max_val: number }>(
+        'SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM dept_templates WHERE org_level = ?',
+        [body.org_level]
+      );
+      const sortOrder = await nextMasterSortOrder(tx, `DEPT:${body.org_level}`, Number(maxRow?.max_val || 0));
       const ins = await tx.execute(
         `INSERT INTO dept_templates (org_level, code, name, category, sort_order, is_active, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [body.org_level, code, body.name, body.category, body.sort_order, body.is_active ? 1 : 0, ts, ts]
+        [body.org_level, code, body.name, body.category, sortOrder, body.is_active ? 1 : 0, ts, ts]
       );
       const created = await tx.queryOne('SELECT * FROM dept_templates WHERE id = ?', [ins.insertId]);
       await recordMasterAudit(tx, req.user!, {
@@ -786,17 +894,32 @@ router.put(
     const db = getDb();
     const ts = nowIso();
     const deptTemplate = await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; org_level: string }>('SELECT * FROM dept_templates WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; org_level: string; sort_order: number }>(
+        'SELECT * FROM dept_templates WHERE id = ?',
+        [id]
+      );
       if (!existing) throw new AppError(404, '部门模板不存在');
       const dup = await tx.queryOne<{ id: number }>(
         'SELECT id FROM dept_templates WHERE org_level = ? AND code = ? AND id != ?',
         [body.org_level, code, id]
       );
       if (dup) throw new AppError(409, `该层级下部门编码 ${code} 已存在`);
+      let nextSort: number;
+      if (existing.org_level !== body.org_level) {
+        await ensureSequenceFloor(tx, `DEPT:${existing.org_level}`, Number(existing.sort_order || 0));
+        const maxRow = await tx.queryOne<{ max_val: number }>(
+          'SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM dept_templates WHERE org_level = ?',
+          [body.org_level]
+        );
+        nextSort = await nextMasterSortOrder(tx, `DEPT:${body.org_level}`, Number(maxRow?.max_val || 0));
+      } else {
+        nextSort = body.sort_order !== undefined ? body.sort_order : Number(existing.sort_order || 0);
+        await ensureSequenceFloor(tx, `DEPT:${body.org_level}`, nextSort);
+      }
       await tx.execute(
         `UPDATE dept_templates SET org_level = ?, code = ?, name = ?, category = ?, sort_order = ?, is_active = ?, updated_at = ?
          WHERE id = ?`,
-        [body.org_level, code, body.name, body.category, body.sort_order, body.is_active ? 1 : 0, ts, id]
+        [body.org_level, code, body.name, body.category, nextSort, body.is_active ? 1 : 0, ts, id]
       );
       const updated = await tx.queryOne('SELECT * FROM dept_templates WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
@@ -820,7 +943,7 @@ router.delete(
     const id = Number(req.params.id);
     const db = getDb();
     await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; org_level: string; code: string; name: string }>(
+      const existing = await tx.queryOne<{ id: number; org_level: string; code: string; name: string; sort_order: number }>(
         'SELECT * FROM dept_templates WHERE id = ?',
         [id]
       );
@@ -849,6 +972,7 @@ router.delete(
       if (pCnt + dCnt > 0) {
         throw new AppError(409, `该部门已关联 ${pCnt} 个职位与 ${dCnt} 个机构部门，禁止直接删除`);
       }
+      await ensureSequenceFloor(tx, `DEPT:${existing.org_level}`, Number(existing.sort_order || 0));
       await tx.execute('DELETE FROM dept_templates WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
         entityType: 'DEPT_TEMPLATE',
@@ -869,7 +993,7 @@ const positionSchema = z.object({
   dept_template_id: z.number().int().positive(),
   code: z.string().trim().min(2).max(32),
   name: z.string().trim().min(2).max(80),
-  sort_order: z.number().int().min(0).default(0),
+  sort_order: z.number().int().min(0).optional(),
   is_active: z.boolean().default(true),
 });
 
@@ -895,10 +1019,19 @@ router.post(
         [body.org_level, body.dept_template_id, code]
       );
       if (dup) throw new AppError(409, `该部门下职位编码 ${code} 已存在`);
+      const maxRow = await tx.queryOne<{ max_val: number }>(
+        'SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM job_positions WHERE org_level = ? AND dept_template_id = ?',
+        [body.org_level, body.dept_template_id]
+      );
+      const sortOrder = await nextMasterSortOrder(
+        tx,
+        `POSITION:${body.org_level}:${body.dept_template_id}`,
+        Number(maxRow?.max_val || 0)
+      );
       const ins = await tx.execute(
         `INSERT INTO job_positions (org_level, dept_template_id, code, name, sort_order, is_active, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [body.org_level, body.dept_template_id, code, body.name, body.sort_order, body.is_active ? 1 : 0, ts, ts]
+        [body.org_level, body.dept_template_id, code, body.name, sortOrder, body.is_active ? 1 : 0, ts, ts]
       );
       const created = await tx.queryOne('SELECT * FROM job_positions WHERE id = ?', [ins.insertId]);
       await recordMasterAudit(tx, req.user!, {
@@ -925,7 +1058,10 @@ router.put(
     const db = getDb();
     const ts = nowIso();
     const position = await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number }>('SELECT * FROM job_positions WHERE id = ?', [id]);
+      const existing = await tx.queryOne<{ id: number; org_level: string; dept_template_id: number; sort_order: number }>(
+        'SELECT * FROM job_positions WHERE id = ?',
+        [id]
+      );
       if (!existing) throw new AppError(404, '职位不存在');
       const dt = await tx.queryOne<{ id: number; org_level: string; name: string }>(
         'SELECT id, org_level, name FROM dept_templates WHERE id = ?',
@@ -940,10 +1076,24 @@ router.put(
         [body.org_level, body.dept_template_id, code, id]
       );
       if (dup) throw new AppError(409, `该部门下职位编码 ${code} 已存在`);
+      const oldScope = `POSITION:${existing.org_level}:${existing.dept_template_id}`;
+      const newScope = `POSITION:${body.org_level}:${body.dept_template_id}`;
+      let nextSort: number;
+      if (oldScope !== newScope) {
+        await ensureSequenceFloor(tx, oldScope, Number(existing.sort_order || 0));
+        const maxRow = await tx.queryOne<{ max_val: number }>(
+          'SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM job_positions WHERE org_level = ? AND dept_template_id = ?',
+          [body.org_level, body.dept_template_id]
+        );
+        nextSort = await nextMasterSortOrder(tx, newScope, Number(maxRow?.max_val || 0));
+      } else {
+        nextSort = body.sort_order !== undefined ? body.sort_order : Number(existing.sort_order || 0);
+        await ensureSequenceFloor(tx, newScope, nextSort);
+      }
       await tx.execute(
         `UPDATE job_positions SET org_level = ?, dept_template_id = ?, code = ?, name = ?, sort_order = ?, is_active = ?, updated_at = ?
          WHERE id = ?`,
-        [body.org_level, body.dept_template_id, code, body.name, body.sort_order, body.is_active ? 1 : 0, ts, id]
+        [body.org_level, body.dept_template_id, code, body.name, nextSort, body.is_active ? 1 : 0, ts, id]
       );
       const updated = await tx.queryOne('SELECT * FROM job_positions WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
@@ -967,10 +1117,14 @@ router.delete(
     const id = Number(req.params.id);
     const db = getDb();
     await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; org_level: string; code: string; name: string }>(
-        'SELECT * FROM job_positions WHERE id = ?',
-        [id]
-      );
+      const existing = await tx.queryOne<{
+        id: number;
+        org_level: string;
+        dept_template_id: number;
+        code: string;
+        name: string;
+        sort_order: number;
+      }>('SELECT * FROM job_positions WHERE id = ?', [id]);
       if (!existing) throw new AppError(404, '职位不存在');
       const eCnt = Number((await tx.queryOne<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM employees WHERE position_id = ?', [id]))?.cnt || 0);
       const hcCnt =
@@ -984,6 +1138,11 @@ router.delete(
       if (eCnt + hcCnt + candCnt > 0) {
         throw new AppError(409, `该职位已关联 ${eCnt} 名员工、${hcCnt} 条补编、${candCnt} 名候选人，禁止直接删除`);
       }
+      await ensureSequenceFloor(
+        tx,
+        `POSITION:${existing.org_level}:${existing.dept_template_id}`,
+        Number(existing.sort_order || 0)
+      );
       await tx.execute('DELETE FROM job_positions WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
         entityType: 'JOB_POSITION',
@@ -1003,7 +1162,7 @@ const dictSchema = z.object({
   dict_type: z.string().trim().min(2).max(40),
   code: z.string().trim().min(1).max(40),
   label: z.string().trim().min(1).max(80),
-  sort_order: z.number().int().min(0).default(0),
+  sort_order: z.number().int().min(0).optional(),
   is_active: z.boolean().default(true),
 });
 
@@ -1025,10 +1184,15 @@ router.post(
         [dictType, code]
       );
       if (dup) throw new AppError(409, `字典编码 ${code} 已存在`);
+      const maxRow = await tx.queryOne<{ max_val: number }>(
+        'SELECT COALESCE(MAX(sort_order), 0) AS max_val FROM master_dict_items WHERE dict_type = ?',
+        [dictType]
+      );
+      const sortOrder = await nextMasterSortOrder(tx, `DICT:${dictType}`, Number(maxRow?.max_val || 0));
       const ins = await tx.execute(
         `INSERT INTO master_dict_items (dict_type, code, label, sort_order, is_active, is_system, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
-        [dictType, code, body.label, body.sort_order, body.is_active ? 1 : 0, ts, ts]
+        [dictType, code, body.label, sortOrder, body.is_active ? 1 : 0, ts, ts]
       );
       const created = await tx.queryOne('SELECT * FROM master_dict_items WHERE id = ?', [ins.insertId]);
       await recordMasterAudit(tx, req.user!, {
@@ -1055,22 +1219,27 @@ router.put(
     const db = getDb();
     const ts = nowIso();
     const item = await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; dict_type: string; code: string; is_system: number }>(
-        'SELECT * FROM master_dict_items WHERE id = ?',
-        [id]
-      );
+      const existing = await tx.queryOne<{
+        id: number;
+        dict_type: string;
+        code: string;
+        sort_order: number;
+        is_system: number;
+      }>('SELECT * FROM master_dict_items WHERE id = ?', [id]);
       if (!existing) throw new AppError(404, '字典项不存在');
       if (existing.is_system && code !== existing.code) {
-        throw new AppError(400, '系统核心字典编码不可修改，可调整显示名称或排序');
+        throw new AppError(400, '系统核心字典编码不可修改，可调整显示名称或状态');
       }
       const dup = await tx.queryOne<{ id: number }>(
         'SELECT id FROM master_dict_items WHERE dict_type = ? AND code = ? AND id != ?',
         [existing.dict_type, code, id]
       );
       if (dup) throw new AppError(409, `字典编码 ${code} 已存在`);
+      const nextSort = body.sort_order !== undefined ? body.sort_order : Number(existing.sort_order || 0);
+      await ensureSequenceFloor(tx, `DICT:${existing.dict_type}`, nextSort);
       await tx.execute(
         `UPDATE master_dict_items SET code = ?, label = ?, sort_order = ?, is_active = ?, updated_at = ? WHERE id = ?`,
-        [code, body.label, body.sort_order, body.is_active ? 1 : 0, ts, id]
+        [code, body.label, nextSort, body.is_active ? 1 : 0, ts, id]
       );
       const updated = await tx.queryOne('SELECT * FROM master_dict_items WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
@@ -1094,10 +1263,14 @@ router.delete(
     const id = Number(req.params.id);
     const db = getDb();
     await db.transaction(async (tx) => {
-      const existing = await tx.queryOne<{ id: number; dict_type: string; code: string; label: string; is_system: number }>(
-        'SELECT * FROM master_dict_items WHERE id = ?',
-        [id]
-      );
+      const existing = await tx.queryOne<{
+        id: number;
+        dict_type: string;
+        code: string;
+        label: string;
+        sort_order: number;
+        is_system: number;
+      }>('SELECT * FROM master_dict_items WHERE id = ?', [id]);
       if (!existing) throw new AppError(404, '字典项不存在');
       if (existing.is_system) {
         throw new AppError(409, '系统内置核心字典项禁止直接删除（可通过编辑停用）');
@@ -1106,6 +1279,7 @@ router.delete(
       if (ref.count > 0) {
         throw new AppError(409, `该字典项已被业务数据引用（${ref.detail}），禁止直接删除`);
       }
+      await ensureSequenceFloor(tx, `DICT:${existing.dict_type}`, Number(existing.sort_order || 0));
       await tx.execute('DELETE FROM master_dict_items WHERE id = ?', [id]);
       await recordMasterAudit(tx, req.user!, {
         entityType: `DICT:${existing.dict_type}`,

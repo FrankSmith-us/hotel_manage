@@ -35,6 +35,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
   if (options.reset) {
     const tables = [
+      'master_data_sequences',
       'master_data_audit_logs',
       'master_dict_items',
       'payee_accounts',
@@ -62,7 +63,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     ];
     for (const t of tables) {
       await db.execute(`DELETE FROM ${t}`);
-      if (db.dialect === 'mysql') {
+      if (db.dialect === 'mysql' && t !== 'master_data_sequences') {
         await db.execute(`ALTER TABLE ${t} AUTO_INCREMENT = 1`);
       }
     }
@@ -87,14 +88,15 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
     // 1. Regions
     const regionIds: Record<string, number> = {};
     for (const r of [
-      { code: 'HQ', name: '集团总部' },
-      { code: 'EAST', name: '华东大区' },
-      { code: 'NORTH', name: '华北大区' },
-      { code: 'SOUTH', name: '华南大区' },
+      { code: 'HQ', name: '集团总部', sort: 1 },
+      { code: 'EAST', name: '华东大区', sort: 2 },
+      { code: 'NORTH', name: '华北大区', sort: 3 },
+      { code: 'SOUTH', name: '华南大区', sort: 4 },
     ]) {
-      const res = await tx.execute('INSERT INTO regions (code, name, created_at) VALUES (?, ?, ?)', [
+      const res = await tx.execute('INSERT INTO regions (code, name, sort_order, created_at) VALUES (?, ?, ?, ?)', [
         r.code,
         r.name,
+        r.sort,
         ts,
       ]);
       regionIds[r.code] = res.insertId;
@@ -298,6 +300,24 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         `INSERT INTO master_dict_items (dict_type, code, label, sort_order, is_active, is_system, created_at, updated_at)
          VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
         [item.type, item.code, item.label, item.sort, item.isSystem ?? 0, ts, ts]
+      );
+    }
+
+    // 1f. Initialize monotonic sequence watermarks so deleted tail items never get reused
+    const seqMap = new Map<string, number>();
+    const bumpSeq = (key: string, val: number) => {
+      seqMap.set(key, Math.max(seqMap.get(key) ?? 0, val));
+    };
+    bumpSeq('REGION', 4);
+    for (const c of cityDefs) bumpSeq('CITY', c.sort);
+    for (const d of districtDefs) bumpSeq(`DISTRICT:${cityIds[d.city]}`, d.sort);
+    for (const dt of deptTplDefs) bumpSeq(`DEPT:${dt.org_level}`, dt.sort);
+    for (const p of posDefs) bumpSeq(`POSITION:${p.org_level}:${deptTplIds[`${p.org_level}:${p.dept}`]}`, p.sort);
+    for (const item of dictDefs) bumpSeq(`DICT:${item.type}`, item.sort);
+    for (const [seqKey, lastVal] of seqMap.entries()) {
+      await tx.execute(
+        `INSERT INTO master_data_sequences (seq_key, last_val, updated_at) VALUES (?, ?, ?)`,
+        [seqKey, lastVal, ts]
       );
     }
 

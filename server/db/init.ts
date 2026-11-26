@@ -21,6 +21,10 @@ export async function initSchema(db: DbAdapter): Promise<void> {
     if (!cols.some((c) => c.name === 'manager_user_id')) {
       await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id INTEGER');
     }
+    if (!cols.some((c) => c.name === 'sort_order')) {
+      await db.execute('ALTER TABLE regions ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0');
+      await db.execute('UPDATE regions SET sort_order = id WHERE sort_order = 0');
+    }
     const rCols = await db.query<{ name: string }>('PRAGMA table_info(reimbursements)');
     const rColNames = new Set(rCols.map((c) => c.name));
     if (!rColNames.has('payment_type')) {
@@ -73,6 +77,15 @@ export async function initSchema(db: DbAdapter): Promise<void> {
     );
     if (!col || Number(col.cnt) === 0) {
       await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id BIGINT NULL AFTER name');
+    }
+    const rSortCol = await db.queryOne<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'regions' AND COLUMN_NAME = 'sort_order'`
+    );
+    if (!rSortCol || Number(rSortCol.cnt) === 0) {
+      await db.execute('ALTER TABLE regions ADD COLUMN sort_order INT NOT NULL DEFAULT 0 AFTER manager_user_id');
+      await db.execute('UPDATE regions SET sort_order = id WHERE sort_order = 0');
     }
     for (const [colName, colDef] of [
       ['payment_type', `VARCHAR(24) NOT NULL DEFAULT 'PERSONAL'`],

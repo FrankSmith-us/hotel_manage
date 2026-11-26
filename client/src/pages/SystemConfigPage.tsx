@@ -9,6 +9,7 @@ interface RegionItem {
   id: number;
   code: string;
   name: string;
+  sort_order: number;
   ref_count: number;
   ref_detail: string;
 }
@@ -238,27 +239,27 @@ export function SystemConfigPage() {
       } else if (modalKind === 'city') {
         await apiFetch(editingId ? `/api/master-data/cities/${editingId}` : '/api/master-data/cities', {
           method: editingId ? 'PUT' : 'POST',
-          body: JSON.stringify({ region_id: fParentId, code: fCode, name: fName, sort_order: Number(fSort), is_active: fActive }),
+          body: JSON.stringify({ region_id: fParentId, code: fCode, name: fName, is_active: fActive }),
         });
       } else if (modalKind === 'district') {
         await apiFetch(editingId ? `/api/master-data/districts/${editingId}` : '/api/master-data/districts', {
           method: editingId ? 'PUT' : 'POST',
-          body: JSON.stringify({ city_id: fParentId, code: fCode, name: fName, sort_order: Number(fSort), is_active: fActive }),
+          body: JSON.stringify({ city_id: fParentId, code: fCode, name: fName, is_active: fActive }),
         });
       } else if (modalKind === 'dept') {
         await apiFetch(editingId ? `/api/master-data/dept-templates/${editingId}` : '/api/master-data/dept-templates', {
           method: editingId ? 'PUT' : 'POST',
-          body: JSON.stringify({ org_level: fLevel, code: fCode, name: fName, category: fCategory, sort_order: Number(fSort), is_active: fActive }),
+          body: JSON.stringify({ org_level: fLevel, code: fCode, name: fName, category: fCategory, is_active: fActive }),
         });
       } else if (modalKind === 'position') {
         await apiFetch(editingId ? `/api/master-data/positions/${editingId}` : '/api/master-data/positions', {
           method: editingId ? 'PUT' : 'POST',
-          body: JSON.stringify({ org_level: fLevel, dept_template_id: fParentId, code: fCode, name: fName, sort_order: Number(fSort), is_active: fActive }),
+          body: JSON.stringify({ org_level: fLevel, dept_template_id: fParentId, code: fCode, name: fName, is_active: fActive }),
         });
       } else if (modalKind === 'dict') {
         await apiFetch(editingId ? `/api/master-data/dicts/${editingId}` : '/api/master-data/dicts', {
           method: editingId ? 'PUT' : 'POST',
-          body: JSON.stringify({ dict_type: activeDictType, code: fCode, label: fName, sort_order: Number(fSort), is_active: fActive }),
+          body: JSON.stringify({ dict_type: activeDictType, code: fCode, label: fName, is_active: fActive }),
         });
       }
       showToast(editingId ? '基础数据已更新并记入回溯日志' : '基础数据已新增并记入回溯日志');
@@ -352,6 +353,9 @@ export function SystemConfigPage() {
                     >
                       <div>
                         <div className="text-sm font-medium text-stone-900">
+                          <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded bg-stone-100 text-[11px] font-mono text-stone-500">
+                            #{r.sort_order}
+                          </span>
                           {r.name} <span className="text-xs font-mono text-stone-400">{r.code}</span>
                         </div>
                         {r.ref_detail && <div className="text-[11px] text-stone-400">{r.ref_detail}</div>}
@@ -400,6 +404,9 @@ export function SystemConfigPage() {
                     >
                       <div>
                         <div className="text-sm font-medium text-stone-900">
+                          <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded bg-stone-100 text-[11px] font-mono text-stone-500">
+                            #{c.sort_order}
+                          </span>
                           {c.name} <span className="text-xs font-mono text-stone-400">{c.code}</span>
                           {!c.is_active && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500">停用</span>}
                         </div>
@@ -441,6 +448,9 @@ export function SystemConfigPage() {
                     <div key={d.id} className="py-2.5 px-2 rounded-lg hover:bg-stone-50 flex items-center justify-between gap-2">
                       <div>
                         <div className="text-sm font-medium text-stone-900">
+                          <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded bg-stone-100 text-[11px] font-mono text-stone-500">
+                            #{d.sort_order}
+                          </span>
                           {d.name} <span className="text-xs font-mono text-stone-400">{d.code}</span>
                           {!d.is_active && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-stone-100 text-stone-500">停用</span>}
                         </div>
@@ -495,6 +505,7 @@ export function SystemConfigPage() {
               <table className="w-full text-sm text-left">
                 <thead className="bg-stone-50 border-b border-stone-200 text-xs text-stone-500">
                   <tr>
+                    <th className="px-4 py-3">序号</th>
                     <th className="px-4 py-3">部门编码</th>
                     <th className="px-4 py-3">部门名称</th>
                     <th className="px-4 py-3">职能分类</th>
@@ -508,6 +519,7 @@ export function SystemConfigPage() {
                     .filter((d) => d.org_level === deptLevel)
                     .map((d) => (
                       <tr key={d.id} className="hover:bg-stone-50/70">
+                        <td className="px-4 py-3 font-mono text-xs text-stone-500">{d.sort_order}</td>
                         <td className="px-4 py-3 font-mono text-xs">{d.code}</td>
                         <td className="px-4 py-3 font-semibold text-stone-900">{d.name}</td>
                         <td className="px-4 py-3 text-xs text-stone-600">
@@ -585,6 +597,7 @@ export function SystemConfigPage() {
               <table className="w-full text-sm text-left">
                 <thead className="bg-stone-50 border-b border-stone-200 text-xs text-stone-500">
                   <tr>
+                    <th className="px-4 py-3">序号</th>
                     <th className="px-4 py-3">所属层级 / 部门</th>
                     <th className="px-4 py-3">职位编码</th>
                     <th className="px-4 py-3">职位名称</th>
@@ -598,6 +611,7 @@ export function SystemConfigPage() {
                     .filter((p) => p.org_level === posLevel && (!posDeptFilter || p.dept_template_id === posDeptFilter))
                     .map((p) => (
                       <tr key={p.id} className="hover:bg-stone-50/70">
+                        <td className="px-4 py-3 font-mono text-xs text-stone-500">{p.sort_order}</td>
                         <td className="px-4 py-3 text-xs text-stone-600">
                           {LEVEL_LABELS[p.org_level]} · {p.dept_name}
                         </td>
@@ -668,9 +682,9 @@ export function SystemConfigPage() {
                 <table className="w-full text-sm text-left">
                   <thead className="bg-stone-50 border-b border-stone-200 text-xs text-stone-500">
                     <tr>
+                      <th className="px-4 py-3">序号</th>
                       <th className="px-4 py-3">编码</th>
                       <th className="px-4 py-3">显示名称</th>
-                      <th className="px-4 py-3">排序</th>
                       <th className="px-4 py-3">状态</th>
                       <th className="px-4 py-3">关联说明</th>
                       <th className="px-4 py-3 text-right">操作</th>
@@ -681,9 +695,9 @@ export function SystemConfigPage() {
                       .filter((d) => d.dict_type === activeDictType)
                       .map((d) => (
                         <tr key={d.id} className="hover:bg-stone-50/70">
+                          <td className="px-4 py-3 font-mono text-xs text-stone-500">{d.sort_order}</td>
                           <td className="px-4 py-3 font-mono text-xs">{d.code}</td>
                           <td className="px-4 py-3 font-semibold text-stone-900">{d.label}</td>
-                          <td className="px-4 py-3 text-xs text-stone-500">{d.sort_order}</td>
                           <td className="px-4 py-3 text-xs">
                             <span className={`px-2 py-0.5 rounded-full ${d.is_active ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-500'}`}>
                               {d.is_active ? '启用' : '停用'}
@@ -890,19 +904,18 @@ export function SystemConfigPage() {
             </div>
           </div>
 
-          {modalKind !== 'region' && (
-            <div className="grid grid-cols-2 gap-3 items-center">
-              <div>
-                <label className="block text-xs font-medium text-stone-700 mb-1">排序号</label>
-                <input
-                  type="number"
-                  min={0}
-                  value={fSort}
-                  onChange={(e) => setFSort(Number(e.target.value))}
-                  className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm"
-                />
-              </div>
-              <label className="flex items-center gap-2 text-sm text-stone-700 pt-5 cursor-pointer">
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="text-xs text-stone-500">
+              {editingId ? (
+                <span>
+                  当前序号：<span className="font-mono font-semibold text-stone-800">#{fSort}</span>（系统自动分配，不可修改）
+                </span>
+              ) : (
+                <span>序号将按当前最大值自动递增分配，删除后不重用</span>
+              )}
+            </div>
+            {modalKind !== 'region' && (
+              <label className="flex items-center gap-2 text-sm text-stone-700 cursor-pointer">
                 <input
                   type="checkbox"
                   checked={fActive}
@@ -911,8 +924,8 @@ export function SystemConfigPage() {
                 />
                 <span>启用状态</span>
               </label>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="flex justify-end gap-2 pt-2">
             <button

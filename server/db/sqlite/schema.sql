@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS regions (
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
   manager_user_id INTEGER,
+  sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -414,3 +415,9 @@ CREATE TABLE IF NOT EXISTS master_data_audit_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_md_audit_entity ON master_data_audit_logs(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_md_audit_created ON master_data_audit_logs(created_at);
+
+CREATE TABLE IF NOT EXISTS master_data_sequences (
+  seq_key TEXT PRIMARY KEY,
+  last_val INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);

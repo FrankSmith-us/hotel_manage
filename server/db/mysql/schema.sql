@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS regions (
   code VARCHAR(32) NOT NULL UNIQUE,
   name VARCHAR(100) NOT NULL,
   manager_user_id BIGINT NULL,
+  sort_order INT NOT NULL DEFAULT 0,
   created_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -445,6 +446,12 @@ CREATE TABLE IF NOT EXISTS master_data_audit_logs (
   created_at VARCHAR(32) NOT NULL,
   INDEX idx_md_audit_entity (entity_type, entity_id),
   INDEX idx_md_audit_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS master_data_sequences (
+  seq_key VARCHAR(80) PRIMARY KEY,
+  last_val INT NOT NULL DEFAULT 0,
+  updated_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

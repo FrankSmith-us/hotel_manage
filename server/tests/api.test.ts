@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 24 tables', () => {
+  it('MySQL and SQLite schemas define identical 25 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 24);
+    assert.equal(mysqlTables.length, 25);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1156,5 +1156,101 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(auditRes.status, 200);
     const actions = auditRes.data.logs.map((l: any) => l.action);
     assert.ok(actions.includes('CREATE') && actions.includes('UPDATE') && actions.includes('DELETE'));
+  });
+
+  it('Master data sort_order auto-increments monotonically and never reuses deleted numbers', async () => {
+    const adminToken = await loginAs('admin');
+
+    // 1. Regions: seeded 1..4; Test 13 created WEST -> 5. Creating another gets 6; delete 6 -> next gets 7 (not 6)
+    const r6 = await req('POST', '/api/master-data/regions', {
+      token: adminToken,
+      body: { code: 'CENTRAL', name: '华中大区' },
+    });
+    assert.equal(r6.status, 201);
+    assert.equal(r6.data.region.sort_order, 6);
+    assert.equal((await req('DELETE', `/api/master-data/regions/${r6.data.region.id}`, { token: adminToken })).status, 200);
+
+    const r7 = await req('POST', '/api/master-data/regions', {
+      token: adminToken,
+      body: { code: 'NWEST', name: '西北大区' },
+    });
+    assert.equal(r7.status, 201);
+    assert.equal(r7.data.region.sort_order, 7);
+
+    // 2. Cities: seeded 1..7; Test 13 created CD (ignored sort_order: 10) -> 8. Next gets 9; delete 9 -> next gets 10
+    const c9 = await req('POST', '/api/master-data/cities', {
+      token: adminToken,
+      body: { region_id: r7.data.region.id, code: 'XA', name: '西安市' },
+    });
+    assert.equal(c9.status, 201);
+    assert.equal(c9.data.city.sort_order, 9);
+    assert.equal((await req('DELETE', `/api/master-data/cities/${c9.data.city.id}`, { token: adminToken })).status, 200);
+
+    const c10 = await req('POST', '/api/master-data/cities', {
+      token: adminToken,
+      body: { region_id: r7.data.region.id, code: 'LZ', name: '兰州市' },
+    });
+    assert.equal(c10.status, 201);
+    assert.equal(c10.data.city.sort_order, 10);
+
+    // 3. Districts (scoped per city): new city starts at 1, then 2 -> delete 2 -> next gets 3
+    const d1 = await req('POST', '/api/master-data/districts', {
+      token: adminToken,
+      body: { city_id: c10.data.city.id, code: 'LZ-CG', name: '城关区' },
+    });
+    const d2 = await req('POST', '/api/master-data/districts', {
+      token: adminToken,
+      body: { city_id: c10.data.city.id, code: 'LZ-QLH', name: '七里河区' },
+    });
+    assert.equal(d1.data.district.sort_order, 1);
+    assert.equal(d2.data.district.sort_order, 2);
+    assert.equal((await req('DELETE', `/api/master-data/districts/${d2.data.district.id}`, { token: adminToken })).status, 200);
+    const d3 = await req('POST', '/api/master-data/districts', {
+      token: adminToken,
+      body: { city_id: c10.data.city.id, code: 'LZ-AN', name: '安宁区' },
+    });
+    assert.equal(d3.data.district.sort_order, 3);
+
+    // 4. Deleting a seeded tail dict item (EDUCATION / DOCTOR = 6) does NOT allow next item to reuse 6 -> gets 7
+    const mdAll = await req('GET', '/api/master-data/all', { token: adminToken });
+    const doctorItem = mdAll.data.dictItems.find((i: any) => i.dict_type === 'EDUCATION' && i.code === 'DOCTOR');
+    assert.ok(doctorItem && doctorItem.sort_order === 6);
+    assert.equal((await req('DELETE', `/api/master-data/dicts/${doctorItem.id}`, { token: adminToken })).status, 200);
+
+    const newEdu = await req('POST', '/api/master-data/dicts', {
+      token: adminToken,
+      body: { dict_type: 'EDUCATION', code: 'POSTDOC', label: '博士后' },
+    });
+    assert.equal(newEdu.status, 201);
+    assert.equal(newEdu.data.item.sort_order, 7);
+
+    // 5. Dept templates & Job positions monotonic non-reuse
+    const hqDept7 = await req('POST', '/api/master-data/dept-templates', {
+      token: adminToken,
+      body: { org_level: 'HQ', code: 'AUDIT', name: '内审风控部', category: 'ADMIN' },
+    });
+    assert.equal(hqDept7.status, 201);
+    assert.equal(hqDept7.data.deptTemplate.sort_order, 7);
+    assert.equal((await req('DELETE', `/api/master-data/dept-templates/${hqDept7.data.deptTemplate.id}`, { token: adminToken })).status, 200);
+    const hqDept8 = await req('POST', '/api/master-data/dept-templates', {
+      token: adminToken,
+      body: { org_level: 'HQ', code: 'LEGAL', name: '法务合规部', category: 'ADMIN' },
+    });
+    assert.equal(hqDept8.status, 201);
+    assert.equal(hqDept8.data.deptTemplate.sort_order, 8);
+
+    const pos1 = await req('POST', '/api/master-data/positions', {
+      token: adminToken,
+      body: { org_level: 'HQ', dept_template_id: hqDept8.data.deptTemplate.id, code: 'HQ_COUNSEL', name: '法务总监' },
+    });
+    assert.equal(pos1.status, 201);
+    assert.equal(pos1.data.position.sort_order, 1);
+    assert.equal((await req('DELETE', `/api/master-data/positions/${pos1.data.position.id}`, { token: adminToken })).status, 200);
+    const pos2 = await req('POST', '/api/master-data/positions', {
+      token: adminToken,
+      body: { org_level: 'HQ', dept_template_id: hqDept8.data.deptTemplate.id, code: 'HQ_LEGAL_SPEC', name: '合规专员' },
+    });
+    assert.equal(pos2.status, 201);
+    assert.equal(pos2.data.position.sort_order, 2);
   });
 });
