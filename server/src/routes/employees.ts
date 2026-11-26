@@ -10,6 +10,7 @@ import {
   requireRoles,
 } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
+import { archiveEmployeeRecords } from '../services/archiveService';
 import { addDays, isoDateSchema, nowIso, randomTokenSuffix, todayStr } from '../utils/numbers';
 
 function maskSensitiveEmployeeFields<T extends Record<string, unknown>>(row: T, allowFull: boolean): T {
@@ -176,10 +177,25 @@ router.get(
       [id]
     );
 
+    const archive = await db.queryOne<{
+      id: number;
+      resign_date: string;
+      resign_reason: string;
+      summary_json: string;
+      archived_by_name: string;
+      archived_at: string;
+    }>('SELECT id, resign_date, resign_reason, summary_json, archived_by_name, archived_at FROM employee_archives WHERE employee_id = ?', [id]);
+
     const canSeeFullSalary = ['HQ_ADMIN', 'HR_MANAGER', 'FINANCE', 'GENERAL_MANAGER'].includes(req.user!.role);
     res.json({
       employee: maskSensitiveEmployeeFields(employee, canSeeFullSalary || isSelf),
       events,
+      archive: archive
+        ? {
+            ...archive,
+            summary: JSON.parse(archive.summary_json || '{}'),
+          }
+        : null,
     });
   })
 );
@@ -466,6 +482,15 @@ router.post(
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [id, body.event_type, emp.hotel_id, newHotelId, emp.position, newPos, body.effective_date, body.reason, user.id, ts]
       );
+
+      if (body.event_type === 'RESIGN') {
+        await archiveEmployeeRecords(tx, {
+          employeeId: id,
+          resignDate: body.effective_date,
+          resignReason: body.reason,
+          operator: user,
+        });
+      }
 
       if (body.base_salary !== undefined && Number(body.base_salary) !== Number(emp.base_salary)) {
         await logApprovalAction(tx, {

@@ -421,3 +421,79 @@ CREATE TABLE IF NOT EXISTS master_data_sequences (
   last_val INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS onboarding_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  candidate_name TEXT NOT NULL,
+  gender TEXT NOT NULL DEFAULT 'M',
+  phone TEXT NOT NULL,
+  email TEXT,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  department_id INTEGER NOT NULL REFERENCES departments(id),
+  position_id INTEGER,
+  position TEXT NOT NULL,
+  education TEXT,
+  employment_type TEXT NOT NULL DEFAULT 'FULL_TIME',
+  marital_status TEXT,
+  political_status TEXT,
+  planned_hire_date TEXT NOT NULL,
+  base_salary REAL NOT NULL DEFAULT 0,
+  night_allowance_rate REAL NOT NULL DEFAULT 80,
+  health_cert_expiry TEXT,
+  contract_end_date TEXT,
+  create_user_account INTEGER NOT NULL DEFAULT 1,
+  applicant_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  checklist_json TEXT,
+  employee_id INTEGER,
+  remarks TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_onboard_hotel ON onboarding_requests(hotel_id);
+CREATE INDEX IF NOT EXISTS idx_onboard_status ON onboarding_requests(status);
+
+CREATE TABLE IF NOT EXISTS offboarding_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  applicant_id INTEGER NOT NULL REFERENCES users(id),
+  resign_reason_code TEXT NOT NULL,
+  resign_reason_detail TEXT NOT NULL,
+  last_working_date TEXT NOT NULL,
+  handover_to_employee_id INTEGER,
+  handover_notes TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  checklist_json TEXT,
+  archive_id INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_offboard_emp ON offboarding_requests(employee_id);
+CREATE INDEX IF NOT EXISTS idx_offboard_status ON offboarding_requests(status);
+
+CREATE TABLE IF NOT EXISTS employee_archives (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL UNIQUE REFERENCES employees(id),
+  emp_no TEXT NOT NULL,
+  employee_name TEXT NOT NULL,
+  hotel_id INTEGER NOT NULL,
+  hotel_name TEXT NOT NULL,
+  department_name TEXT NOT NULL,
+  position TEXT NOT NULL,
+  hire_date TEXT NOT NULL,
+  resign_date TEXT NOT NULL,
+  resign_reason TEXT NOT NULL,
+  offboarding_request_id INTEGER,
+  employee_snapshot_json TEXT NOT NULL,
+  summary_json TEXT NOT NULL,
+  records_json TEXT NOT NULL,
+  archived_by INTEGER NOT NULL,
+  archived_by_name TEXT NOT NULL,
+  archived_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_archives_hotel ON employee_archives(hotel_id);

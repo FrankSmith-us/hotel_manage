@@ -454,4 +454,87 @@ CREATE TABLE IF NOT EXISTS master_data_sequences (
   updated_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS onboarding_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  candidate_name VARCHAR(80) NOT NULL,
+  gender VARCHAR(12) NOT NULL DEFAULT 'M',
+  phone VARCHAR(24) NOT NULL,
+  email VARCHAR(120) NULL,
+  hotel_id BIGINT NOT NULL,
+  department_id BIGINT NOT NULL,
+  position_id BIGINT NULL,
+  position VARCHAR(80) NOT NULL,
+  education VARCHAR(32) NULL,
+  employment_type VARCHAR(24) NOT NULL DEFAULT 'FULL_TIME',
+  marital_status VARCHAR(24) NULL,
+  political_status VARCHAR(24) NULL,
+  planned_hire_date VARCHAR(16) NOT NULL,
+  base_salary DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  night_allowance_rate DECIMAL(10, 2) NOT NULL DEFAULT 80.00,
+  health_cert_expiry VARCHAR(16) NULL,
+  contract_end_date VARCHAR(16) NULL,
+  create_user_account TINYINT(1) NOT NULL DEFAULT 1,
+  applicant_id BIGINT NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  checklist_json TEXT NULL,
+  employee_id BIGINT NULL,
+  remarks VARCHAR(500) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_onboard_hotel (hotel_id),
+  INDEX idx_onboard_status (status),
+  CONSTRAINT fk_onboard_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_onboard_dept FOREIGN KEY (department_id) REFERENCES departments(id),
+  CONSTRAINT fk_onboard_app FOREIGN KEY (applicant_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS offboarding_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  employee_id BIGINT NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  applicant_id BIGINT NOT NULL,
+  resign_reason_code VARCHAR(40) NOT NULL,
+  resign_reason_detail VARCHAR(500) NOT NULL,
+  last_working_date VARCHAR(16) NOT NULL,
+  handover_to_employee_id BIGINT NULL,
+  handover_notes VARCHAR(500) NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  checklist_json TEXT NULL,
+  archive_id BIGINT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_offboard_emp (employee_id),
+  INDEX idx_offboard_status (status),
+  CONSTRAINT fk_offboard_emp FOREIGN KEY (employee_id) REFERENCES employees(id),
+  CONSTRAINT fk_offboard_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_offboard_app FOREIGN KEY (applicant_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS employee_archives (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  employee_id BIGINT NOT NULL UNIQUE,
+  emp_no VARCHAR(32) NOT NULL,
+  employee_name VARCHAR(80) NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  hotel_name VARCHAR(120) NOT NULL,
+  department_name VARCHAR(80) NOT NULL,
+  position VARCHAR(80) NOT NULL,
+  hire_date VARCHAR(16) NOT NULL,
+  resign_date VARCHAR(16) NOT NULL,
+  resign_reason VARCHAR(500) NOT NULL,
+  offboarding_request_id BIGINT NULL,
+  employee_snapshot_json LONGTEXT NOT NULL,
+  summary_json TEXT NOT NULL,
+  records_json LONGTEXT NOT NULL,
+  archived_by BIGINT NOT NULL,
+  archived_by_name VARCHAR(80) NOT NULL,
+  archived_at VARCHAR(32) NOT NULL,
+  INDEX idx_archives_hotel (hotel_id),
+  CONSTRAINT fk_archives_emp FOREIGN KEY (employee_id) REFERENCES employees(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

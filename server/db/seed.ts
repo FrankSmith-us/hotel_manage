@@ -18,6 +18,8 @@ import {
   buildCashAdvanceRoute,
   buildHeadcountRoute,
   buildLeaveRoute,
+  buildOffboardingRoute,
+  buildOnboardingRoute,
   buildReimbursementRoute,
   replaceApprovalSteps,
   resolveApprovalRoute,
@@ -35,6 +37,9 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
   if (options.reset) {
     const tables = [
+      'employee_archives',
+      'offboarding_requests',
+      'onboarding_requests',
       'master_data_sequences',
       'master_data_audit_logs',
       'master_dict_items',
@@ -2037,6 +2042,67 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         { action: 'PAY', actor: 'finance', comment: '已完成报销打款' },
       ],
     });
+
+    // 10. Onboarding & Offboarding Demo Workflows
+    const shJaHotelId = hotelIds['SH-JA'];
+    const shJaFoDept = await tx.queryOne<{ id: number }>(
+      `SELECT id FROM departments WHERE hotel_id = ? AND code = 'FO'`,
+      [shJaHotelId]
+    );
+    if (shJaFoDept) {
+      const obIns = await tx.execute(
+        `INSERT INTO onboarding_requests (
+          request_no, candidate_name, gender, phone, hotel_id, department_id,
+          position, education, employment_type, marital_status, political_status,
+          planned_hire_date, base_salary, night_allowance_rate, create_user_account,
+          applicant_id, status, current_step, remarks, created_at, updated_at
+        ) VALUES ('OB-202611-001', '许文浩', 'M', '13911223344', ?, ?, '礼宾接待员', 'BACHELOR', 'FULL_TIME', 'SINGLE', 'LEAGUE_MEMBER', ?, 6200, 80, 1, ?, 'PENDING_APPROVAL', 1, '前厅礼宾岗增补人员入职审批', ?, ?)`,
+        [shJaHotelId, shJaFoDept.id, addDays(today, 3), userIds['mgr_sh'], ts, ts]
+      );
+      const obRoute = await resolveApprovalRoute(
+        tx,
+        shJaHotelId,
+        buildOnboardingRoute({ applicantRole: 'STORE_MANAGER' })
+      );
+      await replaceApprovalSteps(tx, 'ONBOARDING', obIns.insertId, obRoute.steps);
+      await tx.execute(
+        `INSERT INTO approval_logs (biz_type, biz_id, action, actor_id, actor_name, actor_role, comment, created_at)
+         VALUES ('ONBOARDING', ?, 'SUBMIT', ?, '沈佳妮', 'STORE_MANAGER', '发起新员工许文浩入职申请', ?)`,
+        [obIns.insertId, userIds['mgr_sh'], ts]
+      );
+    }
+
+    const staffHkEmp = await tx.queryOne<{ id: number }>(`SELECT id FROM employees WHERE emp_no = 'YQ-1002'`);
+    const staffFoEmp = await tx.queryOne<{ id: number }>(`SELECT id FROM employees WHERE emp_no = 'YQ-1001'`);
+    if (staffHkEmp) {
+      const offIns = await tx.execute(
+        `INSERT INTO offboarding_requests (
+          request_no, employee_id, hotel_id, applicant_id, resign_reason_code,
+          resign_reason_detail, last_working_date, handover_to_employee_id, handover_notes,
+          status, current_step, created_at, updated_at
+        ) VALUES ('OFF-202611-001', ?, ?, ?, 'FAMILY', '家庭居住地变动，申请办理离职交接', ?, ?, '客房排班表与布草盘点台账交接至前厅主管', 'PENDING_APPROVAL', 1, ?, ?)`,
+        [
+          staffHkEmp.id,
+          shJaHotelId,
+          userIds['staff_sh_hk'],
+          addDays(today, 7),
+          staffFoEmp?.id ?? null,
+          ts,
+          ts,
+        ]
+      );
+      const offRoute = await resolveApprovalRoute(
+        tx,
+        shJaHotelId,
+        buildOffboardingRoute({ targetRole: 'STAFF' })
+      );
+      await replaceApprovalSteps(tx, 'OFFBOARDING', offIns.insertId, offRoute.steps);
+      await tx.execute(
+        `INSERT INTO approval_logs (biz_type, biz_id, action, actor_id, actor_name, actor_role, comment, created_at)
+         VALUES ('OFFBOARDING', ?, 'SUBMIT', ?, '赵小燕', 'STAFF', '提交个人离职申请', ?)`,
+        [offIns.insertId, userIds['staff_sh_hk'], ts]
+      );
+    }
   });
 
   console.log('[db:seed] Seeded YueQi Hotel Ops database successfully.');

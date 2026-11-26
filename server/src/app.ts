@@ -13,6 +13,7 @@ import authRouter from './routes/auth';
 import budgetsRouter from './routes/budgets';
 import dashboardRouter from './routes/dashboard';
 import employeesRouter from './routes/employees';
+import hrFlowsRouter from './routes/hrFlows';
 import leavesRouter from './routes/leaves';
 import masterDataRouter from './routes/masterData';
 import organizationRouter from './routes/organization';
@@ -90,6 +91,7 @@ export function createApp() {
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/organization', organizationRouter);
   app.use('/api/employees', employeesRouter);
+  app.use('/api/hr-flows', hrFlowsRouter);
   app.use('/api/schedules', schedulesRouter);
   app.use('/api/leaves', leavesRouter);
   app.use('/api/payroll', payrollRouter);

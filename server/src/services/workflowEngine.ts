@@ -39,6 +39,43 @@ export function buildReimbursementRoute(params: {
   }));
 }
 
+export function buildOnboardingRoute(params: { applicantRole: UserRole }): PlannedStep[] {
+  const steps: { stepName: string; approverRole: UserRole }[] = [];
+  if (params.applicantRole === 'STORE_MANAGER') {
+    steps.push({ stepName: '区域经理审核', approverRole: 'REGIONAL_MANAGER' });
+    steps.push({ stepName: '集团HR总监审批', approverRole: 'HR_MANAGER' });
+  } else if (params.applicantRole === 'HR_MANAGER') {
+    steps.push({ stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+  } else {
+    steps.push({ stepName: '集团HR总监审批', approverRole: 'HR_MANAGER' });
+  }
+  return steps.map((s, idx) => ({
+    stepOrder: idx + 1,
+    stepName: s.stepName,
+    approverRole: s.approverRole,
+  }));
+}
+
+export function buildOffboardingRoute(params: { targetRole: UserRole }): PlannedStep[] {
+  const steps: { stepName: string; approverRole: UserRole }[] = [];
+  if (params.targetRole === 'STAFF') {
+    steps.push({ stepName: '门店店长审批', approverRole: 'STORE_MANAGER' });
+    steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
+  } else if (params.targetRole === 'STORE_MANAGER') {
+    steps.push({ stepName: '区域经理审批', approverRole: 'REGIONAL_MANAGER' });
+    steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
+  } else if (params.targetRole === 'HR_MANAGER') {
+    steps.push({ stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+  } else {
+    steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
+  }
+  return steps.map((s, idx) => ({
+    stepOrder: idx + 1,
+    stepName: s.stepName,
+    approverRole: s.approverRole,
+  }));
+}
+
 export function buildLeaveRoute(params: { applicantRole: UserRole; days: number }): PlannedStep[] {
   const steps: { stepName: string; approverRole: UserRole }[] = [];
   if (params.applicantRole === 'STAFF') {
@@ -477,6 +514,12 @@ export function buildStatusDetail(params: {
     if (status === 'APPROVED') return '审批已通过（已生效）';
   } else if (bizType === 'HEADCOUNT') {
     if (status === 'APPROVED') return '补编已批准 · 可推进招聘';
+  } else if (bizType === 'ONBOARDING') {
+    if (status === 'APPROVED') return '审批已通过 · 待确认入职建档';
+    if (status === 'COMPLETED') return '已完成入职建档';
+  } else if (bizType === 'OFFBOARDING') {
+    if (status === 'APPROVED') return '审批已通过 · 待办理离职并归档';
+    if (status === 'COMPLETED') return '已离职并完成档案归档';
   }
   return status;
 }

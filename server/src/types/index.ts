@@ -20,7 +20,13 @@ export interface AuthUser {
   region_name?: string | null;
 }
 
-export type BizType = 'REIMBURSEMENT' | 'LEAVE' | 'HEADCOUNT' | 'CASH_ADVANCE';
+export type BizType =
+  | 'REIMBURSEMENT'
+  | 'LEAVE'
+  | 'HEADCOUNT'
+  | 'CASH_ADVANCE'
+  | 'ONBOARDING'
+  | 'OFFBOARDING';
 export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL';
 
 export type ExpenseCategory =

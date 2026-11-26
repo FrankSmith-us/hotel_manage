@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 25 tables', () => {
+  it('MySQL and SQLite schemas define identical 28 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 25);
+    assert.equal(mysqlTables.length, 28);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -1252,5 +1252,104 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     });
     assert.equal(pos2.status, 201);
     assert.equal(pos2.data.position.sort_order, 2);
+  });
+
+  it('Onboarding & Offboarding workflows complete and archive resigned employee historical records', async () => {
+    const mgrShToken = await loginAs('mgr_sh');
+    const regionToken = await loginAs('region_east');
+    const hrToken = await loginAs('hr');
+    const staffHkToken = await loginAs('staff_sh_hk');
+
+    // 1. Onboarding workflow: mgr_sh submits -> region_east approves -> hr approves -> hr completes
+    const obCreate = await req('POST', '/api/hr-flows/onboarding', {
+      token: mgrShToken,
+      body: {
+        candidate_name: '林新宇',
+        gender: 'M',
+        phone: '13900001111',
+        hotel_id: 2,
+        department_id: 5,
+        position: '礼宾接待员',
+        planned_hire_date: todayStr(),
+        base_salary: 6200,
+        create_user_account: true,
+        remarks: '新员工入职审批测试',
+      },
+    });
+    assert.equal(obCreate.status, 201);
+    const obId = obCreate.data.request.id;
+
+    assert.equal((await req('POST', `/api/hr-flows/onboarding/${obId}/action`, { token: regionToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/hr-flows/onboarding/${obId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status, 200);
+
+    const obComplete = await req('POST', `/api/hr-flows/onboarding/${obId}/complete`, {
+      token: hrToken,
+      body: { checklist: { contract_signed: true, badge_issued: true } },
+    });
+    assert.equal(obComplete.status, 200);
+    assert.ok(obComplete.data.employeeId);
+    assert.ok(obComplete.data.username);
+
+    // Newly onboarded employee account can log in
+    const newStaffToken = await loginAs(obComplete.data.username);
+    assert.ok(newStaffToken);
+
+    // 2. Offboarding workflow + archiving: staff_sh_hk (YQ-1002) submits or mgr_sh submits for seeded/new employee
+    // Use the newly onboarded employee for a clean end-to-end resignation + archive check, AND verify seeded OFF-202611-001
+    const seededOffList = await req('GET', '/api/hr-flows/offboarding', { token: staffHkToken });
+    assert.equal(seededOffList.status, 200);
+    assert.ok(seededOffList.data.requests.some((r: any) => r.request_no === 'OFF-202611-001'));
+
+    const offCreate = await req('POST', '/api/hr-flows/offboarding', {
+      token: newStaffToken,
+      body: {
+        employee_id: obComplete.data.employeeId,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: '个人职业发展原因申请离职',
+        last_working_date: todayStr(),
+        handover_notes: '已交接前厅钥匙与排班表',
+      },
+    });
+    assert.equal(offCreate.status, 201);
+    const offId = offCreate.data.request.id;
+
+    // Duplicate active offboarding request is blocked
+    const dupOff = await req('POST', '/api/hr-flows/offboarding', {
+      token: newStaffToken,
+      body: {
+        employee_id: obComplete.data.employeeId,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: '重复申请',
+        last_working_date: todayStr(),
+      },
+    });
+    assert.equal(dupOff.status, 409);
+
+    assert.equal((await req('POST', `/api/hr-flows/offboarding/${offId}/action`, { token: mgrShToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/hr-flows/offboarding/${offId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status, 200);
+
+    const offComplete = await req('POST', `/api/hr-flows/offboarding/${offId}/complete`, {
+      token: hrToken,
+      body: { checklist: { work_handover: true, assets_returned: true, finance_settled: true } },
+    });
+    assert.equal(offComplete.status, 200);
+    assert.ok(offComplete.data.archiveId);
+
+    // Employee status is RESIGNED and login is disabled
+    const empDetail = await req('GET', `/api/employees/${obComplete.data.employeeId}`, { token: hrToken });
+    assert.equal(empDetail.status, 200);
+    assert.equal(empDetail.data.employee.status, 'RESIGNED');
+    assert.ok(empDetail.data.archive);
+
+    const disabledLogin = await req('POST', '/api/auth/login', {
+      body: { username: obComplete.data.username, password: 'Hotel@2026' },
+    });
+    assert.equal(disabledLogin.status, 401);
+
+    // Full archived dossier contains lifecycle events and summary
+    const archiveRes = await req('GET', `/api/hr-flows/archives/${obComplete.data.employeeId}`, { token: hrToken });
+    assert.equal(archiveRes.status, 200);
+    assert.equal(archiveRes.data.archive.employee_name, '林新宇');
+    assert.ok(archiveRes.data.archive.records.lifecycleEvents.length >= 2);
   });
 });
