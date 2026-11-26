@@ -265,6 +265,8 @@ CREATE TABLE IF NOT EXISTS reimbursements (
   payee_account TEXT,
   payment_channel TEXT,
   payment_ref TEXT,
+  payment_fail_reason TEXT,
+  payment_attempts INTEGER NOT NULL DEFAULT 0,
   paid_by INTEGER,
   paid_at TEXT,
   submitted_at TEXT,

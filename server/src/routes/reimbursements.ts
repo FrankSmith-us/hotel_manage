@@ -27,12 +27,62 @@ import {
   replaceApprovalSteps,
   resolveApprovalRoute,
 } from '../services/workflowEngine';
+import { DbQueryRunner } from '../../db/adapter';
+import { BUSINESS_RULES, assertSegregation } from '../config/businessRules';
 import { EXPENSE_CATEGORY_LABELS, ExpenseCategory, ROLE_LABELS, UserRole } from '../types';
 import { buildCsv } from '../utils/csv';
-import { currentYearMonth, generateCode, isoDateSchema, nowIso, roundMoney } from '../utils/numbers';
+import { addDays, currentYearMonth, generateCode, isoDateSchema, nowIso, roundMoney, todayStr } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
+
+async function validateSubmissionRules(
+  db: DbQueryRunner,
+  applicantUserId: number,
+  body: {
+    expense_month: string;
+    payment_type: string;
+    payee_name: string;
+    items: Array<{ expense_date: string; amount: number; attachment_url?: string | null }>;
+  }
+): Promise<void> {
+  const minAllowedDate = addDays(todayStr(), -BUSINESS_RULES.reimbursement.maxAgeDays);
+  for (const it of body.items) {
+    if (!it.expense_date.startsWith(body.expense_month)) {
+      throw new AppError(400, `报销明细日期（${it.expense_date}）必须落在所选费用归属月份（${body.expense_month}）内`);
+    }
+    if (it.expense_date < minAllowedDate) {
+      throw new AppError(
+        400,
+        `报销明细日期（${it.expense_date}）已超过 ${BUSINESS_RULES.reimbursement.maxAgeDays} 天报销时效`
+      );
+    }
+    const url = (it.attachment_url || '').trim();
+    if (url && !url.startsWith('/uploads/') && !url.startsWith('/seed-assets/')) {
+      throw new AppError(400, '发票附件地址无效，请通过系统上传凭证');
+    }
+    if (Number(it.amount) >= BUSINESS_RULES.reimbursement.receiptRequiredAbove && !url) {
+      throw new AppError(
+        400,
+        `单条明细金额达到 ¥${BUSINESS_RULES.reimbursement.receiptRequiredAbove.toFixed(2)} 及以上必须上传发票附件`
+      );
+    }
+  }
+  if (body.payment_type === 'PERSONAL' && BUSINESS_RULES.reimbursement.requireSameNameForPersonal) {
+    const appUser = await db.queryOne<{ employee_id: number | null; display_name: string }>(
+      'SELECT employee_id, display_name FROM users WHERE id = ?',
+      [applicantUserId]
+    );
+    let expectedName = appUser?.display_name || '';
+    if (appUser?.employee_id) {
+      const emp = await db.queryOne<{ name: string }>('SELECT name FROM employees WHERE id = ?', [appUser.employee_id]);
+      if (emp?.name) expectedName = emp.name;
+    }
+    if (expectedName && body.payee_name.trim() !== expectedName.trim()) {
+      throw new AppError(400, `对私打款收款人姓名必须与申请人本人姓名（${expectedName}）一致`);
+    }
+  }
+}
 
 const itemSchema = z.object({
   category: z.enum([
@@ -654,6 +704,9 @@ router.post(
     }
 
     const netPayAmount = roundMoney(totalAmount - offsetAmount);
+    if (body.submit) {
+      await validateSubmissionRules(db, user.id, body);
+    }
     const ts = nowIso();
     const claimNo = generateCode('BX');
 
@@ -888,6 +941,9 @@ router.put(
         ) {
           throw new AppError(403, '中间审批节点退回修改时，禁止篡改门店、收款账户或借款冲销信息');
         }
+      }
+      if (body.submit) {
+        await validateSubmissionRules(tx, existing.applicant_id, body);
       }
 
       if (body.cash_advance_id) {
@@ -1329,6 +1385,7 @@ router.post(
         );
 
         if (!claim) throw new AppError(404, `报销单 ${claimId} 不存在`);
+        assertSegregation(req.user!.id, claim.applicant_id, '禁止为本人的报销单执行打款核销');
         if (claim.status !== 'APPROVED') {
           throw new AppError(400, `报销单 ${claimId} 当前状态不是待打款(APPROVED)`);
         }
@@ -1434,6 +1491,111 @@ router.post(
     });
 
     res.json({ ok: true, paidCount: body.reimbursement_ids.length });
+  })
+);
+
+// Mark payout failed without settling advance (T1-04)
+router.post(
+  '/:id/payment-failed',
+  requireRoles('HQ_ADMIN', 'FINANCE'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const { reason } = z.object({ reason: z.string().trim().min(2, '请填写付款失败原因') }).parse(req.body);
+    const db = getDb();
+    const ts = nowIso();
+
+    await db.transaction(async (tx) => {
+      const claim = await tx.queryOne<{ id: number; status: string; payment_attempts: number }>(
+        `SELECT id, status, payment_attempts FROM reimbursements WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!claim) throw new AppError(404, '报销单不存在');
+      if (claim.status !== 'APPROVED') {
+        throw new AppError(400, '仅待打款(APPROVED)状态的报销单可登记付款失败');
+      }
+      const upd = await tx.execute(
+        `UPDATE reimbursements
+         SET status = 'PAYMENT_FAILED', payment_fail_reason = ?, payment_attempts = ?, updated_at = ?
+         WHERE id = ? AND status = 'APPROVED'`,
+        [reason, Number(claim.payment_attempts || 0) + 1, ts, id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '报销单状态已变更，请刷新后重试');
+
+      await logApprovalAction(tx, {
+        bizType: 'REIMBURSEMENT',
+        bizId: id,
+        action: 'PAYMENT_FAILED',
+        actor: req.user!,
+        comment: `打款失败/退票：${reason}`,
+      });
+    });
+
+    res.json({ ok: true });
+  })
+);
+
+// Applicant corrects payee info on PAYMENT_FAILED claim to retry payout (T1-04)
+router.patch(
+  '/:id/payee',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = z
+      .object({
+        payment_type: z.enum(['CORPORATE', 'PERSONAL']),
+        payee_name: z.string().trim().min(1, '请填写收款人账户名称'),
+        payee_bank: z.string().trim().min(2, '请填写开户银行'),
+        payee_account: z.string().trim().min(6, '请填写收款账户号码'),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const ts = nowIso();
+    await db.transaction(async (tx) => {
+      const claim = await tx.queryOne<{ id: number; applicant_id: number; status: string }>(
+        `SELECT id, applicant_id, status FROM reimbursements WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!claim) throw new AppError(404, '报销单不存在');
+      if (Number(claim.applicant_id) !== Number(req.user!.id)) {
+        throw new AppError(403, '仅申请人本人可更正收款账户信息');
+      }
+      if (claim.status !== 'PAYMENT_FAILED') {
+        throw new AppError(400, '仅付款失败待更正(PAYMENT_FAILED)状态的报销单可修改收款信息');
+      }
+      if (body.payment_type === 'PERSONAL' && BUSINESS_RULES.reimbursement.requireSameNameForPersonal) {
+        const appUser = await tx.queryOne<{ employee_id: number | null; display_name: string }>(
+          'SELECT employee_id, display_name FROM users WHERE id = ?',
+          [claim.applicant_id]
+        );
+        let expectedName = appUser?.display_name || '';
+        if (appUser?.employee_id) {
+          const emp = await tx.queryOne<{ name: string }>('SELECT name FROM employees WHERE id = ?', [appUser.employee_id]);
+          if (emp?.name) expectedName = emp.name;
+        }
+        if (expectedName && body.payee_name.trim() !== expectedName.trim()) {
+          throw new AppError(400, `对私打款收款人姓名必须与申请人本人姓名（${expectedName}）一致`);
+        }
+      }
+
+      const upd = await tx.execute(
+        `UPDATE reimbursements
+         SET payment_type = ?, payee_name = ?, payee_bank = ?, payee_account = ?,
+             payment_fail_reason = NULL, status = 'APPROVED', updated_at = ?
+         WHERE id = ? AND status = 'PAYMENT_FAILED'`,
+        [body.payment_type, body.payee_name, body.payee_bank, body.payee_account, ts, id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '报销单状态已变更，请刷新后重试');
+
+      await logApprovalAction(tx, {
+        bizType: 'REIMBURSEMENT',
+        bizId: id,
+        action: 'UPDATE_PAYEE',
+        actor: req.user!,
+        comment: `更正收款账户为 ${body.payee_name}（${body.payee_bank}），重新进入待打款队列`,
+      });
+    });
+
+    res.json({ ok: true });
   })
 );
 

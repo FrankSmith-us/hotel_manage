@@ -67,6 +67,7 @@ export const STATUS_META: Record<string, { label: string; cls: string }> = {
   COMPLETED: { label: '已完成', cls: 'bg-teal-50 text-teal-700 border-teal-200' },
   REJECTED: { label: '已驳回', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
   PAID: { label: '已打款核销', cls: 'bg-teal-50 text-teal-700 border-teal-200' },
+  PAYMENT_FAILED: { label: '付款失败待更正', cls: 'bg-rose-50 text-rose-700 border-rose-200' },
   DISBURSED: { label: '已放款(待冲销)', cls: 'bg-sky-50 text-sky-700 border-sky-200' },
   SETTLED: { label: '已全额冲销', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
   CANCELLED: { label: '已撤销', cls: 'bg-stone-100 text-stone-500 border-stone-200' },

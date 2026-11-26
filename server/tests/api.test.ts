@@ -184,6 +184,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
             description: '应急浴巾采购',
             amount: 1500,
             invoice_no: 'INV-TEST-9001',
+            attachment_url: '/seed-assets/invoice-sample-1.svg',
           },
         ],
       },
@@ -208,7 +209,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_account: '6225880100002002',
         submit: true,
         items: [
-          { category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 1600 },
+          { category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 1600, attachment_url: '/seed-assets/invoice-sample-1.svg' },
         ],
       },
     });
@@ -242,6 +243,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
             description: '应急浴巾及拖鞋采购',
             amount: 2200,
             invoice_no: 'INV-TEST-9001',
+            attachment_url: '/seed-assets/invoice-sample-1.svg',
           },
         ],
       },
@@ -393,7 +395,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行北京国贸支行',
         payee_account: '6225880200003001',
         submit: true,
-        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 2000 }],
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 2000, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(bjClaim.status, 201);
@@ -485,7 +487,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '浦发银行北京分行',
         payee_account: newCorpAcc,
         submit: true,
-        items: [{ category: 'MAINTENANCE', expense_date: todayStr(), description: '消防阀更换', amount: 880 }],
+        items: [{ category: 'MAINTENANCE', expense_date: todayStr(), description: '消防阀更换', amount: 880, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(corpClaim.status, 201);
@@ -540,7 +542,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行静安支行',
         payee_account: '6225880100002002',
         submit: true,
-        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 2000 }],
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 2000, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(createRes.status, 201);
@@ -584,7 +586,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行静安支行',
         payee_account: '6225880100002002',
         submit: true,
-        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 1800 }],
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 1800, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(staffForbiddenEdit.status, 403);
@@ -601,7 +603,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行静安支行',
         payee_account: '6225880100002002',
         submit: true,
-        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 1800 }],
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '客耗品', amount: 1800, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(mgrResubmit.status, 200);
@@ -646,7 +648,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行静安支行',
         payee_account: '6225880100002002',
         submit: true,
-        items: [{ category: 'MAINTENANCE', expense_date: todayStr(), description: '抢修', amount: 500 }],
+        items: [{ category: 'MAINTENANCE', expense_date: todayStr(), description: '抢修', amount: 500, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(urgClaim.status, 201);
@@ -832,7 +834,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行静安支行',
         payee_account: '6225880100002002',
         submit: true,
-        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 200 }],
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 200, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(crossOffset.status, 403);
@@ -849,7 +851,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行静安支行',
         payee_account: '6225880100002002',
         submit: true,
-        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1500 }],
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1500, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(cRes.status, 201);
@@ -878,7 +880,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行上海分行',
         payee_account: '6225880100001004',
         submit: true,
-        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1500 }],
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1500, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(tamperPayee.status, 403);
@@ -894,7 +896,7 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
         payee_bank: '招商银行静安支行',
         payee_account: '6225880100002002',
         submit: true,
-        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1900 }],
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1900, attachment_url: '/seed-assets/invoice-sample-1.svg' }],
       },
     });
     assert.equal(amtChangedResubmit.status, 200);
@@ -1606,5 +1608,163 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     });
     assert.equal(gmLeave.status, 201);
     assert.equal(gmLeave.data.leave.status, 'APPROVED');
+  });
+
+  it('T1-04/T1-05: reimbursement age/receipt/payee validation, payout segregation, and payment-failed retry', async () => {
+    const staffToken = await loginAs('staff_sh');
+    const mgrShToken = await loginAs('mgr_sh');
+    const gmToken = await loginAs('gm');
+    const finToken = await loginAs('finance');
+    const ym = currentYearMonth();
+
+    // 1. >= 200 without attachment -> 400
+    const noAttach = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '缺附件测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '大额客耗品', amount: 300 }],
+      },
+    });
+    assert.equal(noAttach.status, 400);
+
+    // 2. External attachment URL -> 400
+    const badAttach = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '非法附件URL测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [
+          {
+            category: 'LINEN_SUPPLIES',
+            expense_date: todayStr(),
+            description: '大额客耗品',
+            amount: 300,
+            attachment_url: 'https://evil.example.com/x.png',
+          },
+        ],
+      },
+    });
+    assert.equal(badAttach.status, 400);
+
+    // 3. Personal payee name mismatch -> 400
+    const badPayee = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '收款人非本人测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '张三',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '小额用品', amount: 120 }],
+      },
+    });
+    assert.equal(badPayee.status, 400);
+
+    // 4. Out-of-month item date -> 400
+    const badDate = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '跨月日期测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: '2025-01-05', description: '过期单据', amount: 100 }],
+      },
+    });
+    assert.equal(badDate.status, 400);
+
+    // 5. Valid claim -> approve -> payment-failed -> applicant corrects payee -> retry payout succeeds
+    const validClaim = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '付款失败重付闭环测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [
+          {
+            category: 'LINEN_SUPPLIES',
+            expense_date: todayStr(),
+            description: '合规附件采购',
+            amount: 260,
+            attachment_url: '/seed-assets/invoice-sample-1.svg',
+          },
+        ],
+      },
+    });
+    assert.equal(validClaim.status, 201);
+    const cid = validClaim.data.claim.id;
+    assert.equal((await req('POST', `/api/reimbursements/${cid}/action`, { token: mgrShToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/reimbursements/${cid}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status, 200);
+
+    const failRes = await req('POST', `/api/reimbursements/${cid}/payment-failed`, {
+      token: finToken,
+      body: { reason: '开户行支行名称有误导致退票' },
+    });
+    assert.equal(failRes.status, 200);
+
+    const fixPayee = await req('PATCH', `/api/reimbursements/${cid}/payee`, {
+      token: staffToken,
+      body: {
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行上海静安支行',
+        payee_account: '6225880100002002',
+      },
+    });
+    assert.equal(fixPayee.status, 200);
+
+    const retryPayout = await req('POST', '/api/reimbursements/payout', {
+      token: finToken,
+      body: { reimbursement_ids: [cid], payment_channel: 'BANK_TRANSFER', payment_ref: 'TXN-RETRY-001' },
+    });
+    assert.equal(retryPayout.status, 200);
+
+    // 6. Segregation: Finance cannot payout own reimbursement
+    const finClaim = await req('POST', '/api/reimbursements', {
+      token: finToken,
+      body: {
+        title: '财务本人报销不可自付测试',
+        hotel_id: 1,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陈明哲',
+        payee_bank: '招商银行上海分行',
+        payee_account: '6225880100001003',
+        submit: true,
+        items: [{ category: 'TRAVEL_TRAINING', expense_date: todayStr(), description: '市内交通', amount: 80 }],
+      },
+    });
+    assert.equal(finClaim.status, 201);
+    assert.equal((await req('POST', `/api/reimbursements/${finClaim.data.claim.id}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status, 200);
+    const selfPayout = await req('POST', '/api/reimbursements/payout', {
+      token: finToken,
+      body: { reimbursement_ids: [finClaim.data.claim.id], payment_channel: 'BANK_TRANSFER', payment_ref: 'TXN-SELF-001' },
+    });
+    assert.equal(selfPayout.status, 403);
   });
 });

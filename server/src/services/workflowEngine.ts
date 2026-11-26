@@ -732,6 +732,7 @@ export function buildStatusDetail(params: {
   }
   if (bizType === 'REIMBURSEMENT') {
     if (status === 'APPROVED') return '总经理已终审 · 待财务付款';
+    if (status === 'PAYMENT_FAILED') return '付款失败 · 待申请人更正收款信息后重付';
     if (status === 'PAID') return paymentRef ? `财务已打款（${paymentRef}）` : '财务已打款核销';
   } else if (bizType === 'CASH_ADVANCE') {
     if (status === 'APPROVED') return '审批已通过 · 待财务放款';

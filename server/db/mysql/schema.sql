@@ -290,6 +290,8 @@ CREATE TABLE IF NOT EXISTS reimbursements (
   payee_account VARCHAR(64) NULL,
   payment_channel VARCHAR(32) NULL,
   payment_ref VARCHAR(64) NULL,
+  payment_fail_reason VARCHAR(255) NULL,
+  payment_attempts INT NOT NULL DEFAULT 0,
   paid_by BIGINT NULL,
   paid_at VARCHAR(32) NULL,
   submitted_at VARCHAR(32) NULL,

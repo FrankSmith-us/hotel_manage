@@ -37,6 +37,8 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['returned_from_step', 'INTEGER'],
       ['return_reason', 'TEXT'],
       ['urgency', `TEXT NOT NULL DEFAULT 'NORMAL'`],
+      ['payment_fail_reason', 'TEXT'],
+      ['payment_attempts', 'INTEGER NOT NULL DEFAULT 0'],
     ] as const) {
       if (!rColNames.has(colName)) {
         await db.execute(`ALTER TABLE reimbursements ADD COLUMN ${colName} ${colDef}`);
@@ -109,6 +111,8 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['returned_from_step', 'INT NULL'],
       ['return_reason', 'VARCHAR(500) NULL'],
       ['urgency', `VARCHAR(16) NOT NULL DEFAULT 'NORMAL'`],
+      ['payment_fail_reason', 'VARCHAR(255) NULL'],
+      ['payment_attempts', 'INT NOT NULL DEFAULT 0'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt
