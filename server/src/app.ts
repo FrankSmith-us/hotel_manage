@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import cors from 'cors';
 import express from 'express';
+import { getDb } from '../db';
 import { errorHandler } from './middleware/errorHandler';
 import { UPLOADS_DIR } from './middleware/upload';
 import advancesRouter from './routes/advances';
@@ -29,7 +30,7 @@ export function createApp() {
   app.use('/seed-assets', express.static(path.resolve(__dirname, '../seed-assets')));
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'yueqi-hotel-ops' });
+    res.json({ ok: true, service: 'yueqi-hotel-ops', db: getDb().dialect });
   });
 
   app.use('/api/auth', authRouter);

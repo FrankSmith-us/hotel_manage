@@ -3,6 +3,12 @@ import dotenv from 'dotenv';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
+const isDemoMode = process.argv.includes('--demo');
+if (isDemoMode) {
+  process.env.DB_CLIENT = 'sqlite';
+  process.env.DEMO_ROLE_SWITCH = 'true';
+}
+
 export const env = {
   port: Number(process.env.PORT || 3001),
   jwtSecret: process.env.JWT_SECRET || 'yueqi-hotel-ops-dev-secret-2026',

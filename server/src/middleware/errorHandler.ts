@@ -27,6 +27,19 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return;
   }
 
+  const errCode = err && typeof err === 'object' && 'code' in err ? String((err as { code?: unknown }).code) : '';
+  if (
+    errCode === 'ECONNREFUSED' ||
+    errCode === 'ER_ACCESS_DENIED_ERROR' ||
+    errCode === 'ER_BAD_DB_ERROR' ||
+    errCode === 'ETIMEDOUT'
+  ) {
+    res.status(503).json({
+      error: `数据库连接失败 (${errCode})：请确认 MySQL 服务已启动，或使用 npm run dev:demo 启动本地免安装演示模式`,
+    });
+    return;
+  }
+
   const msg = err instanceof Error ? err.message : '服务器内部错误';
   if (msg.includes('UNIQUE') || msg.includes('Duplicate entry')) {
     res.status(409).json({ error: '数据记录已存在或编号重复' });

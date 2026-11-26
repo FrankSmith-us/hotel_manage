@@ -6,10 +6,14 @@ import { SqliteAdapter } from './sqliteAdapter';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 
+export function isDemoMode(): boolean {
+  return process.argv.includes('--demo');
+}
+
 let singletonDb: DbAdapter | null = null;
 
 export function createDbAdapterFromEnv(): DbAdapter {
-  const client = (process.env.DB_CLIENT || 'mysql').toLowerCase();
+  const client = isDemoMode() ? 'sqlite' : (process.env.DB_CLIENT || 'mysql').toLowerCase();
   if (client === 'sqlite') {
     const sqlitePath = process.env.SQLITE_PATH || './data/hotel_manage.db';
     const resolved = sqlitePath === ':memory:' ? ':memory:' : path.resolve(__dirname, '..', sqlitePath);

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
 import { DbAdapter } from './adapter';
-import { createDbAdapterFromEnv } from './index';
+import { createDbAdapterFromEnv, isDemoMode } from './index';
 import { ensureMysqlDatabase } from './mysqlAdapter';
 
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
@@ -17,7 +17,7 @@ export async function initSchema(db: DbAdapter): Promise<void> {
 }
 
 async function main() {
-  const client = (process.env.DB_CLIENT || 'mysql').toLowerCase();
+  const client = isDemoMode() ? 'sqlite' : (process.env.DB_CLIENT || 'mysql').toLowerCase();
   if (client === 'mysql') {
     await ensureMysqlDatabase({
       host: process.env.DB_HOST || '127.0.0.1',

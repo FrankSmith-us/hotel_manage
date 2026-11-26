@@ -4,12 +4,12 @@
   "private": true,
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "dev:demo": "node -e \"process.env.DB_CLIENT='sqlite';\" && tsx watch --env-file=../.env.example src/index.ts",
+    "dev:demo": "tsx watch src/index.demo.ts",
     "build": "tsc",
     "start": "node dist/src/index.js",
     "db:init": "tsx db/init.ts",
     "db:seed": "tsx db/seed.ts",
-    "db:reset:demo": "tsx db/init.ts && tsx db/seed.ts --reset",
+    "db:reset:demo": "tsx db/init.ts --demo && tsx db/seed.ts --demo --reset",
     "test": "tsx --test tests/api.test.ts"
   },
   "dependencies": {
