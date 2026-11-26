@@ -14,6 +14,23 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       : path.resolve(__dirname, 'sqlite/schema.sql');
   const sql = fs.readFileSync(schemaFile, 'utf8');
   await db.execScript(sql);
+
+  // Idempotent column migration for existing databases
+  if (db.dialect === 'sqlite') {
+    const cols = await db.query<{ name: string }>('PRAGMA table_info(regions)');
+    if (!cols.some((c) => c.name === 'manager_user_id')) {
+      await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id INTEGER');
+    }
+  } else {
+    const col = await db.queryOne<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt
+       FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'regions' AND COLUMN_NAME = 'manager_user_id'`
+    );
+    if (!col || Number(col.cnt) === 0) {
+      await db.execute('ALTER TABLE regions ADD COLUMN manager_user_id BIGINT NULL AFTER name');
+    }
+  }
 }
 
 async function main() {

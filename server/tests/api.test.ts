@@ -324,4 +324,110 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const newHireToken = await loginAs('new_hire_test');
     assert.ok(newHireToken);
   });
+
+  it('Skips Regional Manager step across workflows when Regional Manager and General Manager are the same person', async () => {
+    const adminToken = await loginAs('admin');
+    const staffShToken = await loginAs('staff_sh');
+    const mgrBjToken = await loginAs('mgr_bj');
+    const gmToken = await loginAs('gm');
+    const ym = currentYearMonth();
+
+    // 1. Default: EAST (hotel 2) has dedicated region_east -> includes REGIONAL_MANAGER
+    const eastPrev = await req('POST', '/api/reimbursements/preview', {
+      token: staffShToken,
+      body: {
+        hotel_id: 2,
+        expense_month: ym,
+        items: [{ category: 'OTHER', amount: 2000 }],
+      },
+    });
+    assert.equal(eastPrev.status, 200);
+    assert.equal(eastPrev.data.skippedRegionalManager, false);
+    assert.deepEqual(
+      eastPrev.data.route.map((s: any) => s.approverRole),
+      ['STORE_MANAGER', 'REGIONAL_MANAGER', 'GENERAL_MANAGER']
+    );
+
+    // 2. Default: NORTH (BJ-GM, hotel 4) has GM as regional manager -> skips REGIONAL_MANAGER
+    const northPrev = await req('POST', '/api/reimbursements/preview', {
+      token: mgrBjToken,
+      body: {
+        hotel_id: 4,
+        expense_month: ym,
+        items: [{ category: 'OTHER', amount: 2000 }],
+      },
+    });
+    assert.equal(northPrev.status, 200);
+    assert.equal(northPrev.data.skippedRegionalManager, true);
+    assert.deepEqual(
+      northPrev.data.route.map((s: any) => s.approverRole),
+      ['GENERAL_MANAGER']
+    );
+
+    // 3. Submit reimbursement in NORTH -> routes directly to GM with AUTO_SKIP audit log
+    const bjClaim = await req('POST', '/api/reimbursements', {
+      token: mgrBjToken,
+      body: {
+        title: '北京国贸店直达总经理测试单',
+        hotel_id: 4,
+        expense_month: ym,
+        submit: true,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 2000 }],
+      },
+    });
+    assert.equal(bjClaim.status, 201);
+    const bjDetail = await req('GET', `/api/reimbursements/${bjClaim.data.claim.id}`, { token: gmToken });
+    assert.equal(bjDetail.data.approvalSteps.length, 1);
+    assert.equal(bjDetail.data.approvalSteps[0].approver_role, 'GENERAL_MANAGER');
+    assert.ok(bjDetail.data.approvalLogs.some((l: any) => l.action === 'AUTO_SKIP'));
+    assert.equal(bjDetail.data.permissions.canApprove, true);
+
+    // 4. Leave, Headcount, and Cash Advance in NORTH also skip REGIONAL_MANAGER -> GENERAL_MANAGER
+    const bjLeave = await req('POST', '/api/leaves', {
+      token: mgrBjToken,
+      body: {
+        leave_type: 'ANNUAL',
+        start_date: todayStr(),
+        end_date: todayStr(),
+        days: 1,
+        hours: 8,
+        reason: '测试直达总经理请假',
+      },
+    });
+    assert.equal(bjLeave.status, 201);
+    const gmLeaves = await req('GET', '/api/leaves?tab=pending', { token: gmToken });
+    assert.ok(gmLeaves.data.leaves.some((l: any) => Number(l.id) === Number(bjLeave.data.leave.id)));
+
+    // 5. Dynamic switch: set EAST (region_id=2) manager to GM -> staff_sh preview immediately skips REGIONAL_MANAGER
+    const tree = await req('GET', '/api/organization/tree', { token: adminToken });
+    const eastRegion = tree.data.regions.find((r: any) => r.code === 'EAST');
+    const gmUser = tree.data.managerCandidates.find((u: any) => u.username === 'gm');
+    const regEastUser = tree.data.managerCandidates.find((u: any) => u.username === 'region_east');
+
+    const switchToGm = await req('PUT', `/api/organization/regions/${eastRegion.id}/manager`, {
+      token: adminToken,
+      body: { manager_user_id: gmUser.id },
+    });
+    assert.equal(switchToGm.status, 200);
+
+    const eastAfterSwitch = await req('POST', '/api/reimbursements/preview', {
+      token: staffShToken,
+      body: {
+        hotel_id: 2,
+        expense_month: ym,
+        items: [{ category: 'OTHER', amount: 2000 }],
+      },
+    });
+    assert.equal(eastAfterSwitch.data.skippedRegionalManager, true);
+    assert.deepEqual(
+      eastAfterSwitch.data.route.map((s: any) => s.approverRole),
+      ['STORE_MANAGER', 'GENERAL_MANAGER']
+    );
+
+    // Restore EAST manager back to region_east
+    await req('PUT', `/api/organization/regions/${eastRegion.id}/manager`, {
+      token: adminToken,
+      body: { manager_user_id: regEastUser.id },
+    });
+  });
 });

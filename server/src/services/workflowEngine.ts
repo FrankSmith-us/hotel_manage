@@ -111,6 +111,120 @@ export function buildCashAdvanceRoute(params: {
   }));
 }
 
+export async function isRegionalManagerSameAsGM(
+  db: DbQueryRunner,
+  hotelId: number
+): Promise<{ sameAsGm: boolean; regionName: string | null; gmName: string | null }> {
+  const region = await db.queryOne<{
+    id: number;
+    name: string;
+    manager_user_id: number | null;
+  }>(
+    `SELECT r.id, r.name, r.manager_user_id
+     FROM hotels h
+     JOIN regions r ON r.id = h.region_id
+     WHERE h.id = ?`,
+    [hotelId]
+  );
+  if (!region) {
+    return { sameAsGm: false, regionName: null, gmName: null };
+  }
+
+  const gmUsers = await db.query<{
+    id: number;
+    employee_id: number | null;
+    display_name: string;
+  }>(
+    `SELECT id, employee_id, display_name
+     FROM users
+     WHERE role = 'GENERAL_MANAGER' AND is_active = 1`
+  );
+  if (gmUsers.length === 0) {
+    return { sameAsGm: false, regionName: region.name, gmName: null };
+  }
+
+  const gmIds = new Set(gmUsers.map((g) => Number(g.id)));
+  const gmEmpIds = new Set(
+    gmUsers.filter((g) => g.employee_id !== null).map((g) => Number(g.employee_id))
+  );
+
+  if (region.manager_user_id) {
+    const mgrId = Number(region.manager_user_id);
+    if (gmIds.has(mgrId)) {
+      const gm = gmUsers.find((g) => Number(g.id) === mgrId)!;
+      return { sameAsGm: true, regionName: region.name, gmName: gm.display_name };
+    }
+    const mgrUser = await db.queryOne<{ employee_id: number | null; display_name: string }>(
+      'SELECT employee_id, display_name FROM users WHERE id = ? AND is_active = 1',
+      [mgrId]
+    );
+    if (mgrUser?.employee_id && gmEmpIds.has(Number(mgrUser.employee_id))) {
+      return { sameAsGm: true, regionName: region.name, gmName: mgrUser.display_name };
+    }
+    return { sameAsGm: false, regionName: region.name, gmName: null };
+  }
+
+  // Fallback when manager_user_id is not explicitly configured: check if the region's REGIONAL_MANAGER shares employee_id with GM
+  const regionalMgrs = await db.query<{ employee_id: number | null; display_name: string }>(
+    `SELECT employee_id, display_name
+     FROM users
+     WHERE role = 'REGIONAL_MANAGER' AND region_id = ? AND is_active = 1`,
+    [region.id]
+  );
+  for (const rm of regionalMgrs) {
+    if (rm.employee_id && gmEmpIds.has(Number(rm.employee_id))) {
+      return { sameAsGm: true, regionName: region.name, gmName: rm.display_name };
+    }
+  }
+
+  return { sameAsGm: false, regionName: region.name, gmName: null };
+}
+
+export async function resolveApprovalRoute(
+  db: DbQueryRunner,
+  hotelId: number,
+  rawSteps: PlannedStep[]
+): Promise<{
+  steps: PlannedStep[];
+  skippedRegionalManager: boolean;
+  skipReason: string | null;
+}> {
+  const hasRegionalStep = rawSteps.some((s) => s.approverRole === 'REGIONAL_MANAGER');
+  if (!hasRegionalStep) {
+    return { steps: rawSteps, skippedRegionalManager: false, skipReason: null };
+  }
+
+  const { sameAsGm, gmName } = await isRegionalManagerSameAsGM(db, hotelId);
+  if (!sameAsGm) {
+    return { steps: rawSteps, skippedRegionalManager: false, skipReason: null };
+  }
+
+  const alreadyHasGm = rawSteps.some((s) => s.approverRole === 'GENERAL_MANAGER');
+  const mapped: Array<{ stepName: string; approverRole: UserRole }> = [];
+  for (const s of rawSteps) {
+    if (s.approverRole === 'REGIONAL_MANAGER') {
+      if (!alreadyHasGm) {
+        mapped.push({ stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+      }
+      // When GM is already in the route, skip REGIONAL_MANAGER directly
+    } else {
+      mapped.push({ stepName: s.stepName, approverRole: s.approverRole });
+    }
+  }
+
+  const steps: PlannedStep[] = mapped.map((s, idx) => ({
+    stepOrder: idx + 1,
+    stepName: s.stepName,
+    approverRole: s.approverRole,
+  }));
+
+  return {
+    steps,
+    skippedRegionalManager: true,
+    skipReason: `区域经理与总经理为同一人（${gmName || '集团总经理'}），已自动跳过区域经理审核，直达总经理审批`,
+  };
+}
+
 export async function replaceApprovalSteps(
   db: DbQueryRunner,
   bizType: BizType,
@@ -145,11 +259,18 @@ export async function canUserActOnStep(
     return Number(user.hotel_id) === Number(bizHotelId);
   }
   if (approverRole === 'REGIONAL_MANAGER') {
-    if (!user.region_id) return false;
-    const hotel = await db.queryOne<{ region_id: number }>('SELECT region_id FROM hotels WHERE id = ?', [
-      bizHotelId,
-    ]);
-    return Boolean(hotel && Number(hotel.region_id) === Number(user.region_id));
+    const hotel = await db.queryOne<{ region_id: number; manager_user_id: number | null }>(
+      `SELECT h.region_id, r.manager_user_id
+       FROM hotels h
+       JOIN regions r ON r.id = h.region_id
+       WHERE h.id = ?`,
+      [bizHotelId]
+    );
+    if (!hotel) return false;
+    if (hotel.manager_user_id && Number(hotel.manager_user_id) === Number(user.id)) {
+      return true;
+    }
+    return Boolean(user.region_id && Number(hotel.region_id) === Number(user.region_id));
   }
   return true;
 }

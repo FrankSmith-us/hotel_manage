@@ -20,6 +20,7 @@ import {
   buildLeaveRoute,
   buildReimbursementRoute,
   replaceApprovalSteps,
+  resolveApprovalRoute,
 } from '../src/services/workflowEngine';
 import { UserRole } from '../src/types';
 
@@ -542,6 +543,15 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       userIds[u.username] = res.insertId;
     }
 
+    // Assign region managers: EAST has dedicated region_east; NORTH, SOUTH, HQ are concurrently managed by GM
+    await tx.execute('UPDATE regions SET manager_user_id = ? WHERE id = ?', [userIds['region_east'], regionIds['EAST']]);
+    await tx.execute('UPDATE regions SET manager_user_id = ? WHERE id IN (?, ?, ?)', [
+      userIds['gm'],
+      regionIds['NORTH'],
+      regionIds['SOUTH'],
+      regionIds['HQ'],
+    ]);
+
     // 6. Lifecycle events
     await tx.execute(
       `INSERT INTO employee_lifecycle_events (employee_id, event_type, from_hotel_id, to_hotel_id, from_position, to_position, effective_date, reason, operator_id, created_at)
@@ -681,8 +691,12 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
           ts,
         ]
       );
-      const steps = buildLeaveRoute({ applicantRole: l.applicantRole, days: l.days });
-      await replaceApprovalSteps(tx, 'LEAVE', res.insertId, steps);
+      const resolvedSteps = await resolveApprovalRoute(
+        tx,
+        hotelIds[l.hotel],
+        buildLeaveRoute({ applicantRole: l.applicantRole, days: l.days })
+      );
+      await replaceApprovalSteps(tx, 'LEAVE', res.insertId, resolvedSteps.steps);
       if (l.status === 'APPROVED') {
         await tx.execute(
           `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = '同意' WHERE biz_type = 'LEAVE' AND biz_id = ?`,
@@ -704,24 +718,24 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
        VALUES ('HC-202611-001', ?, ?, '客房服务员', 2, 'URGENT', '5500-6500元/月', '静安旗舰店入住率达92%，急需增补客房清扫人员', ?, 'PENDING_APPROVAL', 1, ?, ?)`,
       [hotelIds['SH-JA'], deptIds['SH-JA:HK'], userIds['mgr_sh'], ts, ts]
     );
-    await replaceApprovalSteps(
+    const hc1Resolved = await resolveApprovalRoute(
       tx,
-      'HEADCOUNT',
-      hc1.insertId,
+      hotelIds['SH-JA'],
       buildHeadcountRoute({ headcount: 2, urgency: 'URGENT' })
     );
+    await replaceApprovalSteps(tx, 'HEADCOUNT', hc1.insertId, hc1Resolved.steps);
 
     const hc2 = await tx.execute(
       `INSERT INTO headcount_requests (request_no, hotel_id, department_id, position, headcount, urgency, salary_range, reason, applicant_id, status, current_step, created_at, updated_at)
        VALUES ('HC-202611-002', ?, ?, '礼宾接待员', 1, 'NORMAL', '6500-7500元/月', '国贸商务店VIP商务客人增多，补充礼宾岗位', ?, 'APPROVED', 2, ?, ?)`,
       [hotelIds['BJ-GM'], deptIds['BJ-GM:FO'], userIds['mgr_bj'], ts, ts]
     );
-    await replaceApprovalSteps(
+    const hc2Resolved = await resolveApprovalRoute(
       tx,
-      'HEADCOUNT',
-      hc2.insertId,
+      hotelIds['BJ-GM'],
       buildHeadcountRoute({ headcount: 1, urgency: 'NORMAL' })
     );
+    await replaceApprovalSteps(tx, 'HEADCOUNT', hc2.insertId, hc2Resolved.steps);
     await tx.execute(
       `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ? WHERE biz_type = 'HEADCOUNT' AND biz_id = ?`,
       [userIds['hr'], ts, hc2.insertId]
@@ -770,7 +784,8 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
        VALUES ('ADV-202611-001', ?, ?, ?, 'PETTY_CASH', 3000.00, 1200.00, '上海静安旗舰店11月前台零星采购备用金', ?, 'DISBURSED', 2, 'PAY-ADV-20261101', ?, ?, ?)`,
       [userIds['mgr_sh'], empIds['YQ-1001'], hotelIds['SH-JA'], addDays(today, 20), ts, ts, ts]
     );
-    await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv1.insertId, buildCashAdvanceRoute({ applicantRole: 'STORE_MANAGER', amount: 3000 }));
+    const adv1Resolved = await resolveApprovalRoute(tx, hotelIds['SH-JA'], buildCashAdvanceRoute({ applicantRole: 'STORE_MANAGER', amount: 3000 }));
+    await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv1.insertId, adv1Resolved.steps);
     await tx.execute(`UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ? WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ?`, [userIds['finance'], ts, adv1.insertId]);
 
     const adv2 = await tx.execute(
@@ -778,7 +793,8 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
        VALUES ('ADV-202611-002', ?, ?, ?, 'TRAVEL', 2000.00, 0.00, '前厅主管赴杭州西湖店跨店培训差旅预支', ?, 'DISBURSED', 2, 'PAY-ADV-20261108', ?, ?, ?)`,
       [userIds['staff_sh'], empIds['YQ-1002'], hotelIds['SH-JA'], addDays(today, 15), ts, ts, ts]
     );
-    await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv2.insertId, buildCashAdvanceRoute({ applicantRole: 'STAFF', amount: 2000 }));
+    const adv2Resolved = await resolveApprovalRoute(tx, hotelIds['SH-JA'], buildCashAdvanceRoute({ applicantRole: 'STAFF', amount: 2000 }));
+    await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv2.insertId, adv2Resolved.steps);
     await tx.execute(`UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ? WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ?`, [userIds['finance'], ts, adv2.insertId]);
 
     const adv3 = await tx.execute(
@@ -786,7 +802,8 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
        VALUES ('ADV-202611-003', ?, ?, ?, 'PETTY_CASH', 4500.00, 0.00, '北京国贸店冬季供暖设备应急备用金', ?, 'PENDING_APPROVAL', 1, ?, ?)`,
       [userIds['mgr_bj'], empIds['YQ-3001'], hotelIds['BJ-GM'], addDays(today, 25), ts, ts]
     );
-    await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv3.insertId, buildCashAdvanceRoute({ applicantRole: 'STORE_MANAGER', amount: 4500 }));
+    const adv3Resolved = await resolveApprovalRoute(tx, hotelIds['BJ-GM'], buildCashAdvanceRoute({ applicantRole: 'STORE_MANAGER', amount: 4500 }));
+    await replaceApprovalSteps(tx, 'CASH_ADVANCE', adv3.insertId, adv3Resolved.steps);
 
     // 13. Reimbursements (covering all statuses, risk flags, offset, and invoice samples)
     async function insertClaim(cfg: {
@@ -821,11 +838,16 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       const netPay = roundMoney(Math.max(0, total - offset));
       const applicantUser = userDefs.find((u) => u.username === cfg.applicant)!;
       const emp = empDefs.find((e) => e.emp_no === cfg.empNo)!;
-      const route = buildReimbursementRoute({
-        applicantRole: applicantUser.role,
-        totalAmount: total,
-        hasOverBudget: (cfg.riskFlags || '').includes('OVER_BUDGET'),
-      });
+      const resolvedRoute = await resolveApprovalRoute(
+        tx,
+        hotelIds[cfg.hotel],
+        buildReimbursementRoute({
+          applicantRole: applicantUser.role,
+          totalAmount: total,
+          hasOverBudget: (cfg.riskFlags || '').includes('OVER_BUDGET'),
+        })
+      );
+      const route = resolvedRoute.steps;
 
       const res = await tx.execute(
         `INSERT INTO reimbursements (
@@ -1134,7 +1156,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
     });
 
-    // PENDING_APPROVAL large + OVER_BUDGET at General Manager (Step 2 of 2 for mgr_bj)
+    // PENDING_APPROVAL large + OVER_BUDGET at General Manager (BJ-GM: GM == Regional Manager, skips to Step 1 GM)
     await insertClaim({
       claim_no: 'BX-202611-006',
       title: '北京国贸店冬季锅炉改造与大堂暖风工程',
@@ -1144,7 +1166,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       dept: 'ENG',
       month: curYm,
       status: 'PENDING_APPROVAL',
-      currentStep: 2,
+      currentStep: 1,
       riskFlags: 'OVER_BUDGET',
       riskSummary: '预算超标：工程维修与维保超预算 ¥1,800.00',
       items: [
@@ -1160,6 +1182,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
       ],
       logs: [
         { action: 'SUBMIT', actor: 'mgr_bj', comment: '冬季供暖紧急改造工程，金额超预算需总经理特批' },
+        { action: 'AUTO_SKIP', actor: 'mgr_bj', comment: '区域经理与总经理为同一人（周志远），已自动跳过区域经理审核，直达总经理审批' },
       ],
     });
 

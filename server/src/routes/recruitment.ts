@@ -11,7 +11,7 @@ import {
   requireRoles,
 } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
-import { buildHeadcountRoute, canUserActOnStep, replaceApprovalSteps } from '../services/workflowEngine';
+import { buildHeadcountRoute, canUserActOnStep, replaceApprovalSteps, resolveApprovalRoute } from '../services/workflowEngine';
 import { UserRole } from '../types';
 import { addDays, generateCode, nowIso, todayStr } from '../utils/numbers';
 
@@ -113,7 +113,12 @@ router.post(
     const db = getDb();
     const ts = nowIso();
     const requestNo = generateCode('HC');
-    const route = buildHeadcountRoute({ headcount: body.headcount, urgency: body.urgency });
+    const resolved = await resolveApprovalRoute(
+      db,
+      body.hotel_id,
+      buildHeadcountRoute({ headcount: body.headcount, urgency: body.urgency })
+    );
+    const route = resolved.steps;
 
     const hcId = await db.transaction(async (tx) => {
       const ins = await tx.execute(
@@ -143,6 +148,15 @@ router.post(
         actor: req.user!,
         comment: body.reason,
       });
+      if (resolved.skippedRegionalManager && resolved.skipReason) {
+        await logApprovalAction(tx, {
+          bizType: 'HEADCOUNT',
+          bizId: ins.insertId,
+          action: 'AUTO_SKIP',
+          actor: req.user!,
+          comment: resolved.skipReason,
+        });
+      }
       return ins.insertId;
     });
 

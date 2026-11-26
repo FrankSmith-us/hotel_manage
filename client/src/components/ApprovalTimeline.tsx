@@ -29,6 +29,7 @@ const ACTION_TEXT: Record<string, string> = {
   REJECT: '驳回',
   WITHDRAW: '撤回申请',
   PAY: '财务打款核销',
+  AUTO_SKIP: '系统自动跳过',
 };
 
 export function ApprovalTimeline({

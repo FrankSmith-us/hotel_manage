@@ -53,6 +53,8 @@ interface ClaimItemForm {
 
 interface PreviewResult {
   totalAmount: number;
+  skippedRegionalManager?: boolean;
+  skipReason?: string | null;
   risks: {
     riskFlags: string[];
     riskSummary: string;
@@ -879,6 +881,11 @@ export function ReimbursementsPage() {
               <div className="p-3.5 rounded-xl bg-brand-50/70 border border-brand-200/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="text-xs">
                   <div className="font-semibold text-brand-900 mb-1">预计动态审批链路</div>
+                  {preview.skippedRegionalManager && preview.skipReason && (
+                    <div className="mb-1.5 text-[11px] text-amber-800 bg-amber-100/70 border border-amber-200 rounded-lg px-2.5 py-1">
+                      {preview.skipReason}
+                    </div>
+                  )}
                   <div className="flex flex-wrap items-center gap-1.5 text-brand-800">
                     {preview.route.map((s) => (
                       <React.Fragment key={s.stepOrder}>

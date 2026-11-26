@@ -17,6 +17,7 @@ import {
   canUserActOnStep,
   getAvailableAdvanceBalance,
   replaceApprovalSteps,
+  resolveApprovalRoute,
 } from '../services/workflowEngine';
 import { EXPENSE_CATEGORY_LABELS, ExpenseCategory, ROLE_LABELS, UserRole } from '../types';
 import { buildCsv } from '../utils/csv';
@@ -101,16 +102,19 @@ router.post(
       excludeReimbursementId: body.exclude_id,
     });
 
-    const route = buildReimbursementRoute({
+    const rawRoute = buildReimbursementRoute({
       applicantRole: req.user!.role,
       totalAmount,
       hasOverBudget: risks.riskFlags.includes('OVER_BUDGET'),
     });
+    const resolved = await resolveApprovalRoute(db, body.hotel_id, rawRoute);
 
     res.json({
       totalAmount,
       risks,
-      route: route.map((s) => ({
+      skippedRegionalManager: resolved.skippedRegionalManager,
+      skipReason: resolved.skipReason,
+      route: resolved.steps.map((s) => ({
         ...s,
         roleLabel: ROLE_LABELS[s.approverRole],
       })),
@@ -467,13 +471,18 @@ router.post(
       });
 
       const dupInvoiceSet = new Set(risks.duplicateInvoices.map((d) => d.invoiceNo));
-      const route = body.submit
-        ? buildReimbursementRoute({
-            applicantRole: user.role,
-            totalAmount,
-            hasOverBudget: risks.riskFlags.includes('OVER_BUDGET'),
-          })
-        : [];
+      const resolved = body.submit
+        ? await resolveApprovalRoute(
+            tx,
+            body.hotel_id,
+            buildReimbursementRoute({
+              applicantRole: user.role,
+              totalAmount,
+              hasOverBudget: risks.riskFlags.includes('OVER_BUDGET'),
+            })
+          )
+        : { steps: [], skippedRegionalManager: false, skipReason: null };
+      const route = resolved.steps;
 
       const ins = await tx.execute(
         `INSERT INTO reimbursements (
@@ -539,6 +548,15 @@ router.post(
           actor: user,
           comment: body.remarks || '提交报销审批',
         });
+        if (resolved.skippedRegionalManager && resolved.skipReason) {
+          await logApprovalAction(tx, {
+            bizType: 'REIMBURSEMENT',
+            bizId: ins.insertId,
+            action: 'AUTO_SKIP',
+            actor: user,
+            comment: resolved.skipReason,
+          });
+        }
       } else {
         await logApprovalAction(tx, {
           bizType: 'REIMBURSEMENT',
@@ -606,13 +624,18 @@ router.put(
         excludeReimbursementId: id,
       });
       const dupInvoiceSet = new Set(risks.duplicateInvoices.map((d) => d.invoiceNo));
-      const route = body.submit
-        ? buildReimbursementRoute({
-            applicantRole: user.role,
-            totalAmount,
-            hasOverBudget: risks.riskFlags.includes('OVER_BUDGET'),
-          })
-        : [];
+      const resolved = body.submit
+        ? await resolveApprovalRoute(
+            tx,
+            body.hotel_id,
+            buildReimbursementRoute({
+              applicantRole: user.role,
+              totalAmount,
+              hasOverBudget: risks.riskFlags.includes('OVER_BUDGET'),
+            })
+          )
+        : { steps: [], skippedRegionalManager: false, skipReason: null };
+      const route = resolved.steps;
 
       const nextStatus = body.submit ? 'PENDING_APPROVAL' : existing.status;
 
@@ -680,6 +703,15 @@ router.put(
           actor: user,
           comment: body.remarks || (existing.status === 'RETURNED' ? '修改后重新提交审批' : '提交报销审批'),
         });
+        if (resolved.skippedRegionalManager && resolved.skipReason) {
+          await logApprovalAction(tx, {
+            bizType: 'REIMBURSEMENT',
+            bizId: id,
+            action: 'AUTO_SKIP',
+            actor: user,
+            comment: resolved.skipReason,
+          });
+        }
       }
     });
 

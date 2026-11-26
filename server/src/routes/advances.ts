@@ -15,6 +15,7 @@ import {
   canUserActOnStep,
   getAvailableAdvanceBalance,
   replaceApprovalSteps,
+  resolveApprovalRoute,
 } from '../services/workflowEngine';
 import { UserRole } from '../types';
 import { generateCode, nowIso, roundMoney } from '../utils/numbers';
@@ -148,7 +149,12 @@ router.post(
     const ts = nowIso();
     const advanceNo = generateCode('ADV');
     const amount = roundMoney(body.amount);
-    const route = buildCashAdvanceRoute({ applicantRole: user.role, amount });
+    const resolved = await resolveApprovalRoute(
+      db,
+      hotelId,
+      buildCashAdvanceRoute({ applicantRole: user.role, amount })
+    );
+    const route = resolved.steps;
 
     const advId = await db.transaction(async (tx) => {
       const ins = await tx.execute(
@@ -177,6 +183,15 @@ router.post(
         actor: user,
         comment: body.purpose,
       });
+      if (resolved.skippedRegionalManager && resolved.skipReason) {
+        await logApprovalAction(tx, {
+          bizType: 'CASH_ADVANCE',
+          bizId: ins.insertId,
+          action: 'AUTO_SKIP',
+          actor: user,
+          comment: resolved.skipReason,
+        });
+      }
       return ins.insertId;
     });
 

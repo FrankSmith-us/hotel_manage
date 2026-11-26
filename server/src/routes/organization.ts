@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getDb } from '../../db';
-import { asyncHandler, authenticate, getScopeFilter, requireRoles } from '../middleware/auth';
+import { AppError, asyncHandler, authenticate, getScopeFilter, requireRoles } from '../middleware/auth';
 import { nowIso, todayStr } from '../utils/numbers';
 
 const router = Router();
@@ -13,8 +13,39 @@ router.get(
     const db = getDb();
     const scope = await getScopeFilter(req.user!);
 
-    const regions = await db.query<{ id: number; code: string; name: string }>(
-      'SELECT id, code, name FROM regions ORDER BY id ASC'
+    const regions = await db.query<{
+      id: number;
+      code: string;
+      name: string;
+      manager_user_id: number | null;
+      manager_name: string | null;
+      manager_role: string | null;
+      manager_employee_id: number | null;
+    }>(
+      `SELECT r.id, r.code, r.name, r.manager_user_id,
+              u.display_name AS manager_name, u.role AS manager_role, u.employee_id AS manager_employee_id
+       FROM regions r
+       LEFT JOIN users u ON u.id = r.manager_user_id
+       ORDER BY r.id ASC`
+    );
+
+    const gmUsers = await db.query<{ id: number; employee_id: number | null }>(
+      `SELECT id, employee_id FROM users WHERE role = 'GENERAL_MANAGER' AND is_active = 1`
+    );
+    const gmIds = new Set(gmUsers.map((g) => Number(g.id)));
+    const gmEmpIds = new Set(gmUsers.filter((g) => g.employee_id !== null).map((g) => Number(g.employee_id)));
+
+    const managerCandidates = await db.query<{
+      id: number;
+      username: string;
+      display_name: string;
+      role: string;
+      region_id: number | null;
+    }>(
+      `SELECT id, username, display_name, role, region_id
+       FROM users
+       WHERE is_active = 1 AND role IN ('REGIONAL_MANAGER', 'GENERAL_MANAGER')
+       ORDER BY role ASC, id ASC`
     );
     const hotels = await db.query<{
       id: number;
@@ -79,11 +110,46 @@ router.get(
               departments: hDepts,
             };
           });
-        return { ...reg, hotels: regHotels };
+        const isSameAsGm = Boolean(
+          (reg.manager_user_id && gmIds.has(Number(reg.manager_user_id))) ||
+            (reg.manager_employee_id && gmEmpIds.has(Number(reg.manager_employee_id)))
+        );
+        return {
+          ...reg,
+          is_manager_same_as_gm: isSameAsGm,
+          hotels: regHotels,
+        };
       })
       .filter((r) => r.hotels.length > 0);
 
-    res.json({ regions: tree });
+    res.json({ regions: tree, managerCandidates });
+  })
+);
+
+router.put(
+  '/regions/:id/manager',
+  requireRoles('HQ_ADMIN', 'GENERAL_MANAGER', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = z.object({ manager_user_id: z.number().int().positive().nullable() }).parse(req.body);
+    const db = getDb();
+
+    const reg = await db.queryOne<{ id: number }>('SELECT id FROM regions WHERE id = ?', [id]);
+    if (!reg) throw new AppError(404, '大区不存在');
+
+    if (body.manager_user_id !== null) {
+      const u = await db.queryOne<{ id: number; is_active: number }>(
+        'SELECT id, is_active FROM users WHERE id = ?',
+        [body.manager_user_id]
+      );
+      if (!u || !u.is_active) throw new AppError(404, '指定的负责人账号不存在或已禁用');
+    }
+
+    await db.execute('UPDATE regions SET manager_user_id = ? WHERE id = ?', [
+      body.manager_user_id,
+      id,
+    ]);
+    res.json({ ok: true, region_id: id, manager_user_id: body.manager_user_id });
   })
 );
 

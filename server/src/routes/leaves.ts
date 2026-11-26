@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getDb } from '../../db';
 import { AppError, asyncHandler, authenticate, getScopeFilter } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
-import { buildLeaveRoute, canUserActOnStep, replaceApprovalSteps } from '../services/workflowEngine';
+import { buildLeaveRoute, canUserActOnStep, replaceApprovalSteps, resolveApprovalRoute } from '../services/workflowEngine';
 import { UserRole } from '../types';
 import { generateCode, nowIso } from '../utils/numbers';
 
@@ -136,7 +136,12 @@ router.post(
     const db = getDb();
     const ts = nowIso();
     const requestNo = generateCode('LV');
-    const route = buildLeaveRoute({ applicantRole: user.role, days: body.days });
+    const resolved = await resolveApprovalRoute(
+      db,
+      user.hotel_id,
+      buildLeaveRoute({ applicantRole: user.role, days: body.days })
+    );
+    const route = resolved.steps;
 
     const leaveId = await db.transaction(async (tx) => {
       const ins = await tx.execute(
@@ -166,6 +171,15 @@ router.post(
         actor: user,
         comment: body.reason,
       });
+      if (resolved.skippedRegionalManager && resolved.skipReason) {
+        await logApprovalAction(tx, {
+          bizType: 'LEAVE',
+          bizId: ins.insertId,
+          action: 'AUTO_SKIP',
+          actor: user,
+          comment: resolved.skipReason,
+        });
+      }
       return ins.insertId;
     });
 

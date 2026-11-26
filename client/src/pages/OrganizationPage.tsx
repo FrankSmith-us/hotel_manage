@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Building2, MapPin, Phone, Plus, Users } from 'lucide-react';
+import { Building2, MapPin, Phone, Plus, UserCog, Users } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { useToast } from '../components/Toast';
 import { apiFetch } from '../lib/api';
@@ -9,6 +9,10 @@ interface RegionNode {
   id: number;
   code: string;
   name: string;
+  manager_user_id: number | null;
+  manager_name: string | null;
+  manager_role: string | null;
+  is_manager_same_as_gm: boolean;
   hotels: Array<{
     id: number;
     code: string;
@@ -24,11 +28,23 @@ interface RegionNode {
   }>;
 }
 
+interface ManagerCandidate {
+  id: number;
+  username: string;
+  display_name: string;
+  role: string;
+}
+
 export function OrganizationPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const canManage = ['HQ_ADMIN', 'GENERAL_MANAGER', 'HR_MANAGER'].includes(user?.role || '');
   const [regions, setRegions] = useState<RegionNode[]>([]);
+  const [candidates, setCandidates] = useState<ManagerCandidate[]>([]);
   const [open, setOpen] = useState(false);
+
+  const [editingRegion, setEditingRegion] = useState<RegionNode | null>(null);
+  const [selectedManagerId, setSelectedManagerId] = useState<string>('');
 
   const [code, setCode] = useState('');
   const [name, setName] = useState('');
@@ -39,12 +55,35 @@ export function OrganizationPage() {
   const [roomCount, setRoomCount] = useState(120);
 
   const load = () => {
-    apiFetch<{ regions: RegionNode[] }>('/api/organization/tree').then((d) => setRegions(d.regions));
+    apiFetch<{ regions: RegionNode[]; managerCandidates: ManagerCandidate[] }>('/api/organization/tree').then(
+      (d) => {
+        setRegions(d.regions);
+        setCandidates(d.managerCandidates || []);
+      }
+    );
   };
 
   useEffect(() => {
     load();
   }, [user?.id]);
+
+  const handleSaveRegionManager = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingRegion) return;
+    try {
+      await apiFetch(`/api/organization/regions/${editingRegion.id}/manager`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          manager_user_id: selectedManagerId ? Number(selectedManagerId) : null,
+        }),
+      });
+      showToast('区域负责人已更新，后续审批将自动按新规则路由');
+      setEditingRegion(null);
+      load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '更新失败', 'error');
+    }
+  };
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,10 +131,33 @@ export function OrganizationPage() {
 
       {regions.map((reg) => (
         <div key={reg.id} className="space-y-3">
-          <div className="flex items-center gap-2 text-sm font-bold text-stone-700">
-            <Building2 className="w-4 h-4 text-brand-600" />
-            <span>{reg.name}</span>
-            <span className="text-xs font-normal text-stone-400">({reg.hotels.length} 家机构)</span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 text-sm font-bold text-stone-700">
+              <Building2 className="w-4 h-4 text-brand-600" />
+              <span>{reg.name}</span>
+              <span className="text-xs font-normal text-stone-400">({reg.hotels.length} 家机构)</span>
+              {reg.manager_name && (
+                <span className="text-xs font-medium text-stone-600 px-2.5 py-0.5 rounded-full bg-white border border-stone-200">
+                  区域负责人：{reg.manager_name}
+                </span>
+              )}
+              {reg.is_manager_same_as_gm && (
+                <span className="text-[11px] font-medium px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200">
+                  总经理兼任 · 审批自动跳过区域节点
+                </span>
+              )}
+            </div>
+            {canManage && reg.code !== 'HQ' && (
+              <button
+                onClick={() => {
+                  setEditingRegion(reg);
+                  setSelectedManagerId(reg.manager_user_id ? String(reg.manager_user_id) : '');
+                }}
+                className="text-xs font-medium text-brand-700 hover:text-brand-800 flex items-center gap-1 px-2.5 py-1 rounded-lg hover:bg-brand-50"
+              >
+                <UserCog className="w-3.5 h-3.5" /> 调整区域负责人
+              </button>
+            )}
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {reg.hotels.map((h) => (
@@ -232,6 +294,43 @@ export function OrganizationPage() {
             </button>
             <button type="submit" className="px-5 py-2 rounded-xl bg-brand-600 text-white text-sm font-semibold">
               创建门店
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        open={Boolean(editingRegion)}
+        onClose={() => setEditingRegion(null)}
+        title={`调整区域负责人 · ${editingRegion?.name || ''}`}
+        subtitle="若指定集团总经理兼任区域负责人，系统将在该大区的所有审批流中自动跳过区域经理节点，直达总经理审批"
+      >
+        <form onSubmit={handleSaveRegionManager} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-stone-700 mb-1">选择区域负责人</label>
+            <select
+              value={selectedManagerId}
+              onChange={(e) => setSelectedManagerId(e.target.value)}
+              className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
+            >
+              <option value="">未指定</option>
+              {candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.display_name}（{c.role === 'GENERAL_MANAGER' ? '集团总经理 · 兼任将跳过区域节点' : '区域经理'} · @{c.username}）
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setEditingRegion(null)}
+              className="px-4 py-2 rounded-xl border border-stone-200 text-sm"
+            >
+              取消
+            </button>
+            <button type="submit" className="px-5 py-2 rounded-xl bg-brand-600 text-white text-sm font-semibold">
+              保存配置
             </button>
           </div>
         </form>

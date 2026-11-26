@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS regions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   code TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
+  manager_user_id INTEGER,
   created_at TEXT NOT NULL
 );
 
