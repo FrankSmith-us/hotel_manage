@@ -51,7 +51,7 @@ export class MysqlAdapter extends MysqlRunner implements DbAdapter {
       connectionLimit: 10,
       decimalNumbers: true,
       charset: 'utf8mb4',
-      multipleStatements: true,
+      multipleStatements: false,
     });
     super(pool);
     this.pool = pool;
@@ -74,7 +74,20 @@ export class MysqlAdapter extends MysqlRunner implements DbAdapter {
   }
 
   async execScript(sql: string): Promise<void> {
-    await this.pool.query(sql);
+    const conn = await mysql.createConnection({
+      host: this.config.host,
+      port: this.config.port,
+      user: this.config.user,
+      password: this.config.password,
+      database: this.config.database,
+      charset: 'utf8mb4',
+      multipleStatements: true,
+    });
+    try {
+      await conn.query(sql);
+    } finally {
+      await conn.end();
+    }
   }
 
   async close(): Promise<void> {

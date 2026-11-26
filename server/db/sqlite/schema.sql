@@ -292,7 +292,8 @@ CREATE TABLE IF NOT EXISTS approval_steps (
   acted_by INTEGER,
   acted_at TEXT,
   comment TEXT,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  UNIQUE(biz_type, biz_id, step_order)
 );
 CREATE INDEX IF NOT EXISTS idx_steps_biz ON approval_steps(biz_type, biz_id, step_order);
 

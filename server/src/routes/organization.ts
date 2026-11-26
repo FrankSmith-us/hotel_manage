@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { getDb } from '../../db';
 import { AppError, asyncHandler, authenticate, getScopeFilter, requireRoles } from '../middleware/auth';
+import { logApprovalAction } from '../services/auditService';
 import { nowIso, todayStr } from '../utils/numbers';
 
 const router = Router();
@@ -128,27 +129,44 @@ router.get(
 
 router.put(
   '/regions/:id/manager',
-  requireRoles('HQ_ADMIN', 'GENERAL_MANAGER', 'HR_MANAGER'),
+  requireRoles('HQ_ADMIN', 'GENERAL_MANAGER'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const body = z.object({ manager_user_id: z.number().int().positive().nullable() }).parse(req.body);
     const db = getDb();
 
-    const reg = await db.queryOne<{ id: number }>('SELECT id FROM regions WHERE id = ?', [id]);
+    const reg = await db.queryOne<{ id: number; name: string; manager_user_id: number | null }>(
+      'SELECT id, name, manager_user_id FROM regions WHERE id = ?',
+      [id]
+    );
     if (!reg) throw new AppError(404, '大区不存在');
 
+    let nextManagerLabel = '未指定';
     if (body.manager_user_id !== null) {
-      const u = await db.queryOne<{ id: number; is_active: number }>(
-        'SELECT id, is_active FROM users WHERE id = ?',
+      const u = await db.queryOne<{ id: number; display_name: string; role: string; is_active: number }>(
+        'SELECT id, display_name, role, is_active FROM users WHERE id = ?',
         [body.manager_user_id]
       );
       if (!u || !u.is_active) throw new AppError(404, '指定的负责人账号不存在或已禁用');
+      if (!['REGIONAL_MANAGER', 'GENERAL_MANAGER'].includes(u.role)) {
+        throw new AppError(400, '大区负责人仅允许指定区域经理或集团总经理账号');
+      }
+      nextManagerLabel = `${u.display_name}(${u.role})`;
     }
 
-    await db.execute('UPDATE regions SET manager_user_id = ? WHERE id = ?', [
-      body.manager_user_id,
-      id,
-    ]);
+    await db.transaction(async (tx) => {
+      await tx.execute('UPDATE regions SET manager_user_id = ? WHERE id = ?', [
+        body.manager_user_id,
+        id,
+      ]);
+      await logApprovalAction(tx, {
+        bizType: 'REGION',
+        bizId: id,
+        action: 'UPDATE_MANAGER',
+        actor: req.user!,
+        comment: `变更大区「${reg.name}」负责人：${reg.manager_user_id ?? '无'} -> ${body.manager_user_id ?? '无'}（${nextManagerLabel}）`,
+      });
+    });
     res.json({ ok: true, region_id: id, manager_user_id: body.manager_user_id });
   })
 );

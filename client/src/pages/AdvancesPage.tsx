@@ -48,12 +48,13 @@ export function AdvancesPage() {
   const [hotels, setHotels] = useState<Array<{ id: number; name: string }>>([]);
   const [open, setOpen] = useState(false);
 
-  const [hotelId, setHotelId] = useState<number>(user?.hotel_id || 2);
+  const [hotelId, setHotelId] = useState<number>(user?.hotel_id || 0);
   const [advanceType, setAdvanceType] = useState<'PETTY_CASH' | 'TRAVEL'>('PETTY_CASH');
   const [amount, setAmount] = useState(1500);
   const [purpose, setPurpose] = useState('');
   const [settleDate, setSettleDate] = useState(todayStr());
   const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT'>('NORMAL');
+  const [actingId, setActingId] = useState<number | null>(null);
 
   const [disburseId, setDisburseId] = useState<number | null>(null);
   const [paymentRef, setPaymentRef] = useState('');
@@ -107,6 +108,7 @@ export function AdvancesPage() {
   };
 
   const handleAction = async (id: number, action: 'APPROVE' | 'REJECT') => {
+    setActingId(id);
     try {
       await apiFetch(`/api/advances/${id}/action`, {
         method: 'POST',
@@ -116,6 +118,8 @@ export function AdvancesPage() {
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '操作失败', 'error');
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -251,14 +255,16 @@ export function AdvancesPage() {
                   {r.canApprove && (
                     <>
                       <button
+                        disabled={actingId === r.id}
                         onClick={() => handleAction(r.id, 'APPROVE')}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-medium"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-medium disabled:opacity-50"
                       >
                         <Check className="w-3.5 h-3.5" /> 通过
                       </button>
                       <button
+                        disabled={actingId === r.id}
                         onClick={() => handleAction(r.id, 'REJECT')}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium disabled:opacity-50"
                       >
                         <XCircle className="w-3.5 h-3.5" /> 驳回
                       </button>

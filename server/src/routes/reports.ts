@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getDb } from '../../db';
-import { asyncHandler, authenticate, getScopeFilter } from '../middleware/auth';
+import { asyncHandler, authenticate, buildHotelScopeSql, getScopeFilter, requireRoles } from '../middleware/auth';
 import { EXPENSE_CATEGORY_LABELS, ExpenseCategory } from '../types';
 import { buildCsv } from '../utils/csv';
 import { currentYearMonth, offsetYearMonth, roundMoney } from '../utils/numbers';
@@ -97,9 +97,12 @@ router.get(
 
 router.get(
   '/expenses/export',
+  requireRoles('HQ_ADMIN', 'FINANCE', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'),
   asyncHandler(async (req, res) => {
     const db = getDb();
     const yearMonth = String(req.query.yearMonth || currentYearMonth());
+    const scope = await getScopeFilter(req.user!);
+    const scopeSql = buildHotelScopeSql(scope, 'r.hotel_id');
     const rows = await db.query<{
       hotel_name: string;
       category: ExpenseCategory;
@@ -109,10 +112,10 @@ router.get(
        FROM reimbursement_items ri
        JOIN reimbursements r ON r.id = ri.reimbursement_id
        JOIN hotels h ON h.id = r.hotel_id
-       WHERE r.expense_month = ? AND r.status IN ('PENDING_APPROVAL', 'APPROVED', 'PAID')
+       WHERE r.expense_month = ? AND r.status IN ('PENDING_APPROVAL', 'APPROVED', 'PAID') AND ${scopeSql.sql}
        GROUP BY h.name, ri.category
        ORDER BY h.name ASC, total_amount DESC`,
-      [yearMonth]
+      [yearMonth, ...scopeSql.params]
     );
 
     const csv = buildCsv(

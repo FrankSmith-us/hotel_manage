@@ -322,6 +322,7 @@ CREATE TABLE IF NOT EXISTS approval_steps (
   acted_at VARCHAR(32) NULL,
   comment VARCHAR(255) NULL,
   created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_steps_biz_order (biz_type, biz_id, step_order),
   INDEX idx_steps_biz (biz_type, biz_id, step_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

@@ -7,6 +7,7 @@ import {
   authenticate,
   canAccessHotel,
   getScopeFilter,
+  isOwnHotel,
   requireRoles,
 } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
@@ -21,7 +22,7 @@ import {
   resolveApprovalRoute,
 } from '../services/workflowEngine';
 import { UserRole } from '../types';
-import { generateCode, nowIso, roundMoney } from '../utils/numbers';
+import { generateCode, isoDateSchema, nowIso, roundMoney } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -48,15 +49,11 @@ router.get(
       params.push(user.id, user.id);
     } else if (tab === 'available') {
       conditions.push(`a.status = 'DISBURSED'`);
+      conditions.push('a.applicant_id = ?');
+      params.push(user.id);
       if (req.query.hotelId) {
         conditions.push('a.hotel_id = ?');
         params.push(Number(req.query.hotelId));
-      } else if (user.role === 'STAFF') {
-        conditions.push('a.applicant_id = ?');
-        params.push(user.id);
-      } else if (user.hotel_id && scope.type === 'HOTEL') {
-        conditions.push('a.hotel_id = ?');
-        params.push(scope.hotelId);
       }
     } else if (tab !== 'pending') {
       if (scope.type === 'REGION') {
@@ -155,9 +152,9 @@ router.get(
 const createAdvanceSchema = z.object({
   hotel_id: z.number().int().positive().optional(),
   advance_type: z.enum(['PETTY_CASH', 'TRAVEL']).default('PETTY_CASH'),
-  amount: z.number().positive('借款金额必须大于0'),
+  amount: z.number().positive('借款金额必须大于0').max(10_000_000, '单笔借款金额不能超过 1000 万元'),
   purpose: z.string().min(2, '请填写借款用途'),
-  expected_settle_date: z.string().min(8),
+  expected_settle_date: isoDateSchema,
   urgency: z.enum(['NORMAL', 'URGENT']).default('NORMAL'),
 });
 
@@ -168,7 +165,7 @@ router.post(
     const user = req.user!;
     const hotelId = body.hotel_id ?? user.hotel_id;
     if (!hotelId) throw new AppError(400, '请选择所属门店');
-    if (!(await canAccessHotel(user, hotelId))) {
+    if (!(await canAccessHotel(user, hotelId)) && !isOwnHotel(user, hotelId)) {
       throw new AppError(403, '无权为其他门店申请备用金');
     }
 
@@ -240,39 +237,45 @@ router.post(
       .parse(req.body);
 
     const db = getDb();
-    const adv = await db.queryOne<{
-      id: number;
-      hotel_id: number;
-      applicant_id: number;
-      status: string;
-    }>('SELECT id, hotel_id, applicant_id, status FROM cash_advances WHERE id = ?', [id]);
-    if (!adv) throw new AppError(404, '借款/备用金单不存在');
-    if (adv.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
-
-    const step = await db.queryOne<{ id: number; step_order: number; approver_role: UserRole }>(
-      `SELECT id, step_order, approver_role FROM approval_steps
-       WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND status = 'PENDING'
-       ORDER BY step_order ASC LIMIT 1`,
-      [id]
-    );
-    if (!step) throw new AppError(400, '未找到待审批节点');
-    if (!(await canUserActOnStep(db, req.user!, step.approver_role, adv.hotel_id, adv.applicant_id))) {
-      throw new AppError(403, '您无权审批当前借款节点');
-    }
-
     const ts = nowIso();
     await db.transaction(async (tx) => {
+      const adv = await tx.queryOne<{
+        id: number;
+        hotel_id: number;
+        applicant_id: number;
+        status: string;
+      }>(`SELECT id, hotel_id, applicant_id, status FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!adv) throw new AppError(404, '借款/备用金单不存在');
+      if (adv.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
+
+      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole }>(
+        `SELECT id, step_order, approver_role FROM approval_steps
+         WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND status = 'PENDING'
+         ORDER BY step_order ASC LIMIT 1`,
+        [id]
+      );
+      if (!step) throw new AppError(400, '未找到待审批节点');
+      if (!(await canUserActOnStep(tx, req.user!, step.approver_role, adv.hotel_id, adv.applicant_id))) {
+        throw new AppError(403, '您无权审批当前借款节点');
+      }
+
       if (action === 'REJECT') {
-        await tx.execute(
-          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [req.user!.id, ts, comment || '驳回', step.id]
         );
-        await tx.execute(`UPDATE cash_advances SET status = 'REJECTED', updated_at = ? WHERE id = ?`, [ts, id]);
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
+        const advUpd = await tx.execute(
+          `UPDATE cash_advances SET status = 'REJECTED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+          [ts, id]
+        );
+        if (advUpd.affectedRows !== 1) throw new AppError(409, '借款单状态已变更，请刷新后重试');
       } else {
-        await tx.execute(
-          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [req.user!.id, ts, comment || '同意', step.id]
         );
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
         const nextStep = await tx.queryOne<{ id: number; step_order: number }>(
           `SELECT id, step_order FROM approval_steps
            WHERE biz_type = 'CASH_ADVANCE' AND biz_id = ? AND step_order > ?
@@ -281,16 +284,16 @@ router.post(
         );
         if (nextStep) {
           await tx.execute(`UPDATE approval_steps SET status = 'PENDING' WHERE id = ?`, [nextStep.id]);
-          await tx.execute(`UPDATE cash_advances SET current_step = ?, updated_at = ? WHERE id = ?`, [
-            nextStep.step_order,
-            ts,
-            id,
-          ]);
+          await tx.execute(
+            `UPDATE cash_advances SET current_step = ?, updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [nextStep.step_order, ts, id]
+          );
         } else {
-          await tx.execute(`UPDATE cash_advances SET status = 'APPROVED', updated_at = ? WHERE id = ?`, [
-            ts,
-            id,
-          ]);
+          const advUpd = await tx.execute(
+            `UPDATE cash_advances SET status = 'APPROVED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [ts, id]
+          );
+          if (advUpd.affectedRows !== 1) throw new AppError(409, '借款单状态已变更，请刷新后重试');
         }
       }
       await logApprovalAction(tx, {
@@ -318,18 +321,20 @@ router.post(
       .parse(req.body);
 
     const db = getDb();
-    const adv = await db.queryOne<{ id: number; status: string }>('SELECT id, status FROM cash_advances WHERE id = ?', [
-      id,
-    ]);
-    if (!adv) throw new AppError(404, '借款单不存在');
-    if (adv.status !== 'APPROVED') throw new AppError(400, '仅已审批通过的借款单可放款');
-
     const ts = nowIso();
     await db.transaction(async (tx) => {
-      await tx.execute(
-        `UPDATE cash_advances SET status = 'DISBURSED', payment_ref = ?, disbursed_at = ?, updated_at = ? WHERE id = ?`,
+      const adv = await tx.queryOne<{ id: number; status: string }>(
+        `SELECT id, status FROM cash_advances WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!adv) throw new AppError(404, '借款单不存在');
+      if (adv.status !== 'APPROVED') throw new AppError(400, '仅已审批通过的借款单可放款');
+
+      const upd = await tx.execute(
+        `UPDATE cash_advances SET status = 'DISBURSED', payment_ref = ?, disbursed_at = ?, updated_at = ? WHERE id = ? AND status = 'APPROVED'`,
         [payment_ref, ts, ts, id]
       );
+      if (upd.affectedRows !== 1) throw new AppError(409, '借款单状态已变更，请刷新后重试');
       await logApprovalAction(tx, {
         bizType: 'CASH_ADVANCE',
         bizId: id,

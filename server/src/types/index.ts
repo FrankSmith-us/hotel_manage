@@ -21,6 +21,7 @@ export interface AuthUser {
 }
 
 export type BizType = 'REIMBURSEMENT' | 'LEAVE' | 'HEADCOUNT' | 'CASH_ADVANCE';
+export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL';
 
 export type ExpenseCategory =
   | 'LINEN_SUPPLIES'

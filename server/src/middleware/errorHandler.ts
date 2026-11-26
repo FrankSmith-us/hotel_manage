@@ -41,7 +41,11 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
   }
 
   const msg = err instanceof Error ? err.message : '服务器内部错误';
-  if (msg.includes('UNIQUE') || msg.includes('Duplicate entry')) {
+  if (
+    errCode === 'ER_DUP_ENTRY' ||
+    errCode === 'SQLITE_CONSTRAINT_UNIQUE' ||
+    (errCode === 'ERR_SQLITE_ERROR' && msg.includes('UNIQUE constraint failed'))
+  ) {
     res.status(409).json({ error: '数据记录已存在或编号重复' });
     return;
   }

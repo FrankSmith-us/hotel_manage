@@ -27,8 +27,12 @@ export async function calculateMonthlyPayroll(
     empParams
   );
 
+  const [ymYear, ymMonth] = params.yearMonth.split('-').map(Number);
+  const lastDay = new Date(Date.UTC(ymYear, ymMonth, 0)).getUTCDate();
   const monthStart = `${params.yearMonth}-01`;
-  const monthEnd = `${params.yearMonth}-31`;
+  const monthEnd = `${params.yearMonth}-${String(lastDay).padStart(2, '0')}`;
+  const monthStartMs = Date.parse(`${monthStart}T00:00:00Z`);
+  const monthEndMs = Date.parse(`${monthEnd}T00:00:00Z`);
   const ts = nowIso();
   let processedCount = 0;
   let skippedConfirmedCount = 0;
@@ -58,9 +62,15 @@ export async function calculateMonthlyPayroll(
     );
     const nightShifts = Number(nightRow?.cnt || 0);
 
-    // Approved leave & overtime in this month
-    const leaves = await db.query<{ leave_type: string; days: number; hours: number }>(
-      `SELECT leave_type, days, hours
+    // Approved leave & overtime in this month (prorate cross-month leave days by overlap)
+    const leaves = await db.query<{
+      leave_type: string;
+      start_date: string;
+      end_date: string;
+      days: number;
+      hours: number;
+    }>(
+      `SELECT leave_type, start_date, end_date, days, hours
        FROM leave_requests
        WHERE employee_id = ? AND status = 'APPROVED' AND start_date <= ? AND end_date >= ?`,
       [emp.id, monthEnd, monthStart]
@@ -72,11 +82,23 @@ export async function calculateMonthlyPayroll(
 
     for (const l of leaves) {
       if (l.leave_type === 'OVERTIME') {
-        overtimeHours += Number(l.hours || 0);
-      } else if (l.leave_type === 'PERSONAL') {
-        personalDays += Number(l.days || 0);
+        if (l.start_date >= monthStart && l.start_date <= monthEnd) {
+          overtimeHours += Number(l.hours || 0);
+        }
+        continue;
+      }
+      const lStartMs = Date.parse(`${l.start_date}T00:00:00Z`);
+      const lEndMs = Date.parse(`${l.end_date}T00:00:00Z`);
+      const totalCalDays = Math.max(1, Math.round((lEndMs - lStartMs) / 86_400_000) + 1);
+      const ovStart = Math.max(lStartMs, monthStartMs);
+      const ovEnd = Math.min(lEndMs, monthEndMs);
+      const overlapCalDays = ovEnd >= ovStart ? Math.round((ovEnd - ovStart) / 86_400_000) + 1 : 0;
+      const proratedDays = roundMoney((Number(l.days || 0) * overlapCalDays) / totalCalDays);
+
+      if (l.leave_type === 'PERSONAL') {
+        personalDays += proratedDays;
       } else if (l.leave_type === 'SICK') {
-        sickDays += Number(l.days || 0);
+        sickDays += proratedDays;
       }
     }
 

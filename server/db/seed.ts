@@ -896,7 +896,7 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
     const candDefs = [
       { hcId: hc1.insertId, hotel: 'SH-JA', dept: 'HK', name: '周敏', phone: '13900001122', pos: '客房服务员', sal: 6000, stage: 'INTERVIEW', notes: '曾任四星酒店客房领班，沟通踏实' },
-      { hcId: hc1.insertId, hotel: 'SH-JA', dept: 'HK', name: '李建军', phone: '13900001123', pos: '客房服务员', sal: 5800, stage: 'OFFERED', notes: '面试通过，待体检和健康证确认后入职' },
+      { hcId: hc1.insertId, hotel: 'SH-JA', dept: 'HK', name: '李建军', phone: '13900001123', pos: '客房服务员', sal: 5800, stage: 'INTERVIEW', notes: '复试通过，待补编审批完成后发放 Offer' },
       { hcId: hc2.insertId, hotel: 'BJ-GM', dept: 'FO', name: '宋佳怡', phone: '13600002233', pos: '礼宾接待员', sal: 7200, stage: 'OFFERED', notes: '英语流利，形象气质佳，可一键办理入职' },
       { hcId: null, hotel: 'HZ-XH', dept: 'FB', name: '徐浩然', phone: '13700003344', pos: '西点烘焙师', sal: 8500, stage: 'SCREENING', notes: '初筛简历合格' },
     ];

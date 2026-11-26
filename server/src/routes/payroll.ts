@@ -5,9 +5,11 @@ import {
   AppError,
   asyncHandler,
   authenticate,
+  buildHotelScopeSql,
   getScopeFilter,
   requireRoles,
 } from '../middleware/auth';
+import { logApprovalAction } from '../services/auditService';
 import { calculateMonthlyPayroll } from '../services/payrollService';
 import { buildCsv } from '../utils/csv';
 import { currentYearMonth, nowIso, roundMoney } from '../utils/numbers';
@@ -91,44 +93,57 @@ router.put(
     const id = Number(req.params.id);
     const body = z
       .object({
-        performance_bonus: z.number().min(0),
+        performance_bonus: z.number().min(0).max(1_000_000, '绩效奖金超出合理范围'),
         notes: z.string().optional().nullable(),
       })
       .parse(req.body);
 
     const db = getDb();
-    const row = await db.queryOne<{
-      id: number;
-      status: string;
-      base_salary: number;
-      night_allowance: number;
-      overtime_pay: number;
-      leave_deduction: number;
-      social_security: number;
-    }>('SELECT * FROM payroll_records WHERE id = ?', [id]);
-    if (!row) throw new AppError(404, '薪资记录不存在');
-    if (row.status !== 'DRAFT') {
-      throw new AppError(400, '已确认/已发放的薪资记录不可修改');
-    }
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx.queryOne<{
+        id: number;
+        status: string;
+        base_salary: number;
+        night_allowance: number;
+        overtime_pay: number;
+        leave_deduction: number;
+        performance_bonus: number;
+        social_security: number;
+      }>(`SELECT * FROM payroll_records WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!row) throw new AppError(404, '薪资记录不存在');
+      if (row.status !== 'DRAFT') {
+        throw new AppError(400, '已确认/已发放的薪资记录不可修改');
+      }
 
-    const bonus = roundMoney(body.performance_bonus);
-    const grossPay = roundMoney(
-      Number(row.base_salary) +
-        Number(row.night_allowance) +
-        Number(row.overtime_pay) +
-        bonus -
-        Number(row.leave_deduction)
-    );
-    const netPay = roundMoney(Math.max(0, grossPay - Number(row.social_security)));
+      const bonus = roundMoney(body.performance_bonus);
+      const grossPay = roundMoney(
+        Number(row.base_salary) +
+          Number(row.night_allowance) +
+          Number(row.overtime_pay) +
+          bonus -
+          Number(row.leave_deduction)
+      );
+      const netPay = roundMoney(Math.max(0, grossPay - Number(row.social_security)));
 
-    await db.execute(
-      `UPDATE payroll_records
-       SET performance_bonus = ?, gross_pay = ?, net_pay = ?, notes = ?, updated_at = ?
-       WHERE id = ?`,
-      [bonus, grossPay, netPay, body.notes ?? null, nowIso(), id]
-    );
+      const upd = await tx.execute(
+        `UPDATE payroll_records
+         SET performance_bonus = ?, gross_pay = ?, net_pay = ?, notes = ?, updated_at = ?
+         WHERE id = ? AND status = 'DRAFT'`,
+        [bonus, grossPay, netPay, body.notes ?? null, nowIso(), id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '薪资记录状态已变更，请刷新后重试');
 
-    const updated = await db.queryOne('SELECT * FROM payroll_records WHERE id = ?', [id]);
+      await logApprovalAction(tx, {
+        bizType: 'PAYROLL',
+        bizId: id,
+        action: 'UPDATE_BONUS',
+        actor: req.user!,
+        comment: `绩效奖金调整：${row.performance_bonus} -> ${bonus}${body.notes ? `（备注：${body.notes}）` : ''}`,
+      });
+
+      return tx.queryOne('SELECT * FROM payroll_records WHERE id = ?', [id]);
+    });
+
     res.json({ record: updated });
   })
 );
@@ -147,23 +162,73 @@ router.post(
     const db = getDb();
     const ts = nowIso();
     const conditions = ['`year_month` = ?', `status = 'DRAFT'`];
-    const params: unknown[] = [ts, req.user!.id, ts, body.yearMonth];
+    const params: unknown[] = [req.user!.id, ts, ts, body.yearMonth];
     if (body.hotelId) {
       conditions.push('hotel_id = ?');
       params.push(body.hotelId);
     }
 
-    const result = await db.execute(
-      `UPDATE payroll_records
-       SET status = 'CONFIRMED', confirmed_by = ?, confirmed_at = ?, updated_at = ?
-       WHERE ${conditions.slice(0).join(' AND ')}`.replace(
-        'SET status = \'CONFIRMED\', confirmed_by = ?, confirmed_at = ?, updated_at = ?',
-        'SET status = \'CONFIRMED\', confirmed_by = ?, confirmed_at = ?, updated_at = ?'
-      ),
-      [req.user!.id, ts, ts, body.yearMonth, ...(body.hotelId ? [body.hotelId] : [])]
-    );
+    const confirmedCount = await db.transaction(async (tx) => {
+      const result = await tx.execute(
+        `UPDATE payroll_records
+         SET status = 'CONFIRMED', confirmed_by = ?, confirmed_at = ?, updated_at = ?
+         WHERE ${conditions.join(' AND ')}`,
+        params
+      );
+      if (result.affectedRows > 0) {
+        await logApprovalAction(tx, {
+          bizType: 'PAYROLL',
+          bizId: body.hotelId ?? 0,
+          action: 'CONFIRM',
+          actor: req.user!,
+          comment: `确认锁账 ${body.yearMonth} 薪资共 ${result.affectedRows} 条${body.hotelId ? `（门店 ${body.hotelId}）` : ''}`,
+        });
+      }
+      return result.affectedRows;
+    });
 
-    res.json({ ok: true, confirmedCount: result.affectedRows });
+    res.json({ ok: true, confirmedCount });
+  })
+);
+
+router.post(
+  '/mark-paid',
+  requireRoles('HQ_ADMIN', 'FINANCE'),
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        yearMonth: z.string().regex(/^\d{4}-\d{2}$/),
+        hotelId: z.number().int().positive().optional(),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const ts = nowIso();
+    const conditions = ['`year_month` = ?', `status = 'CONFIRMED'`];
+    const params: unknown[] = [ts, body.yearMonth];
+    if (body.hotelId) {
+      conditions.push('hotel_id = ?');
+      params.push(body.hotelId);
+    }
+
+    const paidCount = await db.transaction(async (tx) => {
+      const result = await tx.execute(
+        `UPDATE payroll_records SET status = 'PAID', updated_at = ? WHERE ${conditions.join(' AND ')}`,
+        params
+      );
+      if (result.affectedRows > 0) {
+        await logApprovalAction(tx, {
+          bizType: 'PAYROLL',
+          bizId: body.hotelId ?? 0,
+          action: 'PAY',
+          actor: req.user!,
+          comment: `标记发放 ${body.yearMonth} 薪资共 ${result.affectedRows} 条`,
+        });
+      }
+      return result.affectedRows;
+    });
+
+    res.json({ ok: true, paidCount });
   })
 );
 
@@ -174,16 +239,9 @@ router.get(
     const db = getDb();
     const yearMonth = String(req.query.yearMonth || currentYearMonth());
     const scope = await getScopeFilter(req.user!);
-    const conditions = ['p.`year_month` = ?'];
-    const params: unknown[] = [yearMonth];
-
-    if (scope.type === 'REGION' && scope.hotelIds.length > 0) {
-      conditions.push(`p.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
-      params.push(...scope.hotelIds);
-    } else if (scope.type === 'HOTEL') {
-      conditions.push('p.hotel_id = ?');
-      params.push(scope.hotelId);
-    }
+    const scopeSql = buildHotelScopeSql(scope, 'p.hotel_id');
+    const conditions = ['p.`year_month` = ?', scopeSql.sql];
+    const params: unknown[] = [yearMonth, ...scopeSql.params];
 
     const rows = await db.query<{
       year_month: string;

@@ -64,17 +64,22 @@ export function RecruitmentPage() {
 
   // Create headcount
   const [hcOpen, setHcOpen] = useState(false);
-  const [hcHotelId, setHcHotelId] = useState<number>(user?.hotel_id || 2);
+  const [hcHotelId, setHcHotelId] = useState<number>(user?.hotel_id || 0);
   const [hcDeptId, setHcDeptId] = useState<number>(1);
   const [hcPos, setHcPos] = useState('');
   const [hcCount, setHcCount] = useState(1);
   const [hcUrgency, setHcUrgency] = useState<'NORMAL' | 'URGENT'>('NORMAL');
   const [hcSalary, setHcSalary] = useState('6000-7500元/月');
   const [hcReason, setHcReason] = useState('');
+  const [actingId, setActingId] = useState<number | null>(null);
+  const canManageCandidates = ['HQ_ADMIN', 'HR_MANAGER', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'].includes(
+    user?.role || ''
+  );
+  const canHire = ['HQ_ADMIN', 'HR_MANAGER'].includes(user?.role || '');
 
   // Create candidate
   const [candOpen, setCandOpen] = useState(false);
-  const [cHotelId, setCHotelId] = useState<number>(user?.hotel_id || 2);
+  const [cHotelId, setCHotelId] = useState<number>(user?.hotel_id || 0);
   const [cDeptId, setCDeptId] = useState<number>(1);
   const [cName, setCName] = useState('');
   const [cPhone, setCPhone] = useState('');
@@ -83,13 +88,15 @@ export function RecruitmentPage() {
   const [cNotes, setCNotes] = useState('');
 
   const load = useCallback(async () => {
-    const [hcRes, candRes] = await Promise.all([
-      apiFetch<{ headcounts: HeadcountRow[] }>(`/api/recruitment/headcounts?tab=${hcTab}`),
-      apiFetch<{ candidates: CandidateRow[] }>('/api/recruitment/candidates'),
-    ]);
+    const hcRes = await apiFetch<{ headcounts: HeadcountRow[] }>(`/api/recruitment/headcounts?tab=${hcTab}`);
     setHeadcounts(hcRes.headcounts);
-    setCandidates(candRes.candidates);
-  }, [hcTab]);
+    if (canManageCandidates) {
+      const candRes = await apiFetch<{ candidates: CandidateRow[] }>('/api/recruitment/candidates');
+      setCandidates(candRes.candidates);
+    } else {
+      setCandidates([]);
+    }
+  }, [hcTab, canManageCandidates]);
 
   useEffect(() => {
     const t = searchParams.get('tab');
@@ -147,6 +154,7 @@ export function RecruitmentPage() {
   };
 
   const handleHcAction = async (id: number, action: 'APPROVE' | 'REJECT') => {
+    setActingId(id);
     try {
       await apiFetch(`/api/recruitment/headcounts/${id}/action`, {
         method: 'POST',
@@ -156,6 +164,8 @@ export function RecruitmentPage() {
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '操作失败', 'error');
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -200,14 +210,14 @@ export function RecruitmentPage() {
 
   const handleHire = async (c: CandidateRow) => {
     try {
-      const res = await apiFetch<{ empNo: string; username: string }>(
+      const res = await apiFetch<{ empNo: string; username: string; initialPassword: string }>(
         `/api/recruitment/candidates/${c.id}/hire`,
         {
           method: 'POST',
           body: JSON.stringify({}),
         }
       );
-      showToast(`已一键办理入职！工号 ${res.empNo}，登录账号 ${res.username}（默认密码 Hotel@2026）`);
+      showToast(`已一键办理入职！工号 ${res.empNo}，账号 ${res.username}，初始密码 ${res.initialPassword}`);
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '入职失败', 'error');
@@ -230,12 +240,14 @@ export function RecruitmentPage() {
           >
             <Plus className="w-4 h-4" /> 申请门店补编
           </button>
-          <button
-            onClick={() => setCandOpen(true)}
-            className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold flex items-center gap-1.5"
-          >
-            <Plus className="w-4 h-4" /> 录入候选人
-          </button>
+          {canManageCandidates && (
+            <button
+              onClick={() => setCandOpen(true)}
+              className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold flex items-center gap-1.5"
+            >
+              <Plus className="w-4 h-4" /> 录入候选人
+            </button>
+          )}
         </div>
       </div>
 
@@ -248,14 +260,16 @@ export function RecruitmentPage() {
         >
           门店补编申请 ({headcounts.length})
         </button>
-        <button
-          onClick={() => setTab('candidates')}
-          className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold ${
-            tab === 'candidates' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-600'
-          }`}
-        >
-          候选人跟进 ({candidates.length})
-        </button>
+        {canManageCandidates && (
+          <button
+            onClick={() => setTab('candidates')}
+            className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold ${
+              tab === 'candidates' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-600'
+            }`}
+          >
+            候选人跟进 ({candidates.length})
+          </button>
+        )}
       </div>
 
       {tab === 'headcounts' && (
@@ -350,14 +364,16 @@ export function RecruitmentPage() {
                     {hc.canApprove && (
                       <>
                         <button
+                          disabled={actingId === hc.id}
                           onClick={() => handleHcAction(hc.id, 'APPROVE')}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-medium"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-medium disabled:opacity-50"
                         >
                           <Check className="w-3.5 h-3.5" /> 批准
                         </button>
                         <button
+                          disabled={actingId === hc.id}
                           onClick={() => handleHcAction(hc.id, 'REJECT')}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium disabled:opacity-50"
                         >
                           <XCircle className="w-3.5 h-3.5" /> 驳回
                         </button>
@@ -424,7 +440,7 @@ export function RecruitmentPage() {
                         发放 Offer
                       </button>
                     )}
-                    {c.stage === 'OFFERED' && (
+                    {c.stage === 'OFFERED' && canHire && (
                       <button
                         onClick={() => handleHire(c)}
                         className="inline-flex items-center gap-1 px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold"

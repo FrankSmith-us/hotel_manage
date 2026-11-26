@@ -157,12 +157,16 @@ export function FinancePayoutPage() {
               className="px-3 py-2 rounded-xl border border-stone-200 bg-white text-sm"
             />
           )}
-          <button
-            onClick={() => downloadCsv(`/api/reports/expenses/export?yearMonth=${yearMonth}`, `expense-report-${yearMonth}.csv`)}
-            className="px-3.5 py-2 rounded-xl bg-white border border-stone-200 text-sm font-medium flex items-center gap-1.5"
-          >
-            <Download className="w-4 h-4" /> 导出费用汇总
-          </button>
+          {['HQ_ADMIN', 'FINANCE', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'].includes(
+            user?.role || ''
+          ) && (
+            <button
+              onClick={() => downloadCsv(`/api/reports/expenses/export?yearMonth=${yearMonth}`, `expense-report-${yearMonth}.csv`)}
+              className="px-3.5 py-2 rounded-xl bg-white border border-stone-200 text-sm font-medium flex items-center gap-1.5"
+            >
+              <Download className="w-4 h-4" /> 导出费用汇总
+            </button>
+          )}
         </div>
       </div>
 

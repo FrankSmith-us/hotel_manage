@@ -2,11 +2,20 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { getDb } from '../../db';
-import { env } from '../config/env';
+import { isDemoSwitchEnabled } from '../config/env';
 import { AppError, asyncHandler, authenticate, signToken } from '../middleware/auth';
 import { ROLE_LABELS, UserRole } from '../types';
 
 const router = Router();
+
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_LOGIN_FAILURES = 10;
+const loginFailures = new Map<string, { count: number; resetAt: number }>();
+
+function getLoginAttemptKey(req: { ip?: string; headers: Record<string, unknown> }, username: string): string {
+  const ip = req.ip || String(req.headers['x-forwarded-for'] || 'unknown');
+  return `${ip}:${username.trim().toLowerCase()}`;
+}
 
 const loginSchema = z.object({
   username: z.string().min(1, '请输入用户名'),
@@ -17,6 +26,16 @@ router.post(
   '/login',
   asyncHandler(async (req, res) => {
     const { username, password } = loginSchema.parse(req.body);
+    const attemptKey = getLoginAttemptKey(req, username);
+    const now = Date.now();
+    const record = loginFailures.get(attemptKey);
+    if (record && record.resetAt > now && record.count >= MAX_LOGIN_FAILURES) {
+      throw new AppError(429, '登录失败次数过多，请 15 分钟后再试');
+    }
+    if (record && record.resetAt <= now) {
+      loginFailures.delete(attemptKey);
+    }
+
     const db = getDb();
     const user = await db.queryOne<{
       id: number;
@@ -41,8 +60,15 @@ router.post(
     );
 
     if (!user || !user.is_active || !bcrypt.compareSync(password, user.password_hash)) {
+      const cur = loginFailures.get(attemptKey);
+      if (!cur || cur.resetAt <= now) {
+        loginFailures.set(attemptKey, { count: 1, resetAt: now + LOGIN_WINDOW_MS });
+      } else {
+        cur.count += 1;
+      }
       throw new AppError(401, '账号或密码错误');
     }
+    loginFailures.delete(attemptKey);
 
     const token = signToken(Number(user.id));
     res.json({
@@ -80,7 +106,7 @@ router.get(
 router.get(
   '/demo-accounts',
   asyncHandler(async (_req, res) => {
-    if (!env.demoRoleSwitch) {
+    if (!isDemoSwitchEnabled()) {
       res.json({ enabled: false, accounts: [] });
       return;
     }
@@ -116,7 +142,7 @@ router.get(
 router.post(
   '/demo-switch',
   asyncHandler(async (req, res) => {
-    if (!env.demoRoleSwitch) {
+    if (!isDemoSwitchEnabled()) {
       throw new AppError(403, '演示角色快捷切换已关闭');
     }
     const { username } = z.object({ username: z.string().min(1) }).parse(req.body);

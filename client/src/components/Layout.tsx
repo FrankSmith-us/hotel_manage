@@ -47,6 +47,7 @@ const NAV_GROUPS: NavGroup[] = [
         to: '/finance',
         label: '打款核销与预算报表',
         icon: <CreditCard className="w-4 h-4" />,
+        roles: ['HQ_ADMIN', 'FINANCE', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'],
       },
     ],
   },
@@ -129,7 +130,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 {group.label}
               </div>
               <div className="space-y-1">
-                {group.items.map((item) => (
+                {group.items
+                  .filter((item) => !item.roles || item.roles.includes(user?.role || ''))
+                  .map((item) => (
                   <NavLink
                     key={item.to}
                     to={item.to}

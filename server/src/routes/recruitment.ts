@@ -21,7 +21,7 @@ import {
   resolveApprovalRoute,
 } from '../services/workflowEngine';
 import { UserRole } from '../types';
-import { addDays, generateCode, nowIso, todayStr } from '../utils/numbers';
+import { addDays, generateCode, generateTempPassword, isoDateSchema, nowIso, randomTokenSuffix, todayStr } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -149,6 +149,13 @@ router.post(
       throw new AppError(403, '无权为其他门店发起补编申请');
     }
     const db = getDb();
+    const dept = await db.queryOne<{ id: number }>(
+      'SELECT id FROM departments WHERE id = ? AND hotel_id = ?',
+      [body.department_id, body.hotel_id]
+    );
+    if (!dept) {
+      throw new AppError(400, '所选部门不属于当前门店');
+    }
     const ts = nowIso();
     const requestNo = generateCode('HC');
     const resolved = await resolveApprovalRoute(
@@ -215,39 +222,45 @@ router.post(
       .parse(req.body);
 
     const db = getDb();
-    const hc = await db.queryOne<{
-      id: number;
-      hotel_id: number;
-      applicant_id: number;
-      status: string;
-    }>('SELECT id, hotel_id, applicant_id, status FROM headcount_requests WHERE id = ?', [id]);
-    if (!hc) throw new AppError(404, '补编申请不存在');
-    if (hc.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
-
-    const step = await db.queryOne<{ id: number; step_order: number; approver_role: UserRole }>(
-      `SELECT id, step_order, approver_role FROM approval_steps
-       WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND status = 'PENDING'
-       ORDER BY step_order ASC LIMIT 1`,
-      [id]
-    );
-    if (!step) throw new AppError(400, '未找到待审批节点');
-    if (!(await canUserActOnStep(db, req.user!, step.approver_role, hc.hotel_id, hc.applicant_id))) {
-      throw new AppError(403, '您无权审批此补编节点');
-    }
-
     const ts = nowIso();
     await db.transaction(async (tx) => {
+      const hc = await tx.queryOne<{
+        id: number;
+        hotel_id: number;
+        applicant_id: number;
+        status: string;
+      }>(`SELECT id, hotel_id, applicant_id, status FROM headcount_requests WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!hc) throw new AppError(404, '补编申请不存在');
+      if (hc.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
+
+      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole }>(
+        `SELECT id, step_order, approver_role FROM approval_steps
+         WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND status = 'PENDING'
+         ORDER BY step_order ASC LIMIT 1`,
+        [id]
+      );
+      if (!step) throw new AppError(400, '未找到待审批节点');
+      if (!(await canUserActOnStep(tx, req.user!, step.approver_role, hc.hotel_id, hc.applicant_id))) {
+        throw new AppError(403, '您无权审批此补编节点');
+      }
+
       if (action === 'REJECT') {
-        await tx.execute(
-          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [req.user!.id, ts, comment || '驳回', step.id]
         );
-        await tx.execute(`UPDATE headcount_requests SET status = 'REJECTED', updated_at = ? WHERE id = ?`, [ts, id]);
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
+        const hcUpd = await tx.execute(
+          `UPDATE headcount_requests SET status = 'REJECTED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+          [ts, id]
+        );
+        if (hcUpd.affectedRows !== 1) throw new AppError(409, '补编申请状态已变更，请刷新后重试');
       } else {
-        await tx.execute(
-          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [req.user!.id, ts, comment || '同意', step.id]
         );
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
         const nextStep = await tx.queryOne<{ id: number; step_order: number }>(
           `SELECT id, step_order FROM approval_steps
            WHERE biz_type = 'HEADCOUNT' AND biz_id = ? AND step_order > ?
@@ -256,16 +269,16 @@ router.post(
         );
         if (nextStep) {
           await tx.execute(`UPDATE approval_steps SET status = 'PENDING' WHERE id = ?`, [nextStep.id]);
-          await tx.execute(`UPDATE headcount_requests SET current_step = ?, updated_at = ? WHERE id = ?`, [
-            nextStep.step_order,
-            ts,
-            id,
-          ]);
+          await tx.execute(
+            `UPDATE headcount_requests SET current_step = ?, updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [nextStep.step_order, ts, id]
+          );
         } else {
-          await tx.execute(`UPDATE headcount_requests SET status = 'APPROVED', updated_at = ? WHERE id = ?`, [
-            ts,
-            id,
-          ]);
+          const hcUpd = await tx.execute(
+            `UPDATE headcount_requests SET status = 'APPROVED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [ts, id]
+          );
+          if (hcUpd.affectedRows !== 1) throw new AppError(409, '补编申请状态已变更，请刷新后重试');
         }
       }
       await logApprovalAction(tx, {
@@ -283,6 +296,7 @@ router.post(
 
 router.get(
   '/candidates',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'),
   asyncHandler(async (req, res) => {
     const db = getDb();
     const scope = await getScopeFilter(req.user!);
@@ -336,6 +350,13 @@ router.post(
       throw new AppError(403, '无权录入其他门店候选人');
     }
     const db = getDb();
+    const dept = await db.queryOne<{ id: number }>(
+      'SELECT id FROM departments WHERE id = ? AND hotel_id = ?',
+      [body.department_id, body.hotel_id]
+    );
+    if (!dept) {
+      throw new AppError(400, '所选部门不属于当前门店');
+    }
     const ts = nowIso();
     const ins = await db.execute(
       `INSERT INTO candidates (
@@ -394,48 +415,66 @@ router.patch(
 
 router.post(
   '/candidates/:id/hire',
-  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'STORE_MANAGER'),
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const body = z
       .object({
         username: z.string().min(3).optional(),
-        hire_date: z.string().min(8).default(todayStr),
-        health_cert_expiry: z.string().optional().nullable(),
+        hire_date: isoDateSchema.default(todayStr),
+        health_cert_expiry: isoDateSchema.optional().nullable(),
       })
       .parse(req.body || {});
 
     const db = getDb();
-    const cand = await db.queryOne<{
-      id: number;
-      hotel_id: number;
-      department_id: number;
-      name: string;
-      phone: string;
-      position: string;
-      expected_salary: number;
-      stage: string;
-      hired_employee_id: number | null;
-    }>('SELECT * FROM candidates WHERE id = ?', [id]);
-
-    if (!cand) throw new AppError(404, '候选人不存在');
-    if (cand.stage === 'HIRED' || cand.hired_employee_id) {
-      throw new AppError(400, '该候选人已完成入职建档');
-    }
-    if (!(await canAccessHotel(req.user!, cand.hotel_id))) {
-      throw new AppError(403, '无权为其他门店候选人办理入职');
-    }
-
-    const hotel = await db.queryOne<{ region_id: number }>('SELECT region_id FROM hotels WHERE id = ?', [
-      cand.hotel_id,
-    ]);
     const ts = nowIso();
-    const suffix = Date.now().toString().slice(-5);
+    const suffix = randomTokenSuffix(3);
     const empNo = `YQ-${suffix}`;
-    const username = body.username || `staff_${suffix}`;
-    const passwordHash = bcrypt.hashSync('Hotel@2026', 8);
+    const username = body.username || `staff_${suffix.toLowerCase()}`;
+    const initialPassword = generateTempPassword();
+    const passwordHash = bcrypt.hashSync(initialPassword, 10);
 
     const result = await db.transaction(async (tx) => {
+      const cand = await tx.queryOne<{
+        id: number;
+        headcount_request_id: number | null;
+        hotel_id: number;
+        department_id: number;
+        name: string;
+        phone: string;
+        position: string;
+        expected_salary: number;
+        stage: string;
+        hired_employee_id: number | null;
+      }>(`SELECT * FROM candidates WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+
+      if (!cand) throw new AppError(404, '候选人不存在');
+      if (cand.stage === 'HIRED' || cand.hired_employee_id) {
+        throw new AppError(400, '该候选人已完成入职建档');
+      }
+      if (cand.stage !== 'OFFERED') {
+        throw new AppError(400, '仅已发放 Offer 的候选人可办理一键入职');
+      }
+      if (cand.headcount_request_id) {
+        const hc = await tx.queryOne<{ id: number; hotel_id: number; status: string }>(
+          'SELECT id, hotel_id, status FROM headcount_requests WHERE id = ?',
+          [cand.headcount_request_id]
+        );
+        if (!hc || hc.status !== 'APPROVED') {
+          throw new AppError(400, '关联门店补编申请尚未审批通过，暂不可办理入职');
+        }
+        if (Number(hc.hotel_id) !== Number(cand.hotel_id)) {
+          throw new AppError(400, '候选人门店与关联补编单门店不一致');
+        }
+      }
+      if (!(await canAccessHotel(req.user!, cand.hotel_id))) {
+        throw new AppError(403, '无权为其他门店候选人办理入职');
+      }
+
+      const hotel = await tx.queryOne<{ region_id: number }>('SELECT region_id FROM hotels WHERE id = ?', [
+        cand.hotel_id,
+      ]);
+
       const empRes = await tx.execute(
         `INSERT INTO employees (
           emp_no, name, gender, phone, id_card_last4, hotel_id, department_id, position,
@@ -473,12 +512,16 @@ router.post(
         [username, passwordHash, cand.name, empRes.insertId, cand.hotel_id, hotel?.region_id ?? null, ts]
       );
 
-      await tx.execute(
-        `UPDATE candidates SET stage = 'HIRED', hired_employee_id = ?, updated_at = ? WHERE id = ?`,
+      const candUpd = await tx.execute(
+        `UPDATE candidates SET stage = 'HIRED', hired_employee_id = ?, updated_at = ?
+         WHERE id = ? AND stage = 'OFFERED' AND hired_employee_id IS NULL`,
         [empRes.insertId, ts, id]
       );
+      if (candUpd.affectedRows !== 1) {
+        throw new AppError(409, '候选人状态已变更，请刷新后重试');
+      }
 
-      return { employeeId: empRes.insertId, empNo, username };
+      return { employeeId: empRes.insertId, empNo, username, initialPassword };
     });
 
     res.status(201).json({ ok: true, ...result });

@@ -135,5 +135,31 @@ export async function canAccessHotel(user: AuthUser, hotelId: number): Promise<b
   if (scope.type === 'ALL') return true;
   if (scope.type === 'REGION') return scope.hotelIds.includes(Number(hotelId));
   if (scope.type === 'HOTEL') return scope.hotelId === Number(hotelId);
-  return scope.hotelId === Number(hotelId);
+  return false;
+}
+
+export function isOwnHotel(user: AuthUser, hotelId: number): boolean {
+  return Boolean(user.hotel_id && Number(user.hotel_id) === Number(hotelId));
+}
+
+export function buildHotelScopeSql(
+  scope: ScopeFilter,
+  hotelColumn: string
+): { sql: string; params: unknown[] } {
+  if (scope.type === 'ALL') {
+    return { sql: '1=1', params: [] };
+  }
+  if (scope.type === 'REGION') {
+    if (scope.hotelIds.length === 0) {
+      return { sql: '1=0', params: [] };
+    }
+    return {
+      sql: `${hotelColumn} IN (${scope.hotelIds.map(() => '?').join(',')})`,
+      params: [...scope.hotelIds],
+    };
+  }
+  if (scope.type === 'HOTEL') {
+    return { sql: `${hotelColumn} = ?`, params: [scope.hotelId] };
+  }
+  return { sql: '1=0', params: [] };
 }

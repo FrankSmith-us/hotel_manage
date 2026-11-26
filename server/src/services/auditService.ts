@@ -1,11 +1,11 @@
 import { DbQueryRunner } from '../../db/adapter';
-import { AuthUser, BizType } from '../types';
+import { AuditBizType, AuthUser } from '../types';
 import { nowIso } from '../utils/numbers';
 
 export async function logApprovalAction(
   db: DbQueryRunner,
   params: {
-    bizType: BizType;
+    bizType: AuditBizType;
     bizId: number;
     action: string;
     actor: Pick<AuthUser, 'id' | 'display_name' | 'role'>;

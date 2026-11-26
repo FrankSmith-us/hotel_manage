@@ -17,7 +17,7 @@ import { ApprovalLogView, ApprovalStepView, ApprovalTimeline } from '../componen
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
 import { useToast } from '../components/Toast';
-import { apiFetch, downloadCsv } from '../lib/api';
+import { apiFetch, downloadCsv, getToken } from '../lib/api';
 import { useAuth } from '../lib/auth';
 import { ACTION_LABEL_MAP, currentYearMonth, EXPENSE_CATEGORIES, formatMoney, todayStr } from '../lib/format';
 
@@ -154,12 +154,15 @@ export function ReimbursementsPage() {
 
   // Invoice Preview Modal
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewIsPdf, setPreviewIsPdf] = useState(false);
+  const [previewRawUrl, setPreviewRawUrl] = useState<string | null>(null);
 
   // Create/Edit Modal
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingIsOwner, setEditingIsOwner] = useState(true);
   const [title, setTitle] = useState('');
-  const [hotelId, setHotelId] = useState<number>(user?.hotel_id || 2);
+  const [hotelId, setHotelId] = useState<number>(user?.hotel_id || 0);
   const [expenseMonth, setExpenseMonth] = useState(currentYearMonth());
   const [cashAdvanceId, setCashAdvanceId] = useState<number | ''>('');
   const [offsetAmount, setOffsetAmount] = useState<number>(0);
@@ -266,8 +269,9 @@ export function ReimbursementsPage() {
   }, [formOpen, paymentType, loadSavedPayees]);
 
   const openCreateModal = () => {
-    const defaultHid = user?.hotel_id || hotels[0]?.id || 2;
+    const defaultHid = user?.hotel_id || hotels[0]?.id || 0;
     setEditingId(null);
+    setEditingIsOwner(true);
     setTitle('');
     setHotelId(defaultHid);
     setExpenseMonth(currentYearMonth());
@@ -296,6 +300,7 @@ export function ReimbursementsPage() {
 
   const openEditFromDetail = (d: ClaimDetail) => {
     setEditingId(d.claim.id);
+    setEditingIsOwner(d.claim.applicant_name === user?.display_name);
     setTitle(d.claim.title);
     setHotelId(d.claim.hotel_id);
     setExpenseMonth(d.claim.expense_month);
@@ -348,6 +353,38 @@ export function ReimbursementsPage() {
       setSearchParams(next, { replace: true });
     }
   }, [searchParams, openDetail, setSearchParams]);
+
+  const closeAttachmentPreview = () => {
+    if (previewUrl && previewUrl.startsWith('blob:')) {
+      URL.revokeObjectURL(previewUrl);
+    }
+    setPreviewUrl(null);
+    setPreviewRawUrl(null);
+    setPreviewIsPdf(false);
+  };
+
+  const openAttachmentPreview = async (rawUrl: string) => {
+    setPreviewIsPdf(rawUrl.toLowerCase().endsWith('.pdf'));
+    setPreviewRawUrl(rawUrl);
+    if (!rawUrl.startsWith('/uploads/')) {
+      setPreviewUrl(rawUrl);
+      return;
+    }
+    try {
+      const token = getToken();
+      const res = await fetch(rawUrl, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        throw new Error('无权查看或附件不存在');
+      }
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      setPreviewUrl(objUrl);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '加载凭证失败', 'error');
+    }
+  };
 
   const handleUploadAttachment = async (idx: number, file: File) => {
     const fd = new FormData();
@@ -782,7 +819,7 @@ export function ReimbursementsPage() {
                   setHotelId(hid);
                   loadAdvancesForHotel(hid);
                 }}
-                disabled={Boolean(user?.hotel_id && user.role === 'STAFF')}
+                disabled={Boolean(user?.hotel_id && user.role === 'STAFF') || !editingIsOwner}
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white"
               >
                 {hotels.map((h) => (
@@ -831,6 +868,11 @@ export function ReimbursementsPage() {
 
           {/* Payee Account Section (Corporate / Personal) */}
           <div className="p-4 rounded-xl border border-stone-200 bg-stone-50/70 space-y-3">
+            {!editingIsOwner && (
+              <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                当前为中间审批节点退回修改：仅可调整说明/附件或重核费用明细，门店、收款账户与借款冲销不可更改（修改总额将重新触发全流程审批）。
+              </div>
+            )}
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
                 <span className="text-xs font-semibold text-stone-800">收款账户信息 *</span>
@@ -1052,7 +1094,7 @@ export function ReimbursementsPage() {
                       <span>{it.attachment_name ? `已上传：${it.attachment_name}` : '上传发票图片/PDF'}</span>
                       <input
                         type="file"
-                        accept=".png,.jpg,.jpeg,.webp,.pdf,.svg"
+                        accept=".png,.jpg,.jpeg,.webp,.pdf"
                         className="hidden"
                         onChange={(e) => {
                           const f = e.target.files?.[0];
@@ -1063,7 +1105,7 @@ export function ReimbursementsPage() {
                     {it.attachment_url && (
                       <button
                         type="button"
-                        onClick={() => setPreviewUrl(it.attachment_url)}
+                        onClick={() => openAttachmentPreview(it.attachment_url)}
                         className="text-xs text-stone-600 hover:text-stone-900 underline"
                       >
                         预览凭证
@@ -1126,7 +1168,7 @@ export function ReimbursementsPage() {
                 <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800 space-y-1">
                   <div className="font-semibold flex items-center gap-1.5">
                     <AlertTriangle className="w-4 h-4 text-rose-600" />
-                    <span>实时风控校验提醒（仍可提交，系统将自动升级审批或标红提示）</span>
+                    <span>实时风控校验提醒（超预算将自动升级审批；重复发票号将被拦截提交）</span>
                   </div>
                   {preview.risks.overBudgetCategories.map((c, i) => (
                     <div key={i}>
@@ -1495,13 +1537,13 @@ export function ReimbursementsPage() {
       {/* Invoice Attachment Preview Modal */}
       <Modal
         open={Boolean(previewUrl)}
-        onClose={() => setPreviewUrl(null)}
+        onClose={closeAttachmentPreview}
         title="发票凭证预览"
         maxWidth="max-w-3xl"
       >
         {previewUrl && (
           <div className="flex flex-col items-center gap-3">
-            {previewUrl.toLowerCase().endsWith('.pdf') ? (
+            {previewIsPdf ? (
               <iframe src={previewUrl} title="PDF Preview" className="w-full h-[500px] rounded-xl border" />
             ) : (
               <img
@@ -1512,11 +1554,12 @@ export function ReimbursementsPage() {
             )}
             <a
               href={previewUrl}
+              download={previewRawUrl ? previewRawUrl.split('/').pop() : 'attachment'}
               target="_blank"
               rel="noreferrer"
               className="text-xs text-brand-700 hover:underline"
             >
-              在新窗口打开原文件
+              下载或新窗口打开原文件
             </a>
           </div>
         )}

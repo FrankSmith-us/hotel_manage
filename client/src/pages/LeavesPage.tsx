@@ -54,6 +54,7 @@ export function LeavesPage() {
   const [hours, setHours] = useState(8);
   const [reason, setReason] = useState('');
   const [urgency, setUrgency] = useState<'NORMAL' | 'URGENT'>('NORMAL');
+  const [actingId, setActingId] = useState<number | null>(null);
 
   const load = useCallback(async () => {
     const d = await apiFetch<{ leaves: LeaveRow[] }>(`/api/leaves?tab=${tab}`);
@@ -97,6 +98,7 @@ export function LeavesPage() {
   };
 
   const handleAction = async (id: number, action: 'APPROVE' | 'REJECT') => {
+    setActingId(id);
     try {
       await apiFetch(`/api/leaves/${id}/action`, {
         method: 'POST',
@@ -106,6 +108,8 @@ export function LeavesPage() {
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '审批失败', 'error');
+    } finally {
+      setActingId(null);
     }
   };
 
@@ -227,14 +231,16 @@ export function LeavesPage() {
                   {r.canApprove && (
                     <>
                       <button
+                        disabled={actingId === r.id}
                         onClick={() => handleAction(r.id, 'APPROVE')}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-medium"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-medium disabled:opacity-50"
                       >
                         <Check className="w-3.5 h-3.5" /> 同意
                       </button>
                       <button
+                        disabled={actingId === r.id}
                         onClick={() => handleAction(r.id, 'REJECT')}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 text-xs font-medium disabled:opacity-50"
                       >
                         <XCircle className="w-3.5 h-3.5" /> 驳回
                       </button>

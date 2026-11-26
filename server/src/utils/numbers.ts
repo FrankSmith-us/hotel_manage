@@ -1,3 +1,8 @@
+import crypto from 'node:crypto';
+import { z } from 'zod';
+
+export const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式须为 YYYY-MM-DD');
+
 export function roundMoney(val: number): number {
   return Math.round((Number(val) + Number.EPSILON) * 100) / 100;
 }
@@ -48,6 +53,14 @@ export function getMondayOfCurrentWeek(): string {
 export function generateCode(prefix: string): string {
   const d = new Date();
   const ym = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  const rand = Math.floor(1000 + Math.random() * 9000);
+  const rand = crypto.randomBytes(4).toString('hex').toUpperCase();
   return `${prefix}-${ym}-${rand}`;
+}
+
+export function randomTokenSuffix(bytes = 4): string {
+  return crypto.randomBytes(bytes).toString('hex').toUpperCase();
+}
+
+export function generateTempPassword(): string {
+  return `Yq!${crypto.randomBytes(6).toString('base64url')}`;
 }

@@ -267,8 +267,8 @@ export async function canUserActOnStep(
       [bizHotelId]
     );
     if (!hotel) return false;
-    if (hotel.manager_user_id && Number(hotel.manager_user_id) === Number(user.id)) {
-      return true;
+    if (hotel.manager_user_id) {
+      return Number(hotel.manager_user_id) === Number(user.id);
     }
     return Boolean(user.region_id && Number(hotel.region_id) === Number(user.region_id));
   }
@@ -311,19 +311,30 @@ export async function getAvailableAdvanceBalance(
   advanceId: number,
   excludeReimbursementId?: number
 ): Promise<{
-  advance: { id: number; advance_no: string; hotel_id: number; amount: number; offset_amount: number; status: string } | null;
+  advance: {
+    id: number;
+    advance_no: string;
+    applicant_id: number;
+    hotel_id: number;
+    amount: number;
+    offset_amount: number;
+    status: string;
+  } | null;
   availableBalance: number;
 }> {
   const advance = await db.queryOne<{
     id: number;
     advance_no: string;
+    applicant_id: number;
     hotel_id: number;
     amount: number;
     offset_amount: number;
     status: string;
-  }>('SELECT id, advance_no, hotel_id, amount, offset_amount, status FROM cash_advances WHERE id = ?', [
-    advanceId,
-  ]);
+  }>(
+    `SELECT id, advance_no, applicant_id, hotel_id, amount, offset_amount, status
+     FROM cash_advances WHERE id = ?${db.forUpdateSuffix()}`,
+    [advanceId]
+  );
   if (!advance) {
     return { advance: null, availableBalance: 0 };
   }

@@ -6,9 +6,10 @@ import {
   asyncHandler,
   authenticate,
   canAccessHotel,
+  isOwnHotel,
   requireRoles,
 } from '../middleware/auth';
-import { addDays, getMondayOfCurrentWeek, nowIso } from '../utils/numbers';
+import { addDays, getMondayOfCurrentWeek, isoDateSchema, nowIso } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -17,8 +18,14 @@ router.get(
   '/',
   asyncHandler(async (req, res) => {
     const db = getDb();
-    const hotelId = Number(req.query.hotelId || req.user!.hotel_id || 2);
-    if (!(await canAccessHotel(req.user!, hotelId))) {
+    let hotelId = req.query.hotelId ? Number(req.query.hotelId) : req.user!.hotel_id;
+    if (!hotelId) {
+      const firstHotel = await db.queryOne<{ id: number }>(
+        'SELECT id FROM hotels ORDER BY is_hq ASC, id ASC LIMIT 1'
+      );
+      hotelId = firstHotel?.id ?? 0;
+    }
+    if (!hotelId || (!(await canAccessHotel(req.user!, hotelId)) && !isOwnHotel(req.user!, hotelId))) {
       throw new AppError(403, '无权限查看其他门店排班表');
     }
 
@@ -77,7 +84,7 @@ const assignSchema = z.object({
     .array(
       z.object({
         employee_id: z.number().int().positive(),
-        shift_date: z.string().min(8),
+        shift_date: isoDateSchema,
         shift_type: z.enum(['MORNING', 'AFTERNOON', 'EVENING', 'NIGHT', 'OFF']),
         assigned_hotel_id: z.number().int().positive().optional(),
         notes: z.string().optional().nullable(),
@@ -92,6 +99,7 @@ router.put(
   asyncHandler(async (req, res) => {
     const body = assignSchema.parse(req.body);
     const db = getDb();
+    const user = req.user!;
     const ts = nowIso();
 
     await db.transaction(async (tx) => {
@@ -101,12 +109,30 @@ router.put(
           [item.employee_id]
         );
         if (!emp) throw new AppError(404, `员工 ${item.employee_id} 不存在`);
-        if (!(await canAccessHotel(req.user!, emp.hotel_id))) {
+        if (user.role === 'STORE_MANAGER' && user.employee_id && Number(emp.id) === Number(user.employee_id)) {
+          throw new AppError(403, '门店店长禁止为本人排班或加夜班');
+        }
+        if (!(await canAccessHotel(user, emp.hotel_id))) {
           throw new AppError(403, '无权限调整其他门店员工排班');
         }
 
         const assignedHotelId = item.assigned_hotel_id ?? emp.hotel_id;
         const isCrossStore = assignedHotelId !== emp.hotel_id ? 1 : 0;
+        if (isCrossStore) {
+          const targetHotel = await tx.queryOne<{ id: number; region_id: number; status: string }>(
+            'SELECT id, region_id, status FROM hotels WHERE id = ?',
+            [assignedHotelId]
+          );
+          if (!targetHotel || targetHotel.status !== 'ACTIVE') {
+            throw new AppError(400, '跨店支援的目标门店不存在或未启用');
+          }
+          if (user.role === 'REGIONAL_MANAGER' && !(await canAccessHotel(user, assignedHotelId))) {
+            throw new AppError(403, '区域经理仅可调派至本大区内的门店');
+          }
+          if (user.role === 'STORE_MANAGER' && user.region_id && Number(targetHotel.region_id) !== Number(user.region_id)) {
+            throw new AppError(403, '门店店长仅可向同大区门店发起跨店支援排班');
+          }
+        }
 
         const existing = await tx.queryOne<{ id: number }>(
           'SELECT id FROM shift_schedules WHERE employee_id = ? AND shift_date = ?',

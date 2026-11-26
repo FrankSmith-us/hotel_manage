@@ -50,6 +50,7 @@ async function loginAs(username: string): Promise<string> {
 
 describe('YueQi Hotel Ops API Integration Suite', () => {
   before(async () => {
+    process.env.DEMO_ROLE_SWITCH = 'true';
     const db = new SqliteAdapter(':memory:');
     setDb(db);
     await initSchema(db);
@@ -332,9 +333,13 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(hireRes.status, 201);
     assert.equal(hireRes.data.username, 'new_hire_test');
 
-    // Newly hired user can log in immediately
-    const newHireToken = await loginAs('new_hire_test');
-    assert.ok(newHireToken);
+    // Newly hired user can log in immediately with returned initialPassword
+    assert.ok(hireRes.data.initialPassword && hireRes.data.initialPassword !== 'Hotel@2026');
+    const loginNewHire = await req('POST', '/api/auth/login', {
+      body: { username: 'new_hire_test', password: hireRes.data.initialPassword },
+    });
+    assert.equal(loginNewHire.status, 200);
+    assert.ok(loginNewHire.data.token);
   });
 
   it('Skips Regional Manager step across workflows when Regional Manager and General Manager are the same person', async () => {
@@ -783,5 +788,220 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const bx12StaffView = staffBjDash.data.myApplications.find((i: any) => i.code === 'BX-202611-012');
     assert.ok(bx12StaffView);
     assert.equal(bx12StaffView.status, 'APPROVED');
+  });
+
+  it('Audit P0/P1 security controls: demo switch guard, ownership, data isolation, uploads, and state-machine integrity', async () => {
+    const staffToken = await loginAs('staff_sh');
+    const mgrShToken = await loginAs('mgr_sh');
+    const regionToken = await loginAs('region_east');
+    const hrToken = await loginAs('hr');
+    const adminToken = await loginAs('admin');
+    const ym = currentYearMonth();
+
+    // P0-01: When DEMO_ROLE_SWITCH is disabled, /demo-accounts returns enabled:false and /demo-switch returns 403
+    const prevDemoSwitch = process.env.DEMO_ROLE_SWITCH;
+    process.env.DEMO_ROLE_SWITCH = 'false';
+    try {
+      const demoAcc = await req('GET', '/api/auth/demo-accounts');
+      assert.equal(demoAcc.status, 200);
+      assert.equal(demoAcc.data.enabled, false);
+      const demoSw = await req('POST', '/api/auth/demo-switch', { body: { username: 'gm' } });
+      assert.equal(demoSw.status, 403);
+    } finally {
+      process.env.DEMO_ROLE_SWITCH = prevDemoSwitch;
+    }
+
+    // P0-02: STAFF cannot view or offset another user's cash advance (ADV-202611-001 belongs to mgr_sh)
+    const availForStaff = await req('GET', '/api/advances?tab=available&hotelId=2', { token: staffToken });
+    assert.equal(availForStaff.status, 200);
+    assert.ok(!availForStaff.data.advances.some((a: any) => a.advance_no === 'ADV-202611-001'));
+
+    const allAdvs = await req('GET', '/api/advances?tab=all', { token: mgrShToken });
+    const mgrAdv = allAdvs.data.advances.find((a: any) => a.advance_no === 'ADV-202611-001');
+    assert.ok(mgrAdv);
+    const crossOffset = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '越权冲销他人借款测试',
+        hotel_id: 2,
+        expense_month: ym,
+        cash_advance_id: mgrAdv.id,
+        offset_amount: 100,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 200 }],
+      },
+    });
+    assert.equal(crossOffset.status, 403);
+
+    // P0-03: Intermediate approver cannot tamper with payee_account on returned claim; changing amount at step 2 resets workflow to step 1
+    const cRes = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: 'P0-03防篡改测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1500 }],
+      },
+    });
+    assert.equal(cRes.status, 201);
+    const cid = cRes.data.claim.id;
+    assert.equal((await req('POST', `/api/reimbursements/${cid}/action`, { token: mgrShToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/reimbursements/${cid}/action`, { token: regionToken, body: { action: 'APPROVE' } })).status, 200);
+    const gmToken = await loginAs('gm');
+    assert.equal(
+      (
+        await req('POST', `/api/reimbursements/${cid}/action`, {
+          token: gmToken,
+          body: { action: 'RETURN', comment: '退回区域复核', return_to_step: 2 },
+        })
+      ).status,
+      200
+    );
+
+    const tamperPayee = await req('PUT', `/api/reimbursements/${cid}`, {
+      token: regionToken,
+      body: {
+        title: 'P0-03防篡改测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '王海峰',
+        payee_bank: '招商银行上海分行',
+        payee_account: '6225880100001004',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1500 }],
+      },
+    });
+    assert.equal(tamperPayee.status, 403);
+
+    const amtChangedResubmit = await req('PUT', `/api/reimbursements/${cid}`, {
+      token: regionToken,
+      body: {
+        title: 'P0-03改金额重审测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'LINEN_SUPPLIES', expense_date: todayStr(), description: '布草', amount: 1900 }],
+      },
+    });
+    assert.equal(amtChangedResubmit.status, 200);
+    assert.equal(amtChangedResubmit.data.claim.current_step, 1);
+
+    // P0-04 & P0-05: STORE_MANAGER cannot modify salary/bank_account; HR cannot modify own salary; STAFF only sees self
+    const mgrSalaryEdit = await req('PUT', '/api/employees/7', {
+      token: mgrShToken,
+      body: { base_salary: 99999 },
+    });
+    assert.equal(mgrSalaryEdit.status, 403);
+
+    const hrSelfEdit = await req('PUT', '/api/employees/2', {
+      token: hrToken,
+      body: { base_salary: 88888 },
+    });
+    assert.equal(hrSelfEdit.status, 403);
+
+    const staffEmpList = await req('GET', '/api/employees', { token: staffToken });
+    assert.equal(staffEmpList.status, 200);
+    assert.equal(staffEmpList.data.employees.length, 1);
+    assert.equal(Number(staffEmpList.data.employees[0].id), 7);
+
+    const staffViewColleague = await req('GET', '/api/employees/6', { token: staffToken });
+    assert.equal(staffViewColleague.status, 403);
+
+    const staffViewColleagueClaim = await req('GET', '/api/reimbursements/1', { token: staffToken });
+    assert.equal(staffViewColleagueClaim.status, 403);
+
+    // P1-04 & P1-05 & P1-06 & P1-07: Duplicate invoice blocked on submit; STAFF blocked from exports/candidates; /uploads requires auth
+    const dupClaim = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '重复发票拦截测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '测试', amount: 100, invoice_no: 'INV-2026-88012' }],
+      },
+    });
+    assert.equal(dupClaim.status, 400);
+
+    const staffExport = await req('GET', `/api/reports/expenses/export?yearMonth=${ym}`, { token: staffToken });
+    assert.equal(staffExport.status, 403);
+
+    const staffCands = await req('GET', '/api/recruitment/candidates', { token: staffToken });
+    assert.equal(staffCands.status, 403);
+
+    const unauthUpload = await req('GET', '/uploads/nonexistent.png');
+    assert.equal(unauthUpload.status, 401);
+
+    // P1-11 & P1-12: STORE_MANAGER cannot assign shift to self or cross-region; region manager must be REGIONAL_MANAGER/GENERAL_MANAGER
+    const monday = getMondayOfCurrentWeek();
+    const selfShift = await req('PUT', '/api/schedules/assign', {
+      token: mgrShToken,
+      body: { assignments: [{ employee_id: 6, shift_date: monday, shift_type: 'NIGHT' }] },
+    });
+    assert.equal(selfShift.status, 403);
+
+    const crossRegionShift = await req('PUT', '/api/schedules/assign', {
+      token: mgrShToken,
+      body: { assignments: [{ employee_id: 7, shift_date: monday, shift_type: 'MORNING', assigned_hotel_id: 4 }] },
+    });
+    assert.equal(crossRegionShift.status, 403);
+
+    const hrSetReg = await req('PUT', '/api/organization/regions/2/manager', {
+      token: hrToken,
+      body: { manager_user_id: 8 },
+    });
+    assert.equal(hrSetReg.status, 403);
+
+    const adminSetStaffReg = await req('PUT', '/api/organization/regions/2/manager', {
+      token: adminToken,
+      body: { manager_user_id: 8 },
+    });
+    assert.equal(adminSetStaffReg.status, 400);
+
+    // P1-08: Resignation deactivates user login
+    const onboardRes = await req('POST', '/api/employees', {
+      token: hrToken,
+      body: {
+        name: '离职测试员工',
+        phone: '13811112222',
+        hotel_id: 2,
+        department_id: 5,
+        position: '前厅专员',
+        base_salary: 6000,
+        hire_date: todayStr(),
+      },
+    });
+    assert.equal(onboardRes.status, 201);
+    const db = getDb();
+    await db.execute(
+      `INSERT INTO users (username, password_hash, display_name, role, employee_id, hotel_id, region_id, is_active, created_at)
+       VALUES ('resign_test_u', '$2a$08$invalidhash', '离职测试员工', 'STAFF', ?, 2, 2, 1, ?)`,
+      [onboardRes.data.employee.id, todayStr()]
+    );
+    const resignRes = await req('POST', `/api/employees/${onboardRes.data.employee.id}/lifecycle`, {
+      token: hrToken,
+      body: { event_type: 'RESIGN', reason: '个人原因离职' },
+    });
+    assert.equal(resignRes.status, 200);
+    const uAfterResign = await db.queryOne<{ is_active: number }>('SELECT is_active FROM users WHERE username = ?', ['resign_test_u']);
+    assert.equal(Number(uAfterResign?.is_active), 0);
   });
 });

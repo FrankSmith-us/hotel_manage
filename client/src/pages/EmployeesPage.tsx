@@ -63,7 +63,7 @@ export function EmployeesPage() {
   const [selected, setSelected] = useState<{ employee: EmployeeRow; events: LifecycleEvent[] } | null>(null);
   const [lifecycleOpen, setLifecycleOpen] = useState(false);
   const [lcType, setLcType] = useState<'CONFIRM' | 'TRANSFER' | 'PROMOTE' | 'RESIGN'>('TRANSFER');
-  const [lcHotelId, setLcHotelId] = useState<number>(2);
+  const [lcHotelId, setLcHotelId] = useState<number>(0);
   const [lcDeptId, setLcDeptId] = useState<number>(1);
   const [lcPos, setLcPos] = useState('');
   const [lcReason, setLcReason] = useState('');
@@ -72,7 +72,7 @@ export function EmployeesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [cName, setCName] = useState('');
   const [cPhone, setCPhone] = useState('');
-  const [cHotelId, setCHotelId] = useState<number>(user?.hotel_id || 2);
+  const [cHotelId, setCHotelId] = useState<number>(user?.hotel_id || 0);
   const [cDeptId, setCDeptId] = useState<number>(1);
   const [cPos, setCPos] = useState('前台接待员');
   const [cSalary, setCSalary] = useState(6500);

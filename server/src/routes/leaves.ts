@@ -13,7 +13,7 @@ import {
   resolveApprovalRoute,
 } from '../services/workflowEngine';
 import { UserRole } from '../types';
-import { generateCode, nowIso } from '../utils/numbers';
+import { generateCode, isoDateSchema, nowIso } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -90,11 +90,11 @@ router.get(
       hotel_name: string;
       applicant_user_id: number | null;
     }>(
-      `SELECT l.*, e.name AS emp_name, e.emp_no, e.position, h.name AS hotel_name, u.id AS applicant_user_id
+      `SELECT l.*, e.name AS emp_name, e.emp_no, e.position, h.name AS hotel_name,
+              (SELECT u.id FROM users u WHERE u.employee_id = e.id AND u.is_active = 1 ORDER BY u.id ASC LIMIT 1) AS applicant_user_id
        FROM leave_requests l
        JOIN employees e ON e.id = l.employee_id
        JOIN hotels h ON h.id = l.hotel_id
-       LEFT JOIN users u ON u.employee_id = e.id
        WHERE ${conditions.join(' AND ')}
        ORDER BY CASE WHEN l.urgency = 'URGENT' THEN 0 ELSE 1 END ASC, l.id DESC`,
       params
@@ -147,10 +147,10 @@ router.get(
 
 const createLeaveSchema = z.object({
   leave_type: z.enum(['ANNUAL', 'SICK', 'PERSONAL', 'COMP_OFF', 'OVERTIME']),
-  start_date: z.string().min(8),
-  end_date: z.string().min(8),
-  days: z.number().min(0).default(0),
-  hours: z.number().min(0).default(0),
+  start_date: isoDateSchema,
+  end_date: isoDateSchema,
+  days: z.number().min(0).max(365).default(0),
+  hours: z.number().min(0).max(2000).default(0),
   reason: z.string().min(2, '请填写事由'),
   urgency: z.enum(['NORMAL', 'URGENT']).default('NORMAL'),
 });
@@ -164,13 +164,33 @@ router.post(
       throw new AppError(400, '当前账号未绑定员工档案，无法发起休假/加班申请');
     }
 
+    const startMs = Date.parse(`${body.start_date}T00:00:00Z`);
+    const endMs = Date.parse(`${body.end_date}T00:00:00Z`);
+    if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs < startMs) {
+      throw new AppError(400, '结束日期不能早于开始日期');
+    }
+    const calendarDays = Math.round((endMs - startMs) / 86_400_000) + 1;
+    let effectiveDays = body.days;
+    if (body.leave_type === 'OVERTIME') {
+      effectiveDays = 0;
+      const maxOvertimeHours = Math.min(36, calendarDays * 24);
+      if (body.hours <= 0 || body.hours > maxOvertimeHours) {
+        throw new AppError(400, `加班时长须在 0.5 ~ ${maxOvertimeHours} 小时之间`);
+      }
+    } else {
+      const minDays = Math.max(0.5, calendarDays - 0.5);
+      if (body.days < minDays || body.days > calendarDays) {
+        throw new AppError(400, `请假天数与日期区间不匹配（${calendarDays} 天区间应填 ${minDays} ~ ${calendarDays} 天）`);
+      }
+    }
+
     const db = getDb();
     const ts = nowIso();
     const requestNo = generateCode('LV');
     const resolved = await resolveApprovalRoute(
       db,
       user.hotel_id,
-      buildLeaveRoute({ applicantRole: user.role, days: body.days })
+      buildLeaveRoute({ applicantRole: user.role, days: effectiveDays })
     );
     const route = resolved.steps;
 
@@ -187,7 +207,7 @@ router.post(
           body.leave_type,
           body.start_date,
           body.end_date,
-          body.days,
+          effectiveDays,
           body.hours,
           body.reason,
           body.urgency,
@@ -233,71 +253,93 @@ router.post(
     const user = req.user!;
     const db = getDb();
 
-    const leave = await db.queryOne<{
-      id: number;
-      employee_id: number;
-      hotel_id: number;
-      status: string;
-      current_step: number;
-    }>('SELECT id, employee_id, hotel_id, status, current_step FROM leave_requests WHERE id = ?', [id]);
-    if (!leave) throw new AppError(404, '请假/加班申请不存在');
-    if (leave.status !== 'PENDING_APPROVAL') {
-      throw new AppError(400, '当前申请状态不可操作');
-    }
-
     const ts = nowIso();
     if (action === 'CANCEL') {
-      if (leave.employee_id !== user.employee_id) {
-        throw new AppError(403, '仅申请人本人可撤销');
-      }
-      await db.execute(
-        `UPDATE leave_requests SET status = 'CANCELLED', updated_at = ? WHERE id = ?`,
-        [ts, id]
-      );
+      await db.transaction(async (tx) => {
+        const leave = await tx.queryOne<{ id: number; employee_id: number; status: string }>(
+          `SELECT id, employee_id, status FROM leave_requests WHERE id = ?${tx.forUpdateSuffix()}`,
+          [id]
+        );
+        if (!leave) throw new AppError(404, '请假/加班申请不存在');
+        if (leave.employee_id !== user.employee_id) {
+          throw new AppError(403, '仅申请人本人可撤销');
+        }
+        if (leave.status !== 'PENDING_APPROVAL') {
+          throw new AppError(400, '当前申请状态不可撤销');
+        }
+        const upd = await tx.execute(
+          `UPDATE leave_requests SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+          [ts, id]
+        );
+        if (upd.affectedRows !== 1) throw new AppError(409, '申请状态已变更，请刷新后重试');
+        await logApprovalAction(tx, {
+          bizType: 'LEAVE',
+          bizId: id,
+          action: 'CANCEL',
+          actor: user,
+          comment: comment || '申请人主动撤销',
+        });
+      });
       res.json({ ok: true, status: 'CANCELLED' });
       return;
     }
 
-    const applicantUser = await db.queryOne<{ id: number }>(
-      'SELECT id FROM users WHERE employee_id = ?',
-      [leave.employee_id]
-    );
-    const step = await db.queryOne<{
-      id: number;
-      step_order: number;
-      approver_role: UserRole;
-    }>(
-      `SELECT id, step_order, approver_role FROM approval_steps
-       WHERE biz_type = 'LEAVE' AND biz_id = ? AND status = 'PENDING'
-       ORDER BY step_order ASC LIMIT 1`,
-      [id]
-    );
-    if (!step) throw new AppError(400, '未找到待审批节点');
-
-    const allowed = await canUserActOnStep(
-      db,
-      user,
-      step.approver_role,
-      leave.hotel_id,
-      applicantUser?.id ?? -1
-    );
-    if (!allowed) throw new AppError(403, '您无权审批当前节点');
-
     await db.transaction(async (tx) => {
+      const leave = await tx.queryOne<{
+        id: number;
+        employee_id: number;
+        hotel_id: number;
+        status: string;
+        current_step: number;
+      }>(`SELECT id, employee_id, hotel_id, status, current_step FROM leave_requests WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!leave) throw new AppError(404, '请假/加班申请不存在');
+      if (leave.status !== 'PENDING_APPROVAL') {
+        throw new AppError(400, '当前申请状态不可操作');
+      }
+
+      const applicantUser = await tx.queryOne<{ id: number }>(
+        'SELECT id FROM users WHERE employee_id = ? AND is_active = 1 ORDER BY id ASC LIMIT 1',
+        [leave.employee_id]
+      );
+      const step = await tx.queryOne<{
+        id: number;
+        step_order: number;
+        approver_role: UserRole;
+      }>(
+        `SELECT id, step_order, approver_role FROM approval_steps
+         WHERE biz_type = 'LEAVE' AND biz_id = ? AND status = 'PENDING'
+         ORDER BY step_order ASC LIMIT 1`,
+        [id]
+      );
+      if (!step) throw new AppError(400, '未找到待审批节点');
+
+      const allowed = await canUserActOnStep(
+        tx,
+        user,
+        step.approver_role,
+        leave.hotel_id,
+        applicantUser?.id ?? -1
+      );
+      if (!allowed) throw new AppError(403, '您无权审批当前节点');
+
       if (action === 'REJECT') {
-        await tx.execute(
-          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [user.id, ts, comment || '驳回', step.id]
         );
-        await tx.execute(
-          `UPDATE leave_requests SET status = 'REJECTED', approver_id = ?, approval_remark = ?, updated_at = ? WHERE id = ?`,
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
+        const lvUpd = await tx.execute(
+          `UPDATE leave_requests SET status = 'REJECTED', approver_id = ?, approval_remark = ?, updated_at = ?
+           WHERE id = ? AND status = 'PENDING_APPROVAL'`,
           [user.id, comment || '驳回', ts, id]
         );
+        if (lvUpd.affectedRows !== 1) throw new AppError(409, '申请状态已变更，请刷新后重试');
       } else {
-        await tx.execute(
-          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [user.id, ts, comment || '同意', step.id]
         );
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
         const nextStep = await tx.queryOne<{ id: number; step_order: number }>(
           `SELECT id, step_order FROM approval_steps
            WHERE biz_type = 'LEAVE' AND biz_id = ? AND step_order > ?
@@ -307,14 +349,16 @@ router.post(
         if (nextStep) {
           await tx.execute(`UPDATE approval_steps SET status = 'PENDING' WHERE id = ?`, [nextStep.id]);
           await tx.execute(
-            `UPDATE leave_requests SET current_step = ?, updated_at = ? WHERE id = ?`,
+            `UPDATE leave_requests SET current_step = ?, updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
             [nextStep.step_order, ts, id]
           );
         } else {
-          await tx.execute(
-            `UPDATE leave_requests SET status = 'APPROVED', approver_id = ?, approval_remark = ?, approved_at = ?, updated_at = ? WHERE id = ?`,
+          const lvUpd = await tx.execute(
+            `UPDATE leave_requests SET status = 'APPROVED', approver_id = ?, approval_remark = ?, approved_at = ?, updated_at = ?
+             WHERE id = ? AND status = 'PENDING_APPROVAL'`,
             [user.id, comment || '同意', ts, ts, id]
           );
+          if (lvUpd.affectedRows !== 1) throw new AppError(409, '申请状态已变更，请刷新后重试');
         }
       }
       await logApprovalAction(tx, {

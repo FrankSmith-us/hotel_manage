@@ -2,9 +2,10 @@ import { closeDb, getDb } from '../db';
 import { initSchema } from '../db/init';
 import { seedDatabase } from '../db/seed';
 import { createApp } from './app';
-import { env } from './config/env';
+import { env, validateRuntimeSecurity } from './config/env';
 
 async function bootstrap() {
+  validateRuntimeSecurity();
   const db = getDb();
   if (db.dialect === 'sqlite') {
     await initSchema(db);
