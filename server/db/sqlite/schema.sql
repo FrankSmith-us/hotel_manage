@@ -806,3 +806,26 @@ CREATE TABLE IF NOT EXISTS reimbursement_allocations (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reimb_alloc_claim ON reimbursement_allocations(reimbursement_id);
+
+CREATE TABLE IF NOT EXISTS petty_cash_funds (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hotel_id INTEGER NOT NULL UNIQUE REFERENCES hotels(id),
+  quota_amount REAL NOT NULL DEFAULT 5000,
+  current_balance REAL NOT NULL DEFAULT 5000,
+  custodian_user_id INTEGER REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS petty_cash_ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fund_id INTEGER NOT NULL REFERENCES petty_cash_funds(id) ON DELETE CASCADE,
+  tx_type TEXT NOT NULL,
+  amount REAL NOT NULL,
+  balance_after REAL NOT NULL,
+  description TEXT NOT NULL,
+  operator_id INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_petty_ledger_fund ON petty_cash_ledger(fund_id);

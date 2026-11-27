@@ -873,4 +873,31 @@ CREATE TABLE IF NOT EXISTS reimbursement_allocations (
   CONSTRAINT fk_reimb_alloc_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS petty_cash_funds (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  hotel_id BIGINT NOT NULL UNIQUE,
+  quota_amount DECIMAL(12, 2) NOT NULL DEFAULT 5000.00,
+  current_balance DECIMAL(12, 2) NOT NULL DEFAULT 5000.00,
+  custodian_user_id BIGINT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  updated_at VARCHAR(32) NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  CONSTRAINT fk_petty_fund_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_petty_fund_custodian FOREIGN KEY (custodian_user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS petty_cash_ledger (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  fund_id BIGINT NOT NULL,
+  tx_type VARCHAR(24) NOT NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  balance_after DECIMAL(12, 2) NOT NULL,
+  description VARCHAR(255) NOT NULL,
+  operator_id BIGINT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  INDEX idx_petty_ledger_fund (fund_id),
+  CONSTRAINT fk_petty_ledger_fund FOREIGN KEY (fund_id) REFERENCES petty_cash_funds(id) ON DELETE CASCADE,
+  CONSTRAINT fk_petty_ledger_op FOREIGN KEY (operator_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

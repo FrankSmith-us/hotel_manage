@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 46 tables', () => {
+  it('MySQL and SQLite schemas define identical 48 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 46);
+    assert.equal(mysqlTables.length, 48);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2896,5 +2896,63 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(detail.data.allocations.length, 2);
     assert.equal(detail.data.allocations[0].amount, 600);
     assert.equal(detail.data.allocations[1].amount, 400);
+  });
+
+  it('T3-01b: store imprest petty cash fund and ledger', async () => {
+    const finToken = await loginAs('finance');
+    const mgr2Token = await loginAs('mgr_sh');
+    const empToken = await loginAs('staff_sh');
+
+    // Employee cannot create fund -> 403
+    const forbid = await req('POST', '/api/petty-cash/funds', {
+      token: empToken,
+      body: { hotel_id: 2, quota_amount: 5000 },
+    });
+    assert.equal(forbid.status, 403);
+
+    // Finance initializes store 2 petty cash fund (default quota 5000)
+    const initRes = await req('POST', '/api/petty-cash/funds', {
+      token: finToken,
+      body: { hotel_id: 2 },
+    });
+    assert.equal(initRes.status, 201);
+    assert.equal(initRes.data.fund.quota_amount, 5000);
+    assert.equal(initRes.data.fund.current_balance, 5000);
+    const fundId = initRes.data.fund.id;
+
+    // Store manager spends 1200 -> 3800
+    const expOk = await req('POST', `/api/petty-cash/funds/${fundId}/tx`, {
+      token: mgr2Token,
+      body: { tx_type: 'EXPENSE', amount: 1200, description: '前台应急物料采购' },
+    });
+    assert.equal(expOk.status, 201);
+    assert.equal(expOk.data.fund.current_balance, 3800);
+
+    // Over-spend -> 400
+    const expOver = await req('POST', `/api/petty-cash/funds/${fundId}/tx`, {
+      token: mgr2Token,
+      body: { tx_type: 'EXPENSE', amount: 4000, description: '超额支取' },
+    });
+    assert.equal(expOver.status, 400);
+
+    // Over-replenish -> 400
+    const repOver = await req('POST', `/api/petty-cash/funds/${fundId}/tx`, {
+      token: finToken,
+      body: { tx_type: 'REPLENISH', amount: 2000, description: '超额补足' },
+    });
+    assert.equal(repOver.status, 400);
+
+    // Exact replenish 1200 -> 5000
+    const repOk = await req('POST', `/api/petty-cash/funds/${fundId}/tx`, {
+      token: finToken,
+      body: { tx_type: 'REPLENISH', amount: 1200, description: '月底补足备用金' },
+    });
+    assert.equal(repOk.status, 201);
+    assert.equal(repOk.data.fund.current_balance, 5000);
+
+    // Ledger shows 3 entries
+    const ledger = await req('GET', `/api/petty-cash/funds/${fundId}/ledger`, { token: mgr2Token });
+    assert.equal(ledger.status, 200);
+    assert.equal(ledger.data.entries.length, 3);
   });
 });

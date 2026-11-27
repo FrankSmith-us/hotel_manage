@@ -19,6 +19,7 @@ import leavesRouter from './routes/leaves';
 import masterDataRouter from './routes/masterData';
 import notificationsRouter from './routes/notifications';
 import organizationRouter from './routes/organization';
+import pettyCashRouter from './routes/pettyCash';
 import payrollRouter from './routes/payroll';
 import recruitmentRouter from './routes/recruitment';
 import reimbursementsRouter from './routes/reimbursements';
@@ -105,6 +106,7 @@ export function createApp() {
   app.use('/api/budgets', budgetsRouter);
   app.use('/api/advances', advancesRouter);
   app.use('/api/reimbursements', reimbursementsRouter);
+  app.use('/api/petty-cash', pettyCashRouter);
   app.use('/api/reports', reportsRouter);
 
   // Serve built frontend in production if present
