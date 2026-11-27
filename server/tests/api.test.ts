@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 33 tables', () => {
+  it('MySQL and SQLite schemas define identical 34 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 33);
+    assert.equal(mysqlTables.length, 34);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2175,5 +2175,54 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     // Cumulative tax = 39500*0.1 - 2520 = 1430; Feb tax = 1430 - 67.5 = 1362.5
     assert.equal(febUpd.data.record.ytd_taxable_income, 39500);
     assert.equal(febUpd.data.record.income_tax, 1362.5);
+  });
+
+  it('T1-09c: payroll batch approval, segregation of duties, bank CSV export, and employee payslips', async () => {
+    const hrToken = await loginAs('hr');
+    const finToken = await loginAs('finance');
+    const gmToken = await loginAs('gm');
+    const staffToken = await loginAs('staff_sh');
+
+    const ym = '2026-07';
+    assert.equal((await req('POST', '/api/payroll/calculate', { token: hrToken, body: { yearMonth: ym, hotelId: 2 } })).status, 200);
+
+    // 1. Submit batch by HR -> routes to FINANCE -> GENERAL_MANAGER
+    const subRes = await req('POST', '/api/payroll/batches/submit', {
+      token: hrToken,
+      body: { yearMonth: ym, hotelId: 2 },
+    });
+    assert.equal(subRes.status, 201);
+    const batchId = subRes.data.batch.id;
+    assert.equal(subRes.data.batch.status, 'PENDING_APPROVAL');
+
+    // 2. Finance approves -> GM approves -> batch APPROVED & records CONFIRMED
+    assert.equal((await req('POST', `/api/payroll/batches/${batchId}/action`, { token: finToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/payroll/batches/${batchId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status, 200);
+
+    // 3. Segregation: HR (or if Finance had submitted) — test that pay requires FINANCE/HQ_ADMIN (staff 403)
+    assert.equal(
+      (await req('POST', `/api/payroll/batches/${batchId}/pay`, { token: staffToken, body: { payment_ref: 'PAY-BAD' } })).status,
+      403
+    );
+
+    // Finance pays batch
+    const payRes = await req('POST', `/api/payroll/batches/${batchId}/pay`, {
+      token: finToken,
+      body: { payment_ref: 'BANK-BATCH-202607' },
+    });
+    assert.equal(payRes.status, 200);
+
+    // 4. Bank CSV export
+    const csvRes = await fetch(`${baseUrl}/api/payroll/batches/${batchId}/bank-export`, {
+      headers: { Authorization: `Bearer ${finToken}` },
+    });
+    assert.equal(csvRes.status, 200);
+    const csvText = await csvRes.text();
+    assert.ok(csvText.includes('开户行') && csvText.includes('实发金额'));
+
+    // 5. Staff views own payslip
+    const myPayslips = await req('GET', '/api/payroll/my-payslips', { token: staffToken });
+    assert.equal(myPayslips.status, 200);
+    assert.ok(myPayslips.data.payslips.some((p: any) => p.year_month === ym && p.status === 'PAID'));
   });
 });

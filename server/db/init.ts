@@ -88,6 +88,8 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['ytd_taxable_income', 'REAL NOT NULL DEFAULT 0.00'],
       ['ytd_tax_paid', 'REAL NOT NULL DEFAULT 0.00'],
       ['income_tax', 'REAL NOT NULL DEFAULT 0.00'],
+      ['batch_id', 'INTEGER'],
+      ['payslip_viewed_at', 'TEXT'],
     ] as const) {
       if (!prCols.has(colName)) {
         await db.execute(`ALTER TABLE payroll_records ADD COLUMN ${colName} ${colDef}`);
@@ -218,6 +220,8 @@ export async function initSchema(db: DbAdapter): Promise<void> {
       ['payroll_records', 'ytd_taxable_income', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
       ['payroll_records', 'ytd_tax_paid', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
       ['payroll_records', 'income_tax', 'DECIMAL(12,2) NOT NULL DEFAULT 0.00'],
+      ['payroll_records', 'batch_id', 'BIGINT NULL'],
+      ['payroll_records', 'payslip_viewed_at', 'VARCHAR(32) NULL'],
     ] as const) {
       const c = await db.queryOne<{ cnt: number }>(
         `SELECT COUNT(*) AS cnt

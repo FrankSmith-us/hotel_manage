@@ -186,6 +186,8 @@ CREATE TABLE IF NOT EXISTS payroll_records (
   gross_pay DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   net_pay DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   is_resigned_settlement TINYINT(1) NOT NULL DEFAULT 0,
+  batch_id BIGINT NULL,
+  payslip_viewed_at VARCHAR(32) NULL,
   status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
   confirmed_by BIGINT NULL,
   confirmed_at VARCHAR(32) NULL,
@@ -644,6 +646,26 @@ CREATE TABLE IF NOT EXISTS city_social_security_rules (
   total_personal_rate DECIMAL(6, 4) NOT NULL DEFAULT 0.1750,
   updated_by BIGINT NULL,
   updated_at VARCHAR(32) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS payroll_batches (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  batch_no VARCHAR(32) NOT NULL UNIQUE,
+  `year_month` VARCHAR(10) NOT NULL,
+  hotel_id BIGINT NULL,
+  total_employees INT NOT NULL DEFAULT 0,
+  total_gross DECIMAL(14, 2) NOT NULL DEFAULT 0.00,
+  total_net DECIMAL(14, 2) NOT NULL DEFAULT 0.00,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  submitted_by BIGINT NOT NULL,
+  paid_by BIGINT NULL,
+  payment_ref VARCHAR(64) NULL,
+  paid_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_payroll_batches_ym (`year_month`, status),
+  CONSTRAINT fk_pay_batch_sub FOREIGN KEY (submitted_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 SET FOREIGN_KEY_CHECKS = 1;

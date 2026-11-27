@@ -20,6 +20,21 @@ interface CitySsRule {
   total_personal_rate: number;
 }
 
+interface PayrollBatchRow {
+  id: number;
+  batch_no: string;
+  year_month: string;
+  hotel_id: number | null;
+  total_employees: number;
+  total_gross: number;
+  total_net: number;
+  status: string;
+  submitted_by_name?: string;
+  payment_ref?: string | null;
+  status_detail?: string;
+  canApprove?: boolean;
+}
+
 interface PayrollRow {
   id: number;
   year_month: string;
@@ -49,8 +64,11 @@ export function PayrollPage() {
   const canCalculate = ['HQ_ADMIN', 'HR_MANAGER'].includes(user?.role || '');
   const canEditOrConfirm = ['HQ_ADMIN', 'HR_MANAGER', 'FINANCE'].includes(user?.role || '');
 
+  const [viewMode, setViewMode] = useState<'ledger' | 'payslips'>('ledger');
   const [yearMonth, setYearMonth] = useState(currentYearMonth());
   const [records, setRecords] = useState<PayrollRow[]>([]);
+  const [batches, setBatches] = useState<PayrollBatchRow[]>([]);
+  const [myPayslips, setMyPayslips] = useState<PayrollRow[]>([]);
   const [editing, setEditing] = useState<PayrollRow | null>(null);
   const [bonusInput, setBonusInput] = useState(0);
   const [notesInput, setNotesInput] = useState('');
@@ -69,9 +87,55 @@ export function PayrollPage() {
   });
 
   const load = useCallback(async () => {
-    const d = await apiFetch<{ records: PayrollRow[] }>(`/api/payroll?yearMonth=${yearMonth}`);
+    const [d, bRes, pRes] = await Promise.all([
+      apiFetch<{ records: PayrollRow[] }>(`/api/payroll?yearMonth=${yearMonth}`),
+      apiFetch<{ batches: PayrollBatchRow[] }>(`/api/payroll/batches?yearMonth=${yearMonth}`).catch(() => ({ batches: [] })),
+      apiFetch<{ payslips: PayrollRow[] }>('/api/payroll/my-payslips').catch(() => ({ payslips: [] })),
+    ]);
     setRecords(d.records);
+    setBatches(bRes.batches);
+    setMyPayslips(pRes.payslips);
   }, [yearMonth]);
+
+  const handleSubmitBatch = async () => {
+    try {
+      await apiFetch('/api/payroll/batches/submit', {
+        method: 'POST',
+        body: JSON.stringify({ yearMonth }),
+      });
+      showToast(`${yearMonth} 薪资批次已提交财务/总经理审批`);
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '提交批次失败', 'error');
+    }
+  };
+
+  const handleBatchAction = async (batchId: number, action: 'APPROVE' | 'REJECT') => {
+    try {
+      await apiFetch(`/api/payroll/batches/${batchId}/action`, {
+        method: 'POST',
+        body: JSON.stringify({ action, comment: action === 'APPROVE' ? '同意' : '退回重核' }),
+      });
+      showToast(action === 'APPROVE' ? '薪资批次已审批' : '薪资批次已驳回');
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '审批失败', 'error');
+    }
+  };
+
+  const handleBatchPay = async (batchId: number) => {
+    const ref = `BANK-PAY-${Date.now().toString().slice(-6)}`;
+    try {
+      await apiFetch(`/api/payroll/batches/${batchId}/pay`, {
+        method: 'POST',
+        body: JSON.stringify({ payment_ref: ref }),
+      });
+      showToast(`薪资批次已发放（流水号 ${ref}）`);
+      await load();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '发放失败', 'error');
+    }
+  };
 
   const openSsRules = async () => {
     try {
@@ -164,6 +228,24 @@ export function PayrollPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          <div className="flex items-center gap-1 bg-stone-200/70 p-1 rounded-xl">
+            <button
+              onClick={() => setViewMode('ledger')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                viewMode === 'ledger' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-600'
+              }`}
+            >
+              月度薪资台账
+            </button>
+            <button
+              onClick={() => setViewMode('payslips')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${
+                viewMode === 'payslips' ? 'bg-white text-stone-900 shadow-sm' : 'text-stone-600'
+              }`}
+            >
+              我的工资条 ({myPayslips.length})
+            </button>
+          </div>
           <input
             type="month"
             value={yearMonth}
@@ -176,6 +258,14 @@ export function PayrollPage() {
               className="px-4 py-2 rounded-xl bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold flex items-center gap-1.5"
             >
               <Calculator className="w-4 h-4" /> 一键核算本月薪资
+            </button>
+          )}
+          {canCalculate && records.some((r) => r.status === 'DRAFT') && (
+            <button
+              onClick={handleSubmitBatch}
+              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold"
+            >
+              提交批次审批
             </button>
           )}
           {canEditOrConfirm && records.some((r) => r.status === 'DRAFT') && (
@@ -214,6 +304,111 @@ export function PayrollPage() {
         </span>
       </div>
 
+      {viewMode === 'ledger' && batches.length > 0 && (
+        <div className="bg-white rounded-2xl border border-stone-200/90 p-4 space-y-2.5">
+          <div className="text-xs font-semibold text-stone-700">本月薪资审批与发放批次</div>
+          <div className="space-y-2">
+            {batches.map((b) => (
+              <div
+                key={b.id}
+                className="flex flex-wrap items-center justify-between gap-2 p-2.5 rounded-xl bg-stone-50 border border-stone-200/70 text-xs"
+              >
+                <div className="flex items-center gap-2.5">
+                  <span className="font-mono font-semibold text-stone-800">{b.batch_no}</span>
+                  <StatusBadge status={b.status} />
+                  <span className="text-stone-600">
+                    {b.total_employees} 人 · 实发合计 <strong>{formatMoney(b.total_net)}</strong>
+                  </span>
+                  <span className="text-stone-400">{b.status_detail || ''}</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {b.canApprove && (
+                    <>
+                      <button
+                        onClick={() => handleBatchAction(b.id, 'APPROVE')}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white font-medium"
+                      >
+                        通过
+                      </button>
+                      <button
+                        onClick={() => handleBatchAction(b.id, 'REJECT')}
+                        className="px-2.5 py-1 rounded-lg border border-rose-200 text-rose-700 font-medium"
+                      >
+                        驳回
+                      </button>
+                    </>
+                  )}
+                  {b.status === 'APPROVED' && ['HQ_ADMIN', 'FINANCE'].includes(user?.role || '') && (
+                    <button
+                      onClick={() => handleBatchPay(b.id)}
+                      className="px-2.5 py-1 rounded-lg bg-brand-600 text-white font-medium"
+                    >
+                      确认发放
+                    </button>
+                  )}
+                  {['HQ_ADMIN', 'HR_MANAGER', 'FINANCE'].includes(user?.role || '') && (
+                    <button
+                      onClick={() => downloadCsv(`/api/payroll/batches/${b.id}/bank-export`, `bank-payout-${b.batch_no}.csv`)}
+                      className="px-2.5 py-1 rounded-lg border border-stone-200 bg-white text-stone-700"
+                    >
+                      导出银行代发单
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {viewMode === 'payslips' ? (
+        <div className="bg-white rounded-2xl border border-stone-200/90 shadow-sm overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead className="bg-stone-50 border-b border-stone-200 text-stone-500">
+              <tr>
+                <th className="px-4 py-3">账期</th>
+                <th className="px-3 py-3">门店 / 岗位</th>
+                <th className="px-3 py-3 text-right">底薪</th>
+                <th className="px-3 py-3 text-right">津贴加班</th>
+                <th className="px-3 py-3 text-right">请假扣款</th>
+                <th className="px-3 py-3 text-right">社保公积金</th>
+                <th className="px-3 py-3 text-right">个税</th>
+                <th className="px-3 py-3 text-right">实发工资</th>
+                <th className="px-3 py-3">状态</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-100 tabular-nums">
+              {myPayslips.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="py-12 text-center text-stone-400">
+                    暂无已确认或已发放的个人工资条
+                  </td>
+                </tr>
+              ) : (
+                myPayslips.map((p) => (
+                  <tr key={p.id}>
+                    <td className="px-4 py-3 font-semibold">{p.year_month}</td>
+                    <td className="px-3 py-3">
+                      {p.hotel_name} · {p.position}
+                    </td>
+                    <td className="px-3 py-3 text-right">{formatMoney(p.base_salary)}</td>
+                    <td className="px-3 py-3 text-right text-emerald-700">
+                      +{formatMoney(Number(p.night_allowance) + Number(p.overtime_pay) + Number(p.performance_bonus))}
+                    </td>
+                    <td className="px-3 py-3 text-right text-rose-600">-{formatMoney(p.leave_deduction)}</td>
+                    <td className="px-3 py-3 text-right text-stone-500">-{formatMoney(p.social_security)}</td>
+                    <td className="px-3 py-3 text-right text-stone-500">-{formatMoney(p.income_tax || 0)}</td>
+                    <td className="px-3 py-3 text-right font-bold text-stone-900">{formatMoney(p.net_pay)}</td>
+                    <td className="px-3 py-3">
+                      <StatusBadge status={p.status} />
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : (
       <div className="bg-white rounded-2xl border border-stone-200/90 shadow-sm overflow-x-auto">
         <table className="w-full text-xs text-left min-w-[980px]">
           <thead className="bg-stone-50 border-b border-stone-200 text-stone-500">
@@ -288,6 +483,7 @@ export function PayrollPage() {
           </tbody>
         </table>
       </div>
+      )}
 
       <Modal
         open={Boolean(editing)}

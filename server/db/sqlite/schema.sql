@@ -172,6 +172,8 @@ CREATE TABLE IF NOT EXISTS payroll_records (
   gross_pay REAL NOT NULL DEFAULT 0.00,
   net_pay REAL NOT NULL DEFAULT 0.00,
   is_resigned_settlement INTEGER NOT NULL DEFAULT 0,
+  batch_id INTEGER,
+  payslip_viewed_at TEXT,
   status TEXT NOT NULL DEFAULT 'DRAFT',
   confirmed_by INTEGER,
   confirmed_at TEXT,
@@ -599,3 +601,22 @@ CREATE TABLE IF NOT EXISTS city_social_security_rules (
   updated_by INTEGER,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS payroll_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_no TEXT NOT NULL UNIQUE,
+  `year_month` TEXT NOT NULL,
+  hotel_id INTEGER,
+  total_employees INTEGER NOT NULL DEFAULT 0,
+  total_gross REAL NOT NULL DEFAULT 0.00,
+  total_net REAL NOT NULL DEFAULT 0.00,
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  submitted_by INTEGER NOT NULL REFERENCES users(id),
+  paid_by INTEGER,
+  payment_ref TEXT,
+  paid_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payroll_batches_ym ON payroll_batches(`year_month`, status);
