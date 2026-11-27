@@ -272,4 +272,70 @@ router.get(
   })
 );
 
+router.get(
+  '/audit-logs',
+  requireRoles('HQ_ADMIN', 'GENERAL_MANAGER', 'FINANCE', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const conditions = ['1=1'];
+    const params: unknown[] = [];
+
+    if (req.query.biz_type) {
+      conditions.push('biz_type = ?');
+      params.push(String(req.query.biz_type));
+    }
+    if (req.query.actor_id) {
+      conditions.push('actor_id = ?');
+      params.push(Number(req.query.actor_id));
+    }
+    if (req.query.action) {
+      conditions.push('action = ?');
+      params.push(String(req.query.action));
+    }
+    if (req.query.from) {
+      conditions.push('created_at >= ?');
+      params.push(String(req.query.from));
+    }
+    if (req.query.to) {
+      conditions.push('created_at <= ?');
+      params.push(String(req.query.to));
+    }
+
+    const rawLimit = Number(req.query.limit || 100);
+    const limit = Math.min(Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 100), 1000);
+
+    const logs = await db.query<{
+      id: number;
+      biz_type: string;
+      biz_id: number;
+      action: string;
+      actor_id: number;
+      actor_name: string;
+      actor_role: string;
+      comment: string | null;
+      created_at: string;
+    }>(
+      `SELECT id, biz_type, biz_id, action, actor_id, actor_name, actor_role, comment, created_at
+       FROM approval_logs
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY id DESC
+       LIMIT ${limit}`,
+      params
+    );
+
+    if (String(req.query.format || '').toLowerCase() === 'csv') {
+      const csv = buildCsv(
+        ['时间', '业务类型', '业务ID', '动作', '操作人', '角色', '备注'],
+        logs.map((l) => [l.created_at, l.biz_type, l.biz_id, l.action, l.actor_name, l.actor_role, l.comment || ''])
+      );
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="audit-logs.csv"');
+      res.send(csv);
+      return;
+    }
+
+    res.json({ logs });
+  })
+);
+
 export default router;

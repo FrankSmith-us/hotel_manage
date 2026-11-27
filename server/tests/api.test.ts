@@ -3167,4 +3167,29 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const csvText = await csvRes.text();
     assert.match(csvText, /门店/);
   });
+
+  it('T3-06: global audit log query and CSV export with RBAC', async () => {
+    const finToken = await loginAs('finance');
+    const staffToken = await loginAs('staff_sh');
+
+    // Staff cannot query global audit logs -> 403
+    const forbid = await req('GET', '/api/reports/audit-logs', { token: staffToken });
+    assert.equal(forbid.status, 403);
+
+    // Finance queries filtered audit logs
+    const jsonRes = await req('GET', '/api/reports/audit-logs?biz_type=VENDOR_PAYMENT&limit=20', { token: finToken });
+    assert.equal(jsonRes.status, 200);
+    assert.ok(Array.isArray(jsonRes.data.logs));
+    assert.ok(jsonRes.data.logs.length >= 1);
+    assert.ok(jsonRes.data.logs.every((l: any) => l.biz_type === 'VENDOR_PAYMENT'));
+
+    // Finance exports CSV
+    const csvRes = await fetch(`${baseUrl}/api/reports/audit-logs?format=csv&limit=10`, {
+      headers: { Authorization: `Bearer ${finToken}` },
+    });
+    assert.equal(csvRes.status, 200);
+    assert.match(csvRes.headers.get('content-type') || '', /text\/csv/);
+    const csvText = await csvRes.text();
+    assert.match(csvText, /业务类型/);
+  });
 });
