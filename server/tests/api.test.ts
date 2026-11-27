@@ -2779,4 +2779,68 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(schedRes.status, 200);
     assert.equal(typeof schedRes.data.sentReminders, 'number');
   });
+
+  it('T2-08: headcount return/resubmit and reimbursement clone from rejected claim', async () => {
+    const mgrToken = await loginAs('mgr_sh');
+    const regToken = await loginAs('region_east');
+    const hrToken = await loginAs('hr');
+    const staffToken = await loginAs('staff_sh');
+    const emp2List = await req('GET', '/api/employees?hotelId=2', { token: mgrToken });
+    const foDeptId = emp2List.data.employees.find((e: any) => e.name === '陆子轩').department_id;
+
+    // 1. Headcount return -> edit & resubmit -> approve
+    const hcRes = await req('POST', '/api/recruitment/headcounts', {
+      token: mgrToken,
+      body: { hotel_id: 2, department_id: foDeptId, position: '前厅接待员', headcount: 1, salary_range: '5000-6000', reason: '前厅补编' },
+    });
+    assert.equal(hcRes.status, 201);
+    const hcId = hcRes.data.headcount.id;
+
+    assert.equal((await req('POST', `/api/recruitment/headcounts/${hcId}/action`, { token: regToken, body: { action: 'RETURN', comment: '请细化薪资范围' } })).status, 200);
+    assert.equal(
+      (
+        await req('PUT', `/api/recruitment/headcounts/${hcId}`, {
+          token: staffToken,
+          body: { hotel_id: 2, department_id: foDeptId, position: '前厅接待员', headcount: 1, salary_range: '5200-5800', reason: '越权测试' },
+        })
+      ).status,
+      403
+    );
+    assert.equal(
+      (
+        await req('PUT', `/api/recruitment/headcounts/${hcId}`, {
+          token: mgrToken,
+          body: { hotel_id: 2, department_id: foDeptId, position: '前厅接待员', headcount: 1, salary_range: '5200-5800', reason: '按要求细化薪资范围' },
+        })
+      ).status,
+      200
+    );
+    assert.equal((await req('POST', `/api/recruitment/headcounts/${hcId}/action`, { token: regToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/recruitment/headcounts/${hcId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status, 200);
+
+    // 2. Rejected reimbursement clone -> creates new DRAFT claim
+    const ym = currentYearMonth();
+    const clm = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '将被驳回的报销单',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '打印纸', amount: 60 }],
+      },
+    });
+    assert.equal(clm.status, 201);
+    const clmId = clm.data.claim.id;
+    assert.equal((await req('POST', `/api/reimbursements/${clmId}/action`, { token: mgrToken, body: { action: 'REJECT', comment: '重新整理提交' } })).status, 200);
+
+    const cloneRes = await req('POST', `/api/reimbursements/${clmId}/clone`, { token: staffToken });
+    assert.equal(cloneRes.status, 201);
+    assert.equal(cloneRes.data.claim.status, 'DRAFT');
+    assert.equal(cloneRes.data.claim.total_amount, 60);
+  });
 });

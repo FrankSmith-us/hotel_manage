@@ -1601,4 +1601,98 @@ router.patch(
   })
 );
 
+router.post(
+  '/:id/clone',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const db = getDb();
+    const user = req.user!;
+    const ts = nowIso();
+
+    const newClaim = await db.transaction(async (tx) => {
+      const orig = await tx.queryOne<{
+        id: number;
+        title: string;
+        applicant_id: number;
+        employee_id: number | null;
+        hotel_id: number;
+        department_id: number | null;
+        expense_month: string;
+        total_amount: number;
+        payment_type: string;
+        payee_name: string;
+        payee_bank: string | null;
+        payee_account: string | null;
+        urgency: string;
+        status: string;
+      }>('SELECT * FROM reimbursements WHERE id = ?', [id]);
+      if (!orig) throw new AppError(404, '报销单不存在');
+      if (Number(orig.applicant_id) !== Number(user.id)) {
+        throw new AppError(403, '仅报销申请人本人可复制重提该报销单');
+      }
+      if (orig.status !== 'REJECTED' && orig.status !== 'PAID') {
+        throw new AppError(400, '仅已驳回或已打款的报销单支持一键复制为新草稿');
+      }
+
+      const items = await tx.query<{
+        category: string;
+        expense_date: string;
+        description: string;
+        amount: number;
+        invoice_no: string | null;
+        attachment_url: string | null;
+      }>('SELECT category, expense_date, description, amount, invoice_no, attachment_url FROM reimbursement_items WHERE reimbursement_id = ?', [id]);
+
+      const claimNo = generateCode('CLM');
+      const ins = await tx.execute(
+        `INSERT INTO reimbursements (
+          claim_no, title, applicant_id, employee_id, hotel_id, department_id,
+          expense_month, total_amount, cash_advance_id, offset_amount, net_pay_amount,
+          payment_type, payee_name, payee_bank, payee_account, urgency,
+          status, current_step, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, 'DRAFT', 1, ?, ?)`,
+        [
+          claimNo,
+          `${orig.title} (重提)`,
+          user.id,
+          user.employee_id,
+          orig.hotel_id,
+          orig.department_id,
+          orig.expense_month,
+          orig.total_amount,
+          orig.total_amount,
+          orig.payment_type,
+          orig.payee_name,
+          orig.payee_bank,
+          orig.payee_account,
+          orig.urgency,
+          ts,
+          ts,
+        ]
+      );
+
+      for (const it of items) {
+        await tx.execute(
+          `INSERT INTO reimbursement_items (
+            reimbursement_id, category, expense_date, description, amount, invoice_no, attachment_url, created_at
+          ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`,
+          [ins.insertId, it.category, it.expense_date, it.description, it.amount, it.attachment_url, ts]
+        );
+      }
+
+      await logApprovalAction(tx, {
+        bizType: 'REIMBURSEMENT',
+        bizId: ins.insertId,
+        action: 'CLONE',
+        actor: user,
+        comment: `从报销单 #${id} 复制生成新草稿`,
+      });
+
+      return tx.queryOne('SELECT * FROM reimbursements WHERE id = ?', [ins.insertId]);
+    });
+
+    res.status(201).json({ claim: newClaim });
+  })
+);
+
 export default router;

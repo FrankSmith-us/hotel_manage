@@ -220,7 +220,7 @@ router.post(
     const id = Number(req.params.id);
     const { action, comment } = z
       .object({
-        action: z.enum(['APPROVE', 'REJECT']),
+        action: z.enum(['APPROVE', 'REJECT', 'RETURN']),
         comment: z.string().optional().default(''),
       })
       .parse(req.body);
@@ -253,7 +253,18 @@ router.post(
         throw new AppError(403, '您无权审批此补编节点');
       }
 
-      if (action === 'REJECT') {
+      if (action === 'RETURN') {
+        const stepUpd = await tx.execute(
+          `UPDATE approval_steps SET status = 'RETURNED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
+          [req.user!.id, ts, comment || '退回修改', step.id]
+        );
+        if (stepUpd.affectedRows !== 1) throw new AppError(409, '审批节点状态已变更，请刷新后重试');
+        const hcUpd = await tx.execute(
+          `UPDATE headcount_requests SET status = 'RETURNED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+          [ts, id]
+        );
+        if (hcUpd.affectedRows !== 1) throw new AppError(409, '补编申请状态已变更，请刷新后重试');
+      } else if (action === 'REJECT') {
         const stepUpd = await tx.execute(
           `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
           [req.user!.id, ts, comment || '驳回', step.id]
@@ -300,6 +311,68 @@ router.post(
     });
 
     res.json({ ok: true });
+  })
+);
+
+router.put(
+  '/headcounts/:id',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = createHcSchema.parse(req.body);
+    const user = req.user!;
+    const db = getDb();
+    const ts = nowIso();
+
+    await db.transaction(async (tx) => {
+      const hc = await tx.queryOne<{ id: number; applicant_id: number; status: string }>(
+        `SELECT id, applicant_id, status FROM headcount_requests WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!hc) throw new AppError(404, '补编申请不存在');
+      if (Number(hc.applicant_id) !== Number(user.id)) {
+        throw new AppError(403, '仅补编申请人本人可修改重提');
+      }
+      if (hc.status !== 'RETURNED') {
+        throw new AppError(400, '仅已退回的补编申请可修改重提');
+      }
+
+      const upd = await tx.execute(
+        `UPDATE headcount_requests
+         SET hotel_id = ?, department_id = ?, position = ?, headcount = ?, urgency = ?,
+             salary_range = ?, reason = ?, status = 'PENDING_APPROVAL', current_step = 1, updated_at = ?
+         WHERE id = ? AND status = 'RETURNED'`,
+        [
+          body.hotel_id,
+          body.department_id,
+          body.position,
+          body.headcount,
+          body.urgency,
+          body.salary_range,
+          body.reason,
+          ts,
+          id,
+        ]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '补编申请状态已变更，请刷新后重试');
+
+      const resolved = await resolveApprovalRoute(
+        tx,
+        body.hotel_id,
+        buildHeadcountRoute({ headcount: body.headcount, urgency: body.urgency }),
+        user.id
+      );
+      await replaceApprovalSteps(tx, 'HEADCOUNT', id, resolved.steps);
+      await logApprovalAction(tx, {
+        bizType: 'HEADCOUNT',
+        bizId: id,
+        action: 'RESUBMIT',
+        actor: user,
+        comment: body.reason,
+      });
+    });
+
+    const headcount = await db.queryOne('SELECT * FROM headcount_requests WHERE id = ?', [id]);
+    res.json({ headcount });
   })
 );
 
