@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 49 tables', () => {
+  it('MySQL and SQLite schemas define identical 50 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 49);
+    assert.equal(mysqlTables.length, 50);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2998,5 +2998,49 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     });
     assert.equal(hcRes.status, 201);
     assert.equal(hcRes.data.over_plan_warning, true);
+  });
+
+  it('T3-03: annual budget distribution and monthly rollover transfer', async () => {
+    const finToken = await loginAs('finance');
+    const staffToken = await loginAs('staff_sh');
+
+    // Staff cannot configure annual budget -> 403
+    const forbid = await req('PUT', '/api/budgets/annual', {
+      token: staffToken,
+      body: { hotel_id: 2, fiscal_year: 2027, category: 'UTILITY', annual_amount: 120000 },
+    });
+    assert.equal(forbid.status, 403);
+
+    // Finance sets annual budget 120,000 for 2027 UTILITY
+    const putAnn = await req('PUT', '/api/budgets/annual', {
+      token: finToken,
+      body: { hotel_id: 2, fiscal_year: 2027, category: 'UTILITY', annual_amount: 120000 },
+    });
+    assert.equal(putAnn.status, 200);
+    assert.equal(putAnn.data.annual_budget.annual_amount, 120000);
+
+    // Distribute across 12 months -> 10,000 each
+    const dist = await req('POST', '/api/budgets/annual/distribute', {
+      token: finToken,
+      body: { hotel_id: 2, fiscal_year: 2027, category: 'UTILITY' },
+    });
+    assert.equal(dist.status, 200);
+    assert.equal(dist.data.distributed_months, 12);
+
+    // Transfer 2500 from 2027-01 to 2027-02 -> 7500 & 12500
+    const trOk = await req('POST', '/api/budgets/transfer', {
+      token: finToken,
+      body: { hotel_id: 2, category: 'UTILITY', from_month: '2027-01', to_month: '2027-02', amount: 2500, reason: '冬季能耗结转' },
+    });
+    assert.equal(trOk.status, 200);
+    assert.equal(trOk.data.from_amount, 7500);
+    assert.equal(trOk.data.to_amount, 12500);
+
+    // Over-transfer 10000 from 2027-01 -> 400
+    const trFail = await req('POST', '/api/budgets/transfer', {
+      token: finToken,
+      body: { hotel_id: 2, category: 'UTILITY', from_month: '2027-01', to_month: '2027-02', amount: 10000, reason: '超额结转' },
+    });
+    assert.equal(trFail.status, 400);
   });
 });

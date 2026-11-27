@@ -841,3 +841,15 @@ CREATE TABLE IF NOT EXISTS hotel_staffing_plans (
   UNIQUE(hotel_id, department_id, position)
 );
 CREATE INDEX IF NOT EXISTS idx_staffing_plan_hotel ON hotel_staffing_plans(hotel_id);
+
+CREATE TABLE IF NOT EXISTS annual_budgets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  fiscal_year INTEGER NOT NULL,
+  category TEXT NOT NULL,
+  annual_amount REAL NOT NULL,
+  updated_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(hotel_id, fiscal_year, category)
+);

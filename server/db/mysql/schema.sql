@@ -915,4 +915,18 @@ CREATE TABLE IF NOT EXISTS hotel_staffing_plans (
   CONSTRAINT fk_staffing_updater FOREIGN KEY (updated_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS annual_budgets (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  hotel_id BIGINT NOT NULL,
+  fiscal_year INT NOT NULL,
+  category VARCHAR(64) NOT NULL,
+  annual_amount DECIMAL(12, 2) NOT NULL,
+  updated_by BIGINT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_annual_budget (hotel_id, fiscal_year, category),
+  CONSTRAINT fk_annual_budget_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_annual_budget_user FOREIGN KEY (updated_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
