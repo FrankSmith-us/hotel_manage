@@ -37,6 +37,8 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
   if (options.reset) {
     const tables = [
+      'vendor_payments',
+      'suppliers',
       'annual_budgets',
       'hotel_staffing_plans',
       'petty_cash_ledger',

@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 50 tables', () => {
+  it('MySQL and SQLite schemas define identical 52 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 50);
+    assert.equal(mysqlTables.length, 52);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -3042,5 +3042,100 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       body: { hotel_id: 2, category: 'UTILITY', from_month: '2027-01', to_month: '2027-02', amount: 10000, reason: '超额结转' },
     });
     assert.equal(trFail.status, 400);
+  });
+
+  it('T3-04: suppliers and vendor payment approval + payout lifecycle', async () => {
+    const finToken = await loginAs('finance');
+    const mgrToken = await loginAs('mgr_sh');
+    const regToken = await loginAs('region_east');
+    const ym = currentYearMonth();
+
+    // 1. Create supplier
+    const supRes = await req('POST', '/api/vendor-payments/suppliers', {
+      token: mgrToken,
+      body: {
+        code: 'SUP-SH-001',
+        name: '上海洁净布草洗涤有限公司',
+        tax_no: '91310106MA12345678',
+        bank_name: '中国银行静安支行',
+        bank_account: '4567890123456789',
+        contact_name: '王经理',
+        contact_phone: '13900001111',
+      },
+    });
+    assert.equal(supRes.status, 201);
+    const supId = supRes.data.supplier.id;
+
+    // 2. Disable supplier -> blocks payment creation (400)
+    assert.equal(
+      (await req('PATCH', `/api/vendor-payments/suppliers/${supId}/status`, { token: finToken, body: { status: 'DISABLED' } })).status,
+      200
+    );
+    const blockedPay = await req('POST', '/api/vendor-payments', {
+      token: mgrToken,
+      body: {
+        supplier_id: supId,
+        hotel_id: 2,
+        expense_month: ym,
+        category: 'LINEN_SUPPLIES',
+        amount: 3200,
+        invoice_no: 'INV-VP-001',
+        description: '布草洗涤月结款',
+      },
+    });
+    assert.equal(blockedPay.status, 400);
+
+    // 3. Re-enable supplier -> create payment -> approve -> pay
+    assert.equal(
+      (await req('PATCH', `/api/vendor-payments/suppliers/${supId}/status`, { token: finToken, body: { status: 'ACTIVE' } })).status,
+      200
+    );
+    const vpRes = await req('POST', '/api/vendor-payments', {
+      token: mgrToken,
+      body: {
+        supplier_id: supId,
+        hotel_id: 2,
+        expense_month: ym,
+        category: 'LINEN_SUPPLIES',
+        amount: 3200,
+        invoice_no: 'INV-VP-001',
+        description: '布草洗涤月结款',
+      },
+    });
+    assert.equal(vpRes.status, 201);
+    const vpId = vpRes.data.payment.id;
+
+    // Segregation: applicant mgr_sh cannot approve own payment -> 403
+    assert.equal(
+      (await req('POST', `/api/vendor-payments/${vpId}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status,
+      403
+    );
+
+    // Regional manager approves step 1
+    assert.equal(
+      (await req('POST', `/api/vendor-payments/${vpId}/action`, { token: regToken, body: { action: 'APPROVE', comment: '同意' } })).status,
+      200
+    );
+    // Cannot pay before final approval -> 409
+    assert.equal(
+      (await req('POST', `/api/vendor-payments/${vpId}/pay`, { token: finToken, body: {} })).status,
+      409
+    );
+
+    // Finance approves step 2 -> APPROVED
+    const finApp = await req('POST', `/api/vendor-payments/${vpId}/action`, { token: finToken, body: { action: 'APPROVE', comment: '财务复核通过' } });
+    assert.equal(finApp.status, 200);
+    assert.equal(finApp.data.payment.status, 'APPROVED');
+
+    // Finance pays -> PAID
+    const payRes = await req('POST', `/api/vendor-payments/${vpId}/pay`, { token: finToken, body: { pay_reference: 'BANK-20261127-01' } });
+    assert.equal(payRes.status, 200);
+    assert.equal(payRes.data.payment.status, 'PAID');
+
+    // Re-pay -> 409
+    assert.equal(
+      (await req('POST', `/api/vendor-payments/${vpId}/pay`, { token: finToken, body: {} })).status,
+      409
+    );
   });
 });

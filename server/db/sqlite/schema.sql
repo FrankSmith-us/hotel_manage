@@ -853,3 +853,39 @@ CREATE TABLE IF NOT EXISTS annual_budgets (
   updated_at TEXT NOT NULL,
   UNIQUE(hotel_id, fiscal_year, category)
 );
+
+CREATE TABLE IF NOT EXISTS suppliers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  code TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  tax_no TEXT,
+  bank_name TEXT NOT NULL,
+  bank_account TEXT NOT NULL,
+  contact_name TEXT,
+  contact_phone TEXT,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS vendor_payments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  payment_no TEXT NOT NULL UNIQUE,
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  expense_month TEXT NOT NULL,
+  category TEXT NOT NULL,
+  amount REAL NOT NULL,
+  invoice_no TEXT,
+  description TEXT NOT NULL,
+  applicant_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  paid_by INTEGER REFERENCES users(id),
+  paid_at TEXT,
+  pay_reference TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vendor_pay_hotel ON vendor_payments(hotel_id, status);

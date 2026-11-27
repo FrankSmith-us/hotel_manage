@@ -34,7 +34,8 @@ export type BizType =
   | 'SHIFT_SWAP'
   | 'ATTENDANCE_CORRECTION'
   | 'OVERTIME'
-  | 'CONTRACT_RENEWAL';
+  | 'CONTRACT_RENEWAL'
+  | 'VENDOR_PAYMENT';
 export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL' | 'USER';
 
 export type ExpenseCategory =

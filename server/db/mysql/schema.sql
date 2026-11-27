@@ -929,4 +929,45 @@ CREATE TABLE IF NOT EXISTS annual_budgets (
   CONSTRAINT fk_annual_budget_user FOREIGN KEY (updated_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS suppliers (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  code VARCHAR(64) NOT NULL UNIQUE,
+  name VARCHAR(128) NOT NULL,
+  tax_no VARCHAR(64) NULL,
+  bank_name VARCHAR(128) NOT NULL,
+  bank_account VARCHAR(64) NOT NULL,
+  contact_name VARCHAR(64) NULL,
+  contact_phone VARCHAR(32) NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  created_by BIGINT NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  CONSTRAINT fk_supplier_creator FOREIGN KEY (created_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS vendor_payments (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  payment_no VARCHAR(64) NOT NULL UNIQUE,
+  supplier_id BIGINT NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  expense_month VARCHAR(16) NOT NULL,
+  category VARCHAR(64) NOT NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  invoice_no VARCHAR(64) NULL,
+  description TEXT NOT NULL,
+  applicant_id BIGINT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  paid_by BIGINT NULL,
+  paid_at VARCHAR(32) NULL,
+  pay_reference VARCHAR(64) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_vendor_pay_hotel (hotel_id, status),
+  CONSTRAINT fk_vp_supplier FOREIGN KEY (supplier_id) REFERENCES suppliers(id),
+  CONSTRAINT fk_vp_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_vp_applicant FOREIGN KEY (applicant_id) REFERENCES users(id),
+  CONSTRAINT fk_vp_payer FOREIGN KEY (paid_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

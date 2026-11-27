@@ -26,6 +26,7 @@ import reimbursementsRouter from './routes/reimbursements';
 import reportsRouter from './routes/reports';
 import schedulesRouter from './routes/schedules';
 import usersRouter from './routes/users';
+import vendorPaymentsRouter from './routes/vendorPayments';
 
 export function createApp() {
   const app = express();
@@ -107,6 +108,7 @@ export function createApp() {
   app.use('/api/advances', advancesRouter);
   app.use('/api/reimbursements', reimbursementsRouter);
   app.use('/api/petty-cash', pettyCashRouter);
+  app.use('/api/vendor-payments', vendorPaymentsRouter);
   app.use('/api/reports', reportsRouter);
 
   // Serve built frontend in production if present
