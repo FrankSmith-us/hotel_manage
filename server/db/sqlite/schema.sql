@@ -782,3 +782,17 @@ CREATE TABLE IF NOT EXISTS contract_renewals (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_contract_emp ON contract_renewals(employee_id, status);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  biz_type TEXT NOT NULL,
+  biz_id INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  level TEXT NOT NULL DEFAULT 'INFO',
+  is_read INTEGER NOT NULL DEFAULT 0,
+  read_at TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notif_user_read ON notifications(user_id, is_read);

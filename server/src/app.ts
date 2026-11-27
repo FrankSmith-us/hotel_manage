@@ -17,6 +17,7 @@ import employeesRouter from './routes/employees';
 import hrFlowsRouter from './routes/hrFlows';
 import leavesRouter from './routes/leaves';
 import masterDataRouter from './routes/masterData';
+import notificationsRouter from './routes/notifications';
 import organizationRouter from './routes/organization';
 import payrollRouter from './routes/payroll';
 import recruitmentRouter from './routes/recruitment';
@@ -91,6 +92,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/users', usersRouter);
   app.use('/api/master-data', masterDataRouter);
+  app.use('/api/notifications', notificationsRouter);
   app.use('/api/dashboard', dashboardRouter);
   app.use('/api/organization', organizationRouter);
   app.use('/api/employees', employeesRouter);

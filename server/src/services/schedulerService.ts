@@ -1,4 +1,5 @@
 import { DbAdapter, DbQueryRunner } from '../../db/adapter';
+import { BUSINESS_RULES } from '../config/businessRules';
 import { AuthUser } from '../types';
 import { nowIso, todayStr } from '../utils/numbers';
 import { archiveEmployeeRecords } from './archiveService';
@@ -197,7 +198,7 @@ export async function executeEmployeeChangeTx(
 export async function runScheduledJobs(
   db: DbAdapter,
   triggeredBy?: AuthUser
-): Promise<{ executedOffboardings: number; executedChanges: number }> {
+): Promise<{ executedOffboardings: number; executedChanges: number; sentReminders: number }> {
   const today = todayStr();
   const dueList = await db.query<{
     id: number;
@@ -272,7 +273,48 @@ export async function runScheduledJobs(
     executedChanges++;
   }
 
-  return { executedOffboardings, executedChanges };
+  const ts = nowIso();
+  const pendingSteps = await db.query<{
+    biz_type: string;
+    biz_id: number;
+    step_name: string;
+    approver_user_id: number | null;
+    created_at: string;
+  }>(
+    `SELECT biz_type, biz_id, step_name, approver_user_id, created_at
+     FROM approval_steps
+     WHERE status = 'PENDING' AND approver_user_id IS NOT NULL`
+  );
+  let sentReminders = 0;
+  const nowMs = Date.now();
+  const normalCutoffMs = BUSINESS_RULES.notifications.normalRemindHours * 3600 * 1000;
+  for (const ps of pendingSteps) {
+    if (!ps.approver_user_id || !ps.created_at) continue;
+    const createdMs = Date.parse(ps.created_at.replace(' ', 'T') + '+08:00');
+    if (Number.isNaN(createdMs) || nowMs - createdMs < normalCutoffMs) continue;
+    const recent = await db.queryOne<{ id: number }>(
+      `SELECT id FROM notifications
+       WHERE user_id = ? AND biz_type = ? AND biz_id = ? AND level = 'SLA_REMINDER' AND created_at >= ?
+       LIMIT 1`,
+      [ps.approver_user_id, ps.biz_type, ps.biz_id, today]
+    );
+    if (recent) continue;
+    await db.execute(
+      `INSERT INTO notifications (user_id, biz_type, biz_id, title, content, level, is_read, created_at)
+       VALUES (?, ?, ?, ?, ?, 'SLA_REMINDER', 0, ?)`,
+      [
+        ps.approver_user_id,
+        ps.biz_type,
+        ps.biz_id,
+        `审批超时提醒：${ps.biz_type} #${ps.biz_id}`,
+        `「${ps.step_name}」已超过 ${BUSINESS_RULES.notifications.normalRemindHours} 小时未处理，请及时审批。`,
+        ts,
+      ]
+    );
+    sentReminders++;
+  }
+
+  return { executedOffboardings, executedChanges, sentReminders };
 }
 
 export function startScheduler(getDbFn: () => DbAdapter): void {

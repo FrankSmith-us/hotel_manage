@@ -846,4 +846,19 @@ CREATE TABLE IF NOT EXISTS contract_renewals (
   CONSTRAINT fk_cr_app FOREIGN KEY (applicant_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS notifications (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id BIGINT NOT NULL,
+  biz_type VARCHAR(32) NOT NULL,
+  biz_id BIGINT NOT NULL,
+  title VARCHAR(160) NOT NULL,
+  content VARCHAR(500) NOT NULL,
+  level VARCHAR(24) NOT NULL DEFAULT 'INFO',
+  is_read TINYINT(1) NOT NULL DEFAULT 0,
+  read_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  INDEX idx_notif_user_read (user_id, is_read),
+  CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

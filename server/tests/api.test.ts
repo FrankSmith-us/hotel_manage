@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 44 tables', () => {
+  it('MySQL and SQLite schemas define identical 45 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 44);
+    assert.equal(mysqlTables.length, 45);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2721,5 +2721,62 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
 
     const empDetail = await req('GET', `/api/employees/${staffEmpId}`, { token: hrToken });
     assert.equal(empDetail.data.employee.contract_end_date, '2029-12-31');
+  });
+
+  it('T2-07: inbox notifications, manual remind with deduplication, mark read, and SLA scan', async () => {
+    const staffToken = await loginAs('staff_sh');
+    const mgrToken = await loginAs('mgr_sh');
+    const hrToken = await loginAs('hr');
+    const ym = currentYearMonth();
+
+    // 1. Create a pending reimbursement -> staff reminds manager
+    const clm = await req('POST', '/api/reimbursements', {
+      token: staffToken,
+      body: {
+        title: '催办测试报销单',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '陆子轩',
+        payee_bank: '招商银行静安支行',
+        payee_account: '6225880100002002',
+        submit: true,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '办公用品', amount: 80 }],
+      },
+    });
+    assert.equal(clm.status, 201);
+    const clmId = clm.data.claim.id;
+
+    const rem1 = await req('POST', '/api/notifications/remind', {
+      token: staffToken,
+      body: { biz_type: 'REIMBURSEMENT', biz_id: clmId, message: '请店长加急审批' },
+    });
+    assert.equal(rem1.status, 200);
+    assert.equal(rem1.data.sentCount, 1);
+
+    // Duplicate remind within same hour -> sentCount = 0
+    const rem2 = await req('POST', '/api/notifications/remind', {
+      token: staffToken,
+      body: { biz_type: 'REIMBURSEMENT', biz_id: clmId },
+    });
+    assert.equal(rem2.status, 200);
+    assert.equal(rem2.data.sentCount, 0);
+
+    // 2. Manager checks notifications & marks read
+    const mgrNotifs = await req('GET', '/api/notifications', { token: mgrToken });
+    assert.equal(mgrNotifs.status, 200);
+    assert.ok(mgrNotifs.data.unreadCount >= 1);
+    const targetNotif = mgrNotifs.data.notifications.find(
+      (n: any) => n.biz_type === 'REIMBURSEMENT' && n.biz_id === clmId
+    );
+    assert.ok(targetNotif);
+
+    assert.equal((await req('POST', `/api/notifications/${targetNotif.id}/read`, { token: mgrToken })).status, 200);
+    assert.equal((await req('POST', '/api/notifications/read-all', { token: mgrToken })).status, 200);
+
+    // 3. Scheduler SLA scan runs cleanly
+    const schedRes = await req('POST', '/api/hr-flows/run-scheduled', { token: hrToken });
+    assert.equal(schedRes.status, 200);
+    assert.equal(typeof schedRes.data.sentReminders, 'number');
   });
 });
