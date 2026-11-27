@@ -94,10 +94,110 @@ export async function completeOffboardingTx(
   return archId;
 }
 
+export interface EmployeeChangeRow {
+  id: number;
+  request_no: string;
+  employee_id: number;
+  change_type: string;
+  from_hotel_id: number;
+  to_hotel_id: number;
+  from_department_id: number;
+  to_department_id: number;
+  from_position: string;
+  to_position: string;
+  from_salary: number;
+  to_salary: number;
+  effective_date: string;
+  reason: string;
+  applicant_id: number;
+}
+
+export async function executeEmployeeChangeTx(
+  tx: DbQueryRunner,
+  chg: EmployeeChangeRow,
+  actor: AuthUser
+): Promise<void> {
+  const ts = nowIso();
+  const emp = await tx.queryOne<{ id: number; status: string }>(
+    'SELECT id, status FROM employees WHERE id = ?',
+    [chg.employee_id]
+  );
+  if (!emp) throw new Error(`员工 ${chg.employee_id} 不存在`);
+
+  const newStatus = chg.change_type === 'PROBATION_PASS' ? 'ACTIVE' : emp.status;
+  await tx.execute(
+    `UPDATE employees
+     SET hotel_id = ?, department_id = ?, position = ?, base_salary = ?, status = ?, updated_at = ?
+     WHERE id = ?`,
+    [chg.to_hotel_id, chg.to_department_id, chg.to_position, chg.to_salary, newStatus, ts, chg.employee_id]
+  );
+
+  if (chg.change_type === 'TRANSFER' && Number(chg.to_hotel_id) !== Number(chg.from_hotel_id)) {
+    const empUsers = await tx.query<{ id: number }>(
+      'SELECT id FROM users WHERE employee_id = ? AND is_active = 1',
+      [chg.employee_id]
+    );
+    const targetHotel = await tx.queryOne<{ region_id: number }>('SELECT region_id FROM hotels WHERE id = ?', [
+      chg.to_hotel_id,
+    ]);
+    await tx.execute('UPDATE users SET hotel_id = ?, region_id = ? WHERE employee_id = ?', [
+      chg.to_hotel_id,
+      targetHotel?.region_id ?? null,
+      chg.employee_id,
+    ]);
+    for (const u of empUsers) {
+      await reassignPendingSteps(tx, u.id);
+    }
+  }
+
+  const evType =
+    chg.change_type === 'PROBATION_PASS'
+      ? 'PROBATION_PASS'
+      : chg.change_type === 'TRANSFER'
+        ? 'TRANSFER'
+        : chg.change_type === 'PROMOTE'
+          ? 'PROMOTE'
+          : 'SALARY_ADJUST';
+
+  await tx.execute(
+    `INSERT INTO employee_lifecycle_events (
+      employee_id, event_type, from_hotel_id, to_hotel_id, from_position, to_position,
+      effective_date, reason, operator_id, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      chg.employee_id,
+      evType,
+      chg.from_hotel_id,
+      chg.to_hotel_id,
+      chg.from_position,
+      chg.to_position,
+      chg.effective_date,
+      `人事异动审批单（${chg.request_no}）生效执行：${chg.reason}`,
+      actor.id,
+      ts,
+    ]
+  );
+
+  await tx.execute(
+    `UPDATE employee_change_requests
+     SET status = 'EXECUTED', executed_at = ?, updated_at = ?
+     WHERE id = ?`,
+    [ts, ts, chg.id]
+  );
+
+  await logApprovalAction(tx, {
+    bizType: 'EMPLOYEE_CHANGE',
+    bizId: chg.id,
+    action: 'EXECUTE',
+    actor,
+    comment: `人事异动按生效日(${chg.effective_date})执行完成`,
+  });
+}
+
 export async function runScheduledJobs(
   db: DbAdapter,
   triggeredBy?: AuthUser
-): Promise<{ executedOffboardings: number }> {
+): Promise<{ executedOffboardings: number; executedChanges: number }> {
   const today = todayStr();
   const dueList = await db.query<{
     id: number;
@@ -150,7 +250,29 @@ export async function runScheduledJobs(
     executedOffboardings++;
   }
 
-  return { executedOffboardings };
+  const dueChanges = await db.query<EmployeeChangeRow>(
+    `SELECT * FROM employee_change_requests WHERE status = 'APPROVED' AND effective_date <= ?`,
+    [today]
+  );
+  let executedChanges = 0;
+  for (const chg of dueChanges) {
+    let actor = triggeredBy;
+    if (!actor) {
+      const appUser = await db.queryOne<AuthUser>(
+        `SELECT id, username, display_name, role, employee_id, hotel_id, region_id FROM users WHERE id = ?`,
+        [chg.applicant_id]
+      );
+      if (appUser) actor = appUser;
+    }
+    if (!actor) continue;
+
+    await db.transaction(async (tx) => {
+      await executeEmployeeChangeTx(tx, chg, actor!);
+    });
+    executedChanges++;
+  }
+
+  return { executedOffboardings, executedChanges };
 }
 
 export function startScheduler(getDbFn: () => DbAdapter): void {

@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 34 tables', () => {
+  it('MySQL and SQLite schemas define identical 35 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 34);
+    assert.equal(mysqlTables.length, 35);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2283,5 +2283,85 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       body: { assignments: [{ employee_id: emp1Id, shift_date: monday, shift_type: 'OFF' }] },
     });
     assert.equal(offShift.status, 200);
+  });
+
+  it('T2-01: employee change approval workflow executes immediately or waits for effective date', async () => {
+    const hrToken = await loginAs('hr');
+    const gmToken = await loginAs('gm');
+    const staffToken = await loginAs('staff_sh');
+    const today = todayStr();
+    const tomorrow = (() => {
+      const d = new Date(Date.now() + 8 * 3600 * 1000 + 86400 * 1000);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    // 1. Staff cannot initiate employee change -> 403
+    assert.equal(
+      (
+        await req('POST', '/api/hr-flows/changes', {
+          token: staffToken,
+          body: {
+            employee_id: 2,
+            change_type: 'SALARY_ADJUST',
+            to_salary: 6500,
+            effective_date: today,
+            reason: '自助调薪测试',
+          },
+        })
+      ).status,
+      403
+    );
+
+    // 2. Immediate salary adjustment (effective_date = today) -> HR submits -> GM approves -> EXECUTED
+    const chgNow = await req('POST', '/api/hr-flows/changes', {
+      token: hrToken,
+      body: {
+        employee_id: 2,
+        change_type: 'SALARY_ADJUST',
+        to_salary: 7200,
+        effective_date: today,
+        reason: '年度绩效调薪',
+      },
+    });
+    assert.equal(chgNow.status, 201);
+    const chgNowId = chgNow.data.request.id;
+    assert.equal(
+      (await req('POST', `/api/hr-flows/changes/${chgNowId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    // Terminal re-approve -> 400
+    assert.equal(
+      (await req('POST', `/api/hr-flows/changes/${chgNowId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      400
+    );
+
+    const empAfter = await req('GET', '/api/employees/2', { token: hrToken });
+    assert.equal(empAfter.data.employee.base_salary, 7200);
+
+    // 3. Future-dated promotion -> GM approves -> stays APPROVED until effective_date
+    const chgFut = await req('POST', '/api/hr-flows/changes', {
+      token: hrToken,
+      body: {
+        employee_id: 2,
+        change_type: 'PROMOTE',
+        to_position: '前厅资深主管',
+        effective_date: tomorrow,
+        reason: '下月晋升',
+      },
+    });
+    assert.equal(chgFut.status, 201);
+    assert.equal(
+      (await req('POST', `/api/hr-flows/changes/${chgFut.data.request.id}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    const chgFutList = await req('GET', '/api/hr-flows/changes', { token: hrToken });
+    const futItem = chgFutList.data.requests.find((r: any) => r.id === chgFut.data.request.id);
+    assert.ok(futItem);
+    assert.equal(futItem.status, 'APPROVED');
+
+    // Run scheduled jobs -> future-dated change remains APPROVED (not yet due)
+    const runRes = await req('POST', '/api/hr-flows/run-scheduled', { token: hrToken });
+    assert.equal(runRes.status, 200);
+    assert.equal(runRes.data.executedChanges, 0);
   });
 });

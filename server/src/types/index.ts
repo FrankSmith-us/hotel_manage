@@ -29,7 +29,8 @@ export type BizType =
   | 'CASH_ADVANCE'
   | 'ONBOARDING'
   | 'OFFBOARDING'
-  | 'PAYROLL_BATCH';
+  | 'PAYROLL_BATCH'
+  | 'EMPLOYEE_CHANGE';
 export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL' | 'USER';
 
 export type ExpenseCategory =

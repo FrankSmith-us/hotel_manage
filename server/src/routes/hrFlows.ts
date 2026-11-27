@@ -12,7 +12,7 @@ import {
 } from '../middleware/auth';
 import { archiveEmployeeRecords } from '../services/archiveService';
 import { logApprovalAction } from '../services/auditService';
-import { completeOffboardingTx, runScheduledJobs } from '../services/schedulerService';
+import { completeOffboardingTx, executeEmployeeChangeTx, runScheduledJobs } from '../services/schedulerService';
 import {
   buildOffboardingRoute,
   buildOnboardingRoute,
@@ -1111,6 +1111,315 @@ router.get(
         records: parseJsonSafe<Record<string, unknown[]>>(row.records_json, {}),
       },
     });
+  })
+);
+
+// ==========================================
+// 4. Employee Change Requests (/api/hr-flows/changes) - T2-01
+// ==========================================
+router.get(
+  '/changes',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const user = req.user!;
+    const scope = await getScopeFilter(user);
+    const conditions = ['1=1'];
+    const params: unknown[] = [];
+
+    if (scope.type === 'REGION') {
+      if (scope.hotelIds.length === 0) {
+        res.json({ requests: [] });
+        return;
+      }
+      conditions.push(`(c.from_hotel_id IN (${scope.hotelIds.map(() => '?').join(',')}) OR c.to_hotel_id IN (${scope.hotelIds.map(() => '?').join(',')}))`);
+      params.push(...scope.hotelIds, ...scope.hotelIds);
+    } else if (scope.type === 'HOTEL') {
+      conditions.push('(c.from_hotel_id = ? OR c.to_hotel_id = ?)');
+      params.push(scope.hotelId, scope.hotelId);
+    } else if (scope.type === 'SELF') {
+      conditions.push('(c.applicant_id = ? OR c.employee_id = ?)');
+      params.push(user.id, user.employee_id ?? -1);
+    }
+
+    const rows = await db.query<{
+      id: number;
+      request_no: string;
+      employee_id: number;
+      change_type: string;
+      from_hotel_id: number;
+      to_hotel_id: number;
+      from_department_id: number;
+      to_department_id: number;
+      from_position: string;
+      to_position: string;
+      from_salary: number;
+      to_salary: number;
+      effective_date: string;
+      reason: string;
+      applicant_id: number;
+      status: string;
+      current_step: number;
+      executed_at: string | null;
+      created_at: string;
+      employee_name: string;
+      emp_no: string;
+      from_hotel_name: string;
+      to_hotel_name: string;
+      applicant_name: string;
+    }>(
+      `SELECT c.*, e.name AS employee_name, e.emp_no,
+              fh.name AS from_hotel_name, th.name AS to_hotel_name, u.display_name AS applicant_name
+       FROM employee_change_requests c
+       JOIN employees e ON e.id = c.employee_id
+       JOIN hotels fh ON fh.id = c.from_hotel_id
+       JOIN hotels th ON th.id = c.to_hotel_id
+       JOIN users u ON u.id = c.applicant_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY c.id DESC`,
+      params
+    );
+
+    const result = [];
+    for (const r of rows) {
+      const steps = await getWorkflowStepsWithActors(db, 'EMPLOYEE_CHANGE', r.id);
+      const pendingStep =
+        r.status === 'PENDING_APPROVAL'
+          ? await db.queryOne<{ step_name: string; approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT step_name, approver_role, approver_user_id FROM approval_steps
+               WHERE biz_type = 'EMPLOYEE_CHANGE' AND biz_id = ? AND status = 'PENDING'
+               ORDER BY step_order ASC LIMIT 1`,
+              [r.id]
+            )
+          : null;
+      const canApprove = pendingStep
+        ? await canUserActOnStep(db, user, pendingStep.approver_role, r.from_hotel_id, r.applicant_id, {
+            approverUserId: pendingStep.approver_user_id,
+            bizType: 'EMPLOYEE_CHANGE',
+          })
+        : false;
+      result.push({
+        ...r,
+        steps,
+        canApprove,
+        status_detail: buildStatusDetail({
+          bizType: 'EMPLOYEE_CHANGE',
+          status: r.status,
+          currentStepName: pendingStep?.step_name ?? null,
+          currentStep: r.current_step,
+          totalSteps: steps.length,
+        }),
+      });
+    }
+
+    res.json({ requests: result });
+  })
+);
+
+const createChangeSchema = z.object({
+  employee_id: z.number().int().positive(),
+  change_type: z.enum(['PROBATION_PASS', 'TRANSFER', 'PROMOTE', 'SALARY_ADJUST']),
+  to_hotel_id: z.number().int().positive().optional(),
+  to_department_id: z.number().int().positive().optional(),
+  to_position: z.string().trim().min(1).optional(),
+  to_salary: z.number().min(0).max(1_000_000).optional(),
+  effective_date: isoDateSchema,
+  reason: z.string().trim().min(2, '请填写异动原因'),
+});
+
+router.post(
+  '/changes',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const body = createChangeSchema.parse(req.body);
+    const db = getDb();
+    const user = req.user!;
+
+    const emp = await db.queryOne<{
+      id: number;
+      name: string;
+      hotel_id: number;
+      department_id: number;
+      position: string;
+      base_salary: number;
+      status: string;
+    }>('SELECT id, name, hotel_id, department_id, position, base_salary, status FROM employees WHERE id = ?', [
+      body.employee_id,
+    ]);
+    if (!emp) throw new AppError(404, '员工不存在');
+    if (emp.status === 'RESIGNED') throw new AppError(400, '已离职员工不可发起人事异动');
+    if (!(await canAccessHotel(user, emp.hotel_id))) {
+      throw new AppError(403, '无权为其他门店员工发起人事异动');
+    }
+
+    const toHotelId = body.to_hotel_id ?? emp.hotel_id;
+    const toDeptId = body.to_department_id ?? emp.department_id;
+    const toPosition = body.to_position ?? emp.position;
+    const toSalary = body.to_salary ?? Number(emp.base_salary);
+
+    const dept = await db.queryOne<{ id: number }>('SELECT id FROM departments WHERE id = ? AND hotel_id = ?', [
+      toDeptId,
+      toHotelId,
+    ]);
+    if (!dept) throw new AppError(400, '目标部门不属于目标门店');
+
+    const plannedSteps =
+      body.change_type === 'TRANSFER' || body.change_type === 'SALARY_ADJUST'
+        ? [
+            { stepOrder: 1, stepName: '集团HR审批', approverRole: 'HR_MANAGER' as UserRole },
+            { stepOrder: 2, stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' as UserRole },
+          ]
+        : [{ stepOrder: 1, stepName: '集团HR审批', approverRole: 'HR_MANAGER' as UserRole }];
+
+    const requestNo = generateCode('CHG');
+    const ts = nowIso();
+
+    const chgId = await db.transaction(async (tx) => {
+      const ins = await tx.execute(
+        `INSERT INTO employee_change_requests (
+          request_no, employee_id, change_type, from_hotel_id, to_hotel_id,
+          from_department_id, to_department_id, from_position, to_position,
+          from_salary, to_salary, effective_date, reason, applicant_id,
+          status, current_step, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
+        [
+          requestNo,
+          emp.id,
+          body.change_type,
+          emp.hotel_id,
+          toHotelId,
+          emp.department_id,
+          toDeptId,
+          emp.position,
+          toPosition,
+          emp.base_salary,
+          toSalary,
+          body.effective_date,
+          body.reason,
+          user.id,
+          ts,
+          ts,
+        ]
+      );
+
+      const resolved = await resolveApprovalRoute(tx, emp.hotel_id, plannedSteps, user.id);
+      await replaceApprovalSteps(tx, 'EMPLOYEE_CHANGE', ins.insertId, resolved.steps);
+      await logApprovalAction(tx, {
+        bizType: 'EMPLOYEE_CHANGE',
+        bizId: ins.insertId,
+        action: 'SUBMIT',
+        actor: user,
+        comment: `发起人事异动(${body.change_type})：${emp.name}，生效日 ${body.effective_date}`,
+      });
+      return ins.insertId;
+    });
+
+    const created = await db.queryOne('SELECT * FROM employee_change_requests WHERE id = ?', [chgId]);
+    res.status(201).json({ request: created });
+  })
+);
+
+router.post(
+  '/changes/:id/action',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = flowActionSchema.parse(req.body);
+    const db = getDb();
+    const user = req.user!;
+    const ts = nowIso();
+    const today = todayStr();
+
+    await db.transaction(async (tx) => {
+      const chg = await tx.queryOne<{
+        id: number;
+        request_no: string;
+        employee_id: number;
+        change_type: string;
+        from_hotel_id: number;
+        to_hotel_id: number;
+        from_department_id: number;
+        to_department_id: number;
+        from_position: string;
+        to_position: string;
+        from_salary: number;
+        to_salary: number;
+        effective_date: string;
+        reason: string;
+        applicant_id: number;
+        status: string;
+      }>(`SELECT * FROM employee_change_requests WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!chg) throw new AppError(404, '人事异动申请不存在');
+      if (chg.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
+
+      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole; approver_user_id: number | null }>(
+        `SELECT id, step_order, approver_role, approver_user_id FROM approval_steps
+         WHERE biz_type = 'EMPLOYEE_CHANGE' AND biz_id = ? AND status = 'PENDING'
+         ORDER BY step_order ASC LIMIT 1`,
+        [id]
+      );
+      if (!step) throw new AppError(400, '未找到待审批节点');
+      if (
+        !(await canUserActOnStep(tx, user, step.approver_role, chg.from_hotel_id, chg.applicant_id, {
+          approverUserId: step.approver_user_id,
+          bizType: 'EMPLOYEE_CHANGE',
+        }))
+      ) {
+        throw new AppError(403, '您无权审批当前人事异动节点');
+      }
+
+      if (body.action === 'REJECT') {
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+          [user.id, ts, body.comment || '驳回', step.id]
+        );
+        await tx.execute(`UPDATE employee_change_requests SET status = 'REJECTED', updated_at = ? WHERE id = ?`, [ts, id]);
+      } else {
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+          [user.id, ts, body.comment || '同意', step.id]
+        );
+        const nextStep = await tx.queryOne<{ id: number; step_order: number }>(
+          `SELECT id, step_order FROM approval_steps
+           WHERE biz_type = 'EMPLOYEE_CHANGE' AND biz_id = ? AND step_order > ?
+           ORDER BY step_order ASC LIMIT 1`,
+          [id, step.step_order]
+        );
+        if (nextStep) {
+          await tx.execute(`UPDATE approval_steps SET status = 'PENDING' WHERE id = ?`, [nextStep.id]);
+          await tx.execute(`UPDATE employee_change_requests SET current_step = ?, updated_at = ? WHERE id = ?`, [
+            nextStep.step_order,
+            ts,
+            id,
+          ]);
+        } else {
+          await tx.execute(`UPDATE employee_change_requests SET status = 'APPROVED', updated_at = ? WHERE id = ?`, [
+            ts,
+            id,
+          ]);
+          if (chg.effective_date <= today) {
+            await executeEmployeeChangeTx(tx, chg, user);
+          }
+        }
+      }
+
+      await logApprovalAction(tx, {
+        bizType: 'EMPLOYEE_CHANGE',
+        bizId: id,
+        action: body.action,
+        actor: user,
+        comment: body.comment || (body.action === 'APPROVE' ? '同意人事异动' : '驳回人事异动'),
+      });
+    });
+
+    res.json({ ok: true });
+  })
+);
+
+router.post(
+  '/run-scheduled',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const result = await runScheduledJobs(getDb(), req.user!);
+    res.json({ ok: true, ...result });
   })
 );
 

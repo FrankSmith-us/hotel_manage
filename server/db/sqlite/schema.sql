@@ -620,3 +620,27 @@ CREATE TABLE IF NOT EXISTS payroll_batches (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_payroll_batches_ym ON payroll_batches(`year_month`, status);
+
+CREATE TABLE IF NOT EXISTS employee_change_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  change_type TEXT NOT NULL,
+  from_hotel_id INTEGER NOT NULL,
+  to_hotel_id INTEGER NOT NULL,
+  from_department_id INTEGER NOT NULL,
+  to_department_id INTEGER NOT NULL,
+  from_position TEXT NOT NULL,
+  to_position TEXT NOT NULL,
+  from_salary REAL NOT NULL DEFAULT 0.00,
+  to_salary REAL NOT NULL DEFAULT 0.00,
+  effective_date TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  applicant_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  executed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_emp_change_status ON employee_change_requests(status, effective_date);

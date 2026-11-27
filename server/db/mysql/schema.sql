@@ -668,4 +668,30 @@ CREATE TABLE IF NOT EXISTS payroll_batches (
   CONSTRAINT fk_pay_batch_sub FOREIGN KEY (submitted_by) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS employee_change_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  employee_id BIGINT NOT NULL,
+  change_type VARCHAR(32) NOT NULL,
+  from_hotel_id BIGINT NOT NULL,
+  to_hotel_id BIGINT NOT NULL,
+  from_department_id BIGINT NOT NULL,
+  to_department_id BIGINT NOT NULL,
+  from_position VARCHAR(80) NOT NULL,
+  to_position VARCHAR(80) NOT NULL,
+  from_salary DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  to_salary DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
+  effective_date VARCHAR(16) NOT NULL,
+  reason VARCHAR(500) NOT NULL,
+  applicant_id BIGINT NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  executed_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_emp_change_status (status, effective_date),
+  CONSTRAINT fk_emp_chg_emp FOREIGN KEY (employee_id) REFERENCES employees(id),
+  CONSTRAINT fk_emp_chg_app FOREIGN KEY (applicant_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
