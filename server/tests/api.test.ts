@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 42 tables', () => {
+  it('MySQL and SQLite schemas define identical 43 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 42);
+    assert.equal(mysqlTables.length, 43);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2607,5 +2607,72 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       ).status,
       400
     );
+  });
+
+  it('T2-06: separate overtime requests with 4h/36h caps, COMP_OFF credit, and 3x holiday payroll pay', async () => {
+    const hrToken = await loginAs('hr');
+    const mgrToken = await loginAs('mgr_sh');
+    const staffToken = await loginAs('staff_sh');
+    const emp2List = await req('GET', '/api/employees?hotelId=2', { token: mgrToken });
+    const staffEmpId = emp2List.data.employees.find((e: any) => e.name === '陆子轩').id;
+
+    // 1. Over 4h single request -> 400
+    assert.equal(
+      (
+        await req('POST', '/api/leaves/overtime', {
+          token: staffToken,
+          body: { overtime_date: '2026-10-01', hours: 5, reason: '超单次上限' },
+        })
+      ).status,
+      400
+    );
+
+    // 2. Restday (2026-12-05 Sat -> defaults COMP_OFF) 4h -> approved -> +0.5 day to COMP_OFF balance
+    const balBefore = await req('GET', '/api/leaves/balances?year=2026', { token: staffToken });
+    const compBefore = balBefore.data.balances.find((b: any) => b.leave_type === 'COMP_OFF').total_days;
+
+    const otRest = await req('POST', '/api/leaves/overtime', {
+      token: staffToken,
+      body: { overtime_date: '2026-12-05', hours: 4, reason: '周末客流高峰加班' },
+    });
+    assert.equal(otRest.status, 201);
+    assert.equal(otRest.data.overtimeRequest.comp_mode, 'COMP_OFF');
+    assert.equal(otRest.data.overtimeRequest.multiplier, 2);
+
+    assert.equal(
+      (await req('POST', `/api/leaves/overtime/${otRest.data.overtimeRequest.id}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    const balAfter = await req('GET', '/api/leaves/balances?year=2026', { token: staffToken });
+    const compAfter = balAfter.data.balances.find((b: any) => b.leave_type === 'COMP_OFF').total_days;
+    assert.equal(compAfter, compBefore + 0.5);
+
+    // 3. Holiday (2026-12-10 marked HOLIDAY -> 3x PAY) 4h -> approved -> payroll 2026-12 computes 3x pay
+    assert.equal(
+      (
+        await req('POST', '/api/leaves/holidays', {
+          token: hrToken,
+          body: { holiday_date: '2026-12-10', name: '集团周年庆法定假', day_type: 'HOLIDAY' },
+        })
+      ).status,
+      201
+    );
+    const otHol = await req('POST', '/api/leaves/overtime', {
+      token: staffToken,
+      body: { overtime_date: '2026-12-10', hours: 4, comp_mode: 'PAY', reason: '节假日值班' },
+    });
+    assert.equal(otHol.status, 201);
+    assert.equal(otHol.data.overtimeRequest.day_type, 'HOLIDAY');
+    assert.equal(otHol.data.overtimeRequest.multiplier, 3);
+    assert.equal(
+      (await req('POST', `/api/leaves/overtime/${otHol.data.overtimeRequest.id}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+
+    assert.equal((await req('POST', '/api/payroll/calculate', { token: hrToken, body: { yearMonth: '2026-12', hotelId: 2 } })).status, 200);
+    const payList = await req('GET', '/api/payroll?yearMonth=2026-12&hotelId=2', { token: hrToken });
+    const staffPay = payList.data.records.find((r: any) => r.employee_id === staffEmpId);
+    assert.equal(staffPay.overtime_hours, 4);
+    assert.ok(staffPay.overtime_pay > 0);
   });
 });

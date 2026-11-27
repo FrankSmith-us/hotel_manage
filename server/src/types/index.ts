@@ -32,7 +32,8 @@ export type BizType =
   | 'PAYROLL_BATCH'
   | 'EMPLOYEE_CHANGE'
   | 'SHIFT_SWAP'
-  | 'ATTENDANCE_CORRECTION';
+  | 'ATTENDANCE_CORRECTION'
+  | 'OVERTIME';
 export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL' | 'USER';
 
 export type ExpenseCategory =

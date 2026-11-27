@@ -743,3 +743,22 @@ CREATE TABLE IF NOT EXISTS attendance_corrections (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS overtime_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  overtime_date TEXT NOT NULL,
+  day_type TEXT NOT NULL DEFAULT 'WORKDAY',
+  hours REAL NOT NULL,
+  comp_mode TEXT NOT NULL DEFAULT 'PAY',
+  multiplier REAL NOT NULL DEFAULT 1.5,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  approved_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ot_emp_date ON overtime_requests(employee_id, overtime_date);

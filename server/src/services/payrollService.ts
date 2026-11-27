@@ -233,6 +233,18 @@ export async function calculateMonthlyPayroll(
       }
     }
 
+    const otPaidRows = await db.query<{ hours: number; multiplier: number }>(
+      `SELECT hours, multiplier FROM overtime_requests
+       WHERE employee_id = ? AND status = 'APPROVED' AND comp_mode = 'PAY'
+         AND overtime_date >= ? AND overtime_date <= ?`,
+      [emp.id, monthStart, monthEnd]
+    );
+    let weightedOvertimeHours = roundMoney(overtimeHours * BUSINESS_RULES.overtime.workdayRate);
+    for (const ot of otPaidRows) {
+      overtimeHours = roundMoney(overtimeHours + Number(ot.hours || 0));
+      weightedOvertimeHours = roundMoney(weightedOvertimeHours + Number(ot.hours || 0) * Number(ot.multiplier || 1.5));
+    }
+
     const fullBase = roundMoney(Number(emp.base_salary));
     const probationRatio =
       emp.status === 'PROBATION'
@@ -244,7 +256,7 @@ export async function calculateMonthlyPayroll(
 
     const nightAllowance = roundMoney(nightShifts * Number(emp.night_allowance_rate || 80));
     const hourlyRate = baseAfterProbation / BUSINESS_RULES.payroll.workingDaysPerMonth / 8;
-    const overtimePay = roundMoney(hourlyRate * BUSINESS_RULES.overtime.workdayRate * overtimeHours);
+    const overtimePay = roundMoney(hourlyRate * weightedOvertimeHours);
     const leaveDeductionDays = roundMoney(
       personalDays * BUSINESS_RULES.payroll.personalLeaveDeductionRate +
         sickDays * BUSINESS_RULES.payroll.sickLeaveDeductionRate

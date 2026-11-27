@@ -802,4 +802,25 @@ CREATE TABLE IF NOT EXISTS attendance_corrections (
   CONSTRAINT fk_att_corr_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS overtime_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  employee_id BIGINT NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  overtime_date VARCHAR(16) NOT NULL,
+  day_type VARCHAR(16) NOT NULL DEFAULT 'WORKDAY',
+  hours DECIMAL(5, 2) NOT NULL,
+  comp_mode VARCHAR(16) NOT NULL DEFAULT 'PAY',
+  multiplier DECIMAL(4, 2) NOT NULL DEFAULT 1.50,
+  reason VARCHAR(255) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  approved_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_ot_emp_date (employee_id, overtime_date),
+  CONSTRAINT fk_ot_emp FOREIGN KEY (employee_id) REFERENCES employees(id),
+  CONSTRAINT fk_ot_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
