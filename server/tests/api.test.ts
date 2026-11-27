@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 48 tables', () => {
+  it('MySQL and SQLite schemas define identical 49 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 48);
+    assert.equal(mysqlTables.length, 49);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2954,5 +2954,49 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const ledger = await req('GET', `/api/petty-cash/funds/${fundId}/ledger`, { token: mgr2Token });
     assert.equal(ledger.status, 200);
     assert.equal(ledger.data.entries.length, 3);
+  });
+
+  it('T3-02: hotel staffing plan and headcount over-plan warning', async () => {
+    const hrToken = await loginAs('hr');
+    const mgrToken = await loginAs('mgr_sh');
+    const staffToken = await loginAs('staff_sh');
+
+    const empList = await req('GET', '/api/employees?hotelId=2', { token: mgrToken });
+    const foDeptId = empList.data.employees.find((e: any) => e.name === '陆子轩').department_id;
+
+    // Staff cannot update staffing plan -> 403
+    const forbid = await req('PUT', '/api/organization/staffing-plans', {
+      token: staffToken,
+      body: { hotel_id: 2, department_id: foDeptId, position: '前厅接待员', planned_count: 1 },
+    });
+    assert.equal(forbid.status, 403);
+
+    // HR sets planned_count = 1
+    const putPlan = await req('PUT', '/api/organization/staffing-plans', {
+      token: hrToken,
+      body: { hotel_id: 2, department_id: foDeptId, position: '前厅接待员', planned_count: 1 },
+    });
+    assert.equal(putPlan.status, 200);
+    assert.equal(putPlan.data.plan.planned_count, 1);
+
+    const listRes = await req('GET', '/api/organization/staffing-plans?hotelId=2', { token: mgrToken });
+    assert.equal(listRes.status, 200);
+    assert.ok(listRes.data.plans.length >= 1);
+
+    // Requesting 2 headcounts triggers over_plan_warning = true
+    const hcRes = await req('POST', '/api/recruitment/headcounts', {
+      token: mgrToken,
+      body: {
+        hotel_id: 2,
+        department_id: foDeptId,
+        position: '前厅接待员',
+        headcount: 2,
+        urgency: 'NORMAL',
+        salary_range: '5000-6500',
+        reason: '旺季补编测试',
+      },
+    });
+    assert.equal(hcRes.status, 201);
+    assert.equal(hcRes.data.over_plan_warning, true);
   });
 });

@@ -210,7 +210,29 @@ router.post(
     });
 
     const headcount = await db.queryOne('SELECT * FROM headcount_requests WHERE id = ?', [hcId]);
-    res.status(201).json({ headcount });
+    const plan = await db.queryOne<{ planned_count: number }>(
+      'SELECT planned_count FROM hotel_staffing_plans WHERE hotel_id = ? AND department_id = ? AND position = ?',
+      [body.hotel_id, body.department_id, body.position]
+    );
+    let overPlanWarning = false;
+    let overPlanDetail: { planned_count: number; actual_headcount: number; requested: number } | null = null;
+    if (plan) {
+      const cntRow = await db.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM employees
+         WHERE hotel_id = ? AND department_id = ? AND position = ? AND status IN ('ACTIVE', 'PROBATION')`,
+        [body.hotel_id, body.department_id, body.position]
+      );
+      const actualHeadcount = Number(cntRow?.cnt || 0);
+      if (actualHeadcount + body.headcount > Number(plan.planned_count)) {
+        overPlanWarning = true;
+        overPlanDetail = {
+          planned_count: Number(plan.planned_count),
+          actual_headcount: actualHeadcount,
+          requested: body.headcount,
+        };
+      }
+    }
+    res.status(201).json({ headcount, over_plan_warning: overPlanWarning, over_plan_detail: overPlanDetail });
   })
 );
 

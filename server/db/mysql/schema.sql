@@ -900,4 +900,19 @@ CREATE TABLE IF NOT EXISTS petty_cash_ledger (
   CONSTRAINT fk_petty_ledger_op FOREIGN KEY (operator_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS hotel_staffing_plans (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  hotel_id BIGINT NOT NULL,
+  department_id BIGINT NOT NULL,
+  position VARCHAR(64) NOT NULL,
+  planned_count INT NOT NULL DEFAULT 0,
+  updated_by BIGINT NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_staffing_plan (hotel_id, department_id, position),
+  INDEX idx_staffing_plan_hotel (hotel_id),
+  CONSTRAINT fk_staffing_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_staffing_dept FOREIGN KEY (department_id) REFERENCES departments(id),
+  CONSTRAINT fk_staffing_updater FOREIGN KEY (updated_by) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

@@ -829,3 +829,15 @@ CREATE TABLE IF NOT EXISTS petty_cash_ledger (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_petty_ledger_fund ON petty_cash_ledger(fund_id);
+
+CREATE TABLE IF NOT EXISTS hotel_staffing_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  department_id INTEGER NOT NULL REFERENCES departments(id),
+  position TEXT NOT NULL,
+  planned_count INTEGER NOT NULL DEFAULT 0,
+  updated_by INTEGER NOT NULL REFERENCES users(id),
+  updated_at TEXT NOT NULL,
+  UNIQUE(hotel_id, department_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_staffing_plan_hotel ON hotel_staffing_plans(hotel_id);

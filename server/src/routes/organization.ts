@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getDb } from '../../db';
-import { AppError, asyncHandler, authenticate, getScopeFilter, requireRoles } from '../middleware/auth';
+import { AppError, asyncHandler, authenticate, canAccessHotel, getScopeFilter, requireRoles } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
 import { currentYearMonth, nowIso, offsetYearMonth, todayStr } from '../utils/numbers';
 
@@ -388,6 +388,99 @@ router.patch(
     await db.execute('UPDATE hotels SET status = ? WHERE id = ?', [nextStatus, id]);
     const updated = await db.queryOne('SELECT * FROM hotels WHERE id = ?', [id]);
     res.json({ hotel: updated });
+  })
+);
+
+router.get(
+  '/staffing-plans',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const hotelId = req.query.hotelId ? Number(req.query.hotelId) : undefined;
+    const params: any[] = [];
+    let where = 'WHERE 1=1';
+
+    if (hotelId) {
+      if (!(await canAccessHotel(req.user!, hotelId))) {
+        throw new AppError(403, '无权查看该门店岗位定编');
+      }
+      where += ' AND p.hotel_id = ?';
+      params.push(hotelId);
+    }
+
+    const rows = await db.query<any>(
+      `SELECT p.*, h.name AS hotel_name, d.name AS department_name,
+        (SELECT COUNT(*) FROM employees e
+         WHERE e.hotel_id = p.hotel_id AND e.department_id = p.department_id
+           AND e.position = p.position AND e.status IN ('ACTIVE', 'PROBATION')) AS actual_headcount
+       FROM hotel_staffing_plans p
+       JOIN hotels h ON h.id = p.hotel_id
+       JOIN departments d ON d.id = p.department_id
+       ${where}
+       ORDER BY p.hotel_id ASC, p.department_id ASC, p.position ASC`,
+      params,
+    );
+
+    const plans = [];
+    for (const r of rows) {
+      if (!(await canAccessHotel(req.user!, Number(r.hotel_id)))) continue;
+      const actual = Number(r.actual_headcount || 0);
+      const planned = Number(r.planned_count || 0);
+      plans.push({
+        ...r,
+        actual_headcount: actual,
+        vacancy: Math.max(0, planned - actual),
+        is_overstaffed: actual > planned,
+      });
+    }
+
+    res.json({ plans });
+  })
+);
+
+router.put(
+  '/staffing-plans',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        hotel_id: z.number().int().positive(),
+        department_id: z.number().int().positive(),
+        position: z.string().trim().min(1).max(64),
+        planned_count: z.number().int().min(0).max(9999),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const dept = await db.queryOne<{ id: number }>(
+      'SELECT id FROM departments WHERE id = ? AND hotel_id = ?',
+      [body.department_id, body.hotel_id],
+    );
+    if (!dept) throw new AppError(400, '所选部门不属于当前门店');
+
+    const ts = nowIso();
+    const existing = await db.queryOne<{ id: number }>(
+      'SELECT id FROM hotel_staffing_plans WHERE hotel_id = ? AND department_id = ? AND position = ?',
+      [body.hotel_id, body.department_id, body.position],
+    );
+
+    let planId: number;
+    if (existing) {
+      await db.execute(
+        'UPDATE hotel_staffing_plans SET planned_count = ?, updated_by = ?, updated_at = ? WHERE id = ?',
+        [body.planned_count, req.user!.id, ts, existing.id],
+      );
+      planId = existing.id;
+    } else {
+      const ins = await db.execute(
+        `INSERT INTO hotel_staffing_plans (hotel_id, department_id, position, planned_count, updated_by, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [body.hotel_id, body.department_id, body.position, body.planned_count, req.user!.id, ts],
+      );
+      planId = ins.insertId;
+    }
+
+    const plan = await db.queryOne('SELECT * FROM hotel_staffing_plans WHERE id = ?', [planId]);
+    res.json({ plan });
   })
 );
 
