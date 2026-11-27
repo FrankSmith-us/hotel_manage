@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AlertTriangle, Archive, CheckCircle2, FileText, Plus, Search, UserCheck, UserCog, UserMinus, XCircle } from 'lucide-react';
 import { Modal } from '../components/Modal';
 import { StatusBadge } from '../components/StatusBadge';
@@ -154,11 +155,25 @@ const EVENT_LABELS: Record<string, string> = {
 export function EmployeesPage() {
   const { user } = useAuth();
   const { showToast } = useToast();
+  const [searchParams] = useSearchParams();
   const canManage = ['HQ_ADMIN', 'HR_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'].includes(
     user?.role || ''
   );
 
-  const [mainTab, setMainTab] = useState<'roster' | 'onboarding' | 'offboarding' | 'archives'>('roster');
+  const initialTabParam = searchParams.get('tab');
+  const validTabs = new Set(['roster', 'onboarding', 'offboarding', 'archives']);
+  const [mainTab, setMainTab] = useState<'roster' | 'onboarding' | 'offboarding' | 'archives'>(
+    initialTabParam && validTabs.has(initialTabParam)
+      ? (initialTabParam as 'roster' | 'onboarding' | 'offboarding' | 'archives')
+      : 'roster'
+  );
+
+  useEffect(() => {
+    const t = searchParams.get('tab');
+    if (t && validTabs.has(t)) {
+      setMainTab(t as 'roster' | 'onboarding' | 'offboarding' | 'archives');
+    }
+  }, [searchParams]);
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE_ONLY' | 'RESIGNED'>('ALL');
   const [employees, setEmployees] = useState<EmployeeRow[]>([]);
   const [onboardingList, setOnboardingList] = useState<OnboardingRequestRow[]>([]);

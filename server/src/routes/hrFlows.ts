@@ -133,9 +133,19 @@ router.get(
     for (const r of rows) {
       const steps = await getWorkflowStepsWithActors(db, 'ONBOARDING', r.id);
       const pendingStep = steps.find((s) => s.status === 'PENDING');
+      const pendingRaw =
+        r.status === 'PENDING_APPROVAL'
+          ? await db.queryOne<{ approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT approver_role, approver_user_id FROM approval_steps WHERE biz_type = 'ONBOARDING' AND biz_id = ? AND status = 'PENDING' ORDER BY step_order ASC LIMIT 1`,
+              [r.id]
+            )
+          : null;
       const canApprove =
-        r.status === 'PENDING_APPROVAL' && pendingStep
-          ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id)
+        r.status === 'PENDING_APPROVAL' && pendingRaw
+          ? await canUserActOnStep(db, user, pendingRaw.approver_role, r.hotel_id, r.applicant_id, {
+              approverUserId: pendingRaw.approver_user_id,
+              bizType: 'ONBOARDING',
+            })
           : false;
       if (tab === 'pending' && !canApprove) continue;
       const canComplete =
@@ -279,12 +289,15 @@ router.post(
     if (!ob) throw new AppError(404, '入职申请不存在');
     if (ob.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
 
-    const stepRow = await db.queryOne<{ approver_role: UserRole }>(
-      `SELECT approver_role FROM approval_steps WHERE biz_type = 'ONBOARDING' AND biz_id = ? AND step_order = ?`,
+    const stepRow = await db.queryOne<{ approver_role: UserRole; approver_user_id: number | null }>(
+      `SELECT approver_role, approver_user_id FROM approval_steps WHERE biz_type = 'ONBOARDING' AND biz_id = ? AND step_order = ?`,
       [id, ob.current_step]
     );
     const canAct = stepRow
-      ? await canUserActOnStep(db, user, stepRow.approver_role, ob.hotel_id, ob.applicant_id)
+      ? await canUserActOnStep(db, user, stepRow.approver_role, ob.hotel_id, ob.applicant_id, {
+          approverUserId: stepRow.approver_user_id,
+          bizType: 'ONBOARDING',
+        })
       : false;
     if (!canAct) throw new AppError(403, '当前审批节点无权操作');
 
@@ -560,9 +573,19 @@ router.get(
     for (const r of rows) {
       const steps = await getWorkflowStepsWithActors(db, 'OFFBOARDING', r.id);
       const pendingStep = steps.find((s) => s.status === 'PENDING');
+      const pendingRaw =
+        r.status === 'PENDING_APPROVAL'
+          ? await db.queryOne<{ approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT approver_role, approver_user_id FROM approval_steps WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND status = 'PENDING' ORDER BY step_order ASC LIMIT 1`,
+              [r.id]
+            )
+          : null;
       const canApprove =
-        r.status === 'PENDING_APPROVAL' && pendingStep
-          ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id)
+        r.status === 'PENDING_APPROVAL' && pendingRaw
+          ? await canUserActOnStep(db, user, pendingRaw.approver_role, r.hotel_id, r.applicant_id, {
+              approverUserId: pendingRaw.approver_user_id,
+              bizType: 'OFFBOARDING',
+            })
           : false;
       if (tab === 'pending' && !canApprove) continue;
       const canComplete =
@@ -755,12 +778,15 @@ router.post(
     if (!off) throw new AppError(404, '离职申请不存在');
     if (off.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
 
-    const stepRow = await db.queryOne<{ approver_role: UserRole }>(
-      `SELECT approver_role FROM approval_steps WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND step_order = ?`,
+    const stepRow = await db.queryOne<{ approver_role: UserRole; approver_user_id: number | null }>(
+      `SELECT approver_role, approver_user_id FROM approval_steps WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND step_order = ?`,
       [id, off.current_step]
     );
     const canAct = stepRow
-      ? await canUserActOnStep(db, user, stepRow.approver_role, off.hotel_id, off.applicant_id)
+      ? await canUserActOnStep(db, user, stepRow.approver_role, off.hotel_id, off.applicant_id, {
+          approverUserId: stepRow.approver_user_id,
+          bizType: 'OFFBOARDING',
+        })
       : false;
     if (!canAct) throw new AppError(403, '当前审批节点无权操作');
 

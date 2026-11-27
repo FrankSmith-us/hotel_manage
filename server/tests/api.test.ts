@@ -674,12 +674,13 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.ok(dash.data.kpis.pendingOtherCount >= 1);
     assert.ok(dash.data.kpis.urgentOtherCount >= 1);
 
-    // expenseInbox only contains REIMBURSEMENT / CASH_ADVANCE and starts with URGENT
-    assert.ok(dash.data.expenseInbox.every((i: any) => i.biz_type === 'REIMBURSEMENT' || i.biz_type === 'CASH_ADVANCE'));
+    // expenseInbox only contains expense/finance workflows and starts with URGENT
+    const expenseTypes = new Set(['REIMBURSEMENT', 'CASH_ADVANCE', 'PAYROLL_BATCH', 'VENDOR_PAYMENT']);
+    assert.ok(dash.data.expenseInbox.every((i: any) => expenseTypes.has(i.biz_type)));
     assert.equal(dash.data.expenseInbox[0].urgency, 'URGENT');
 
-    // otherInbox only contains LEAVE / HEADCOUNT and starts with URGENT
-    assert.ok(dash.data.otherInbox.every((i: any) => i.biz_type === 'LEAVE' || i.biz_type === 'HEADCOUNT'));
+    // otherInbox contains non-expense HR/ops workflows and starts with URGENT
+    assert.ok(dash.data.otherInbox.every((i: any) => !expenseTypes.has(i.biz_type)));
     assert.equal(dash.data.otherInbox[0].urgency, 'URGENT');
 
     // Combined inbox puts all expense items strictly before any other items
@@ -3345,5 +3346,59 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       (await req('POST', `/api/organization/hotels/${testHotelId}/closure-requests`, { token: hrToken, body: { reason: '重复申请' } })).status,
       400
     );
+  });
+
+  it('Store manager offboarding (GM acting as regional manager) appears in GM dashboard inbox and can be approved by GM', async () => {
+    const mgrSzToken = await loginAs('mgr_sz');
+    const gmToken = await loginAs('gm');
+
+    const meRes = await req('GET', '/api/auth/me', { token: mgrSzToken });
+    assert.equal(meRes.status, 200);
+    const empId = meRes.data.user.employee_id;
+    assert.ok(empId);
+
+    const offRes = await req('POST', '/api/hr-flows/offboarding', {
+      token: mgrSzToken,
+      body: {
+        employee_id: empId,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: '店长个人发展原因申请离职',
+        last_working_date: todayStr(),
+      },
+    });
+    assert.equal(offRes.status, 201);
+    const offId = offRes.data.request.id;
+
+    // GM dashboard summary must include this OFFBOARDING item in otherInbox
+    const dashRes = await req('GET', '/api/dashboard/summary', { token: gmToken });
+    assert.equal(dashRes.status, 200);
+    const hit = dashRes.data.otherInbox.find((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId));
+    assert.ok(hit, 'Expected OFFBOARDING item in GM otherInbox');
+    assert.ok(dashRes.data.kpis.pendingOtherCount >= 1);
+
+    // GM offboarding list shows canApprove = true
+    const listRes = await req('GET', '/api/hr-flows/offboarding', { token: gmToken });
+    assert.equal(listRes.status, 200);
+    const offItem = listRes.data.requests.find((r: any) => Number(r.id) === Number(offId));
+    assert.ok(offItem);
+    assert.equal(offItem.canApprove, true);
+
+    // GM approves step 1
+    const actRes = await req('POST', `/api/hr-flows/offboarding/${offId}/action`, {
+      token: gmToken,
+      body: { action: 'APPROVE', comment: '总经理同意审批' },
+    });
+    assert.equal(actRes.status, 200);
+
+    // Disappears from GM otherInbox and appears in myHandledApprovals
+    const dashAfter = await req('GET', '/api/dashboard/summary', { token: gmToken });
+    assert.equal(dashAfter.status, 200);
+    assert.ok(!dashAfter.data.otherInbox.some((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId)));
+    assert.ok(dashAfter.data.myHandledApprovals.some((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId)));
+
+    // Appears in applicant's myApplications
+    const mgrDash = await req('GET', '/api/dashboard/summary', { token: mgrSzToken });
+    assert.equal(mgrDash.status, 200);
+    assert.ok(mgrDash.data.myApplications.some((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId)));
   });
 });

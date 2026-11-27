@@ -328,6 +328,380 @@ router.get(
             created_at: c.created_at,
           });
         }
+      } else if (st.biz_type === 'OFFBOARDING') {
+        const o = await db.queryOne<{
+          id: number;
+          request_no: string;
+          hotel_id: number;
+          applicant_id: number;
+          created_at: string;
+          employee_name: string;
+          employee_position: string;
+          hotel_name: string;
+          applicant_name: string;
+        }>(
+          `SELECT off.id, off.request_no, off.hotel_id, off.applicant_id, off.created_at,
+                  e.name AS employee_name, e.position AS employee_position,
+                  h.name AS hotel_name, u.display_name AS applicant_name
+           FROM offboarding_requests off
+           JOIN employees e ON e.id = off.employee_id
+           JOIN hotels h ON h.id = off.hotel_id
+           JOIN users u ON u.id = off.applicant_id
+           WHERE off.id = ? AND off.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          o &&
+          (await canUserActOnStep(db, user, st.approver_role, o.hotel_id, o.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'OFFBOARDING',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'OFFBOARDING',
+            biz_id: o.id,
+            code: o.request_no,
+            title: `离职申请：${o.employee_name}（${o.employee_position}）`,
+            hotel_name: o.hotel_name,
+            applicant_name: o.applicant_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: o.created_at,
+          });
+        }
+      } else if (st.biz_type === 'ONBOARDING') {
+        const ob = await db.queryOne<{
+          id: number;
+          request_no: string;
+          candidate_name: string;
+          position: string;
+          hotel_id: number;
+          applicant_id: number;
+          created_at: string;
+          hotel_name: string;
+          applicant_name: string;
+        }>(
+          `SELECT ob.id, ob.request_no, ob.candidate_name, ob.position, ob.hotel_id, ob.applicant_id, ob.created_at,
+                  h.name AS hotel_name, u.display_name AS applicant_name
+           FROM onboarding_requests ob
+           JOIN hotels h ON h.id = ob.hotel_id
+           JOIN users u ON u.id = ob.applicant_id
+           WHERE ob.id = ? AND ob.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          ob &&
+          (await canUserActOnStep(db, user, st.approver_role, ob.hotel_id, ob.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'ONBOARDING',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'ONBOARDING',
+            biz_id: ob.id,
+            code: ob.request_no,
+            title: `入职申请：${ob.candidate_name}（${ob.position}）`,
+            hotel_name: ob.hotel_name,
+            applicant_name: ob.applicant_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: ob.created_at,
+          });
+        }
+      } else if (st.biz_type === 'EMPLOYEE_CHANGE') {
+        const ec = await db.queryOne<{
+          id: number;
+          request_no: string;
+          change_type: string;
+          from_hotel_id: number;
+          applicant_id: number;
+          created_at: string;
+          employee_name: string;
+          hotel_name: string;
+          applicant_name: string;
+        }>(
+          `SELECT ec.id, ec.request_no, ec.change_type, ec.from_hotel_id, ec.applicant_id, ec.created_at,
+                  e.name AS employee_name, h.name AS hotel_name, u.display_name AS applicant_name
+           FROM employee_change_requests ec
+           JOIN employees e ON e.id = ec.employee_id
+           JOIN hotels h ON h.id = ec.from_hotel_id
+           JOIN users u ON u.id = ec.applicant_id
+           WHERE ec.id = ? AND ec.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          ec &&
+          (await canUserActOnStep(db, user, st.approver_role, ec.from_hotel_id, ec.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'EMPLOYEE_CHANGE',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'EMPLOYEE_CHANGE',
+            biz_id: ec.id,
+            code: ec.request_no,
+            title: `人事异动：${ec.employee_name}（${ec.change_type}）`,
+            hotel_name: ec.hotel_name,
+            applicant_name: ec.applicant_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: ec.created_at,
+          });
+        }
+      } else if (st.biz_type === 'CONTRACT_RENEWAL') {
+        const cr = await db.queryOne<{
+          id: number;
+          request_no: string;
+          hotel_id: number;
+          applicant_id: number;
+          created_at: string;
+          employee_name: string;
+          hotel_name: string;
+          applicant_name: string;
+        }>(
+          `SELECT cr.id, cr.request_no, cr.hotel_id, cr.applicant_id, cr.created_at,
+                  e.name AS employee_name, h.name AS hotel_name, u.display_name AS applicant_name
+           FROM contract_renewals cr
+           JOIN employees e ON e.id = cr.employee_id
+           JOIN hotels h ON h.id = cr.hotel_id
+           JOIN users u ON u.id = cr.applicant_id
+           WHERE cr.id = ? AND cr.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          cr &&
+          (await canUserActOnStep(db, user, st.approver_role, cr.hotel_id, cr.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'CONTRACT_RENEWAL',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'CONTRACT_RENEWAL',
+            biz_id: cr.id,
+            code: cr.request_no,
+            title: `合同续签：${cr.employee_name}`,
+            hotel_name: cr.hotel_name,
+            applicant_name: cr.applicant_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: cr.created_at,
+          });
+        }
+      } else if (st.biz_type === 'OVERTIME') {
+        const ot = await db.queryOne<{
+          id: number;
+          request_no: string;
+          hotel_id: number;
+          hours: number;
+          applicant_user_id: number | null;
+          created_at: string;
+          emp_name: string;
+          hotel_name: string;
+        }>(
+          `SELECT ot.id, ot.request_no, ot.hotel_id, ot.hours, u.id AS applicant_user_id, ot.created_at,
+                  e.name AS emp_name, h.name AS hotel_name
+           FROM overtime_requests ot
+           JOIN employees e ON e.id = ot.employee_id
+           JOIN hotels h ON h.id = ot.hotel_id
+           LEFT JOIN users u ON u.employee_id = e.id
+           WHERE ot.id = ? AND ot.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          ot &&
+          (await canUserActOnStep(db, user, st.approver_role, ot.hotel_id, ot.applicant_user_id ?? -1, {
+            approverUserId: st.approver_user_id,
+            bizType: 'OVERTIME',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'OVERTIME',
+            biz_id: ot.id,
+            code: ot.request_no,
+            title: `加班申请：${ot.emp_name}（${ot.hours}h）`,
+            hotel_name: ot.hotel_name,
+            applicant_name: ot.emp_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: ot.created_at,
+          });
+        }
+      } else if (st.biz_type === 'ATTENDANCE_CORRECTION') {
+        const ac = await db.queryOne<{
+          id: number;
+          request_no: string;
+          hotel_id: number;
+          attendance_date: string;
+          applicant_user_id: number | null;
+          created_at: string;
+          emp_name: string;
+          hotel_name: string;
+        }>(
+          `SELECT ac.id, ac.request_no, ac.hotel_id, ac.attendance_date, u.id AS applicant_user_id, ac.created_at,
+                  e.name AS emp_name, h.name AS hotel_name
+           FROM attendance_corrections ac
+           JOIN employees e ON e.id = ac.employee_id
+           JOIN hotels h ON h.id = ac.hotel_id
+           LEFT JOIN users u ON u.employee_id = e.id
+           WHERE ac.id = ? AND ac.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          ac &&
+          (await canUserActOnStep(db, user, st.approver_role, ac.hotel_id, ac.applicant_user_id ?? -1, {
+            approverUserId: st.approver_user_id,
+            bizType: 'ATTENDANCE_CORRECTION',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'ATTENDANCE_CORRECTION',
+            biz_id: ac.id,
+            code: ac.request_no,
+            title: `考勤补卡：${ac.emp_name}（${ac.attendance_date}）`,
+            hotel_name: ac.hotel_name,
+            applicant_name: ac.emp_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: ac.created_at,
+          });
+        }
+      } else if (st.biz_type === 'SHIFT_SWAP') {
+        const ss = await db.queryOne<{
+          id: number;
+          request_no: string;
+          hotel_id: number;
+          requester_shift_date: string;
+          applicant_user_id: number | null;
+          created_at: string;
+          emp_name: string;
+          hotel_name: string;
+        }>(
+          `SELECT ss.id, ss.request_no, ss.hotel_id, ss.requester_shift_date, u.id AS applicant_user_id, ss.created_at,
+                  e.name AS emp_name, h.name AS hotel_name
+           FROM shift_swap_requests ss
+           JOIN employees e ON e.id = ss.requester_emp_id
+           JOIN hotels h ON h.id = ss.hotel_id
+           LEFT JOIN users u ON u.employee_id = e.id
+           WHERE ss.id = ? AND ss.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          ss &&
+          (await canUserActOnStep(db, user, st.approver_role, ss.hotel_id, ss.applicant_user_id ?? -1, {
+            approverUserId: st.approver_user_id,
+            bizType: 'SHIFT_SWAP',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'SHIFT_SWAP',
+            biz_id: ss.id,
+            code: ss.request_no,
+            title: `换班申请：${ss.emp_name}（${ss.requester_shift_date}）`,
+            hotel_name: ss.hotel_name,
+            applicant_name: ss.emp_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: ss.created_at,
+          });
+        }
+      } else if (st.biz_type === 'PAYROLL_BATCH') {
+        const pb = await db.queryOne<{
+          id: number;
+          batch_no: string;
+          year_month: string;
+          hotel_id: number | null;
+          submitted_by: number;
+          total_employees: number;
+          total_net: number;
+          created_at: string;
+          hotel_name: string | null;
+          applicant_name: string;
+        }>(
+          `SELECT pb.id, pb.batch_no, pb.\`year_month\`, pb.hotel_id, pb.submitted_by, pb.total_employees, pb.total_net, pb.created_at,
+                  h.name AS hotel_name, u.display_name AS applicant_name
+           FROM payroll_batches pb
+           LEFT JOIN hotels h ON h.id = pb.hotel_id
+           JOIN users u ON u.id = pb.submitted_by
+           WHERE pb.id = ? AND pb.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          pb &&
+          (await canUserActOnStep(db, user, st.approver_role, pb.hotel_id ?? 1, pb.submitted_by, {
+            approverUserId: st.approver_user_id,
+            bizType: 'PAYROLL_BATCH',
+          }))
+        ) {
+          expenseInbox.push({
+            biz_type: 'PAYROLL_BATCH',
+            biz_id: pb.id,
+            code: pb.batch_no,
+            title: `薪资批次：${pb.year_month}（${pb.total_employees}人）`,
+            hotel_name: pb.hotel_name || '全集团',
+            applicant_name: pb.applicant_name,
+            amount: Number(pb.total_net),
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: pb.created_at,
+          });
+        }
+      } else if (st.biz_type === 'VENDOR_PAYMENT') {
+        const vp = await db.queryOne<{
+          id: number;
+          payment_no: string;
+          hotel_id: number;
+          applicant_id: number;
+          amount: number;
+          created_at: string;
+          supplier_name: string;
+          hotel_name: string;
+          applicant_name: string;
+        }>(
+          `SELECT vp.id, vp.payment_no, vp.hotel_id, vp.applicant_id, vp.amount, vp.created_at,
+                  s.name AS supplier_name, h.name AS hotel_name, u.display_name AS applicant_name
+           FROM vendor_payments vp
+           JOIN suppliers s ON s.id = vp.supplier_id
+           JOIN hotels h ON h.id = vp.hotel_id
+           JOIN users u ON u.id = vp.applicant_id
+           WHERE vp.id = ? AND vp.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          vp &&
+          (await canUserActOnStep(db, user, st.approver_role, vp.hotel_id, vp.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'VENDOR_PAYMENT',
+          }))
+        ) {
+          expenseInbox.push({
+            biz_type: 'VENDOR_PAYMENT',
+            biz_id: vp.id,
+            code: vp.payment_no,
+            title: `对公付款：${vp.supplier_name}`,
+            hotel_name: vp.hotel_name,
+            applicant_name: vp.applicant_name,
+            amount: Number(vp.amount),
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: vp.created_at,
+          });
+        }
       }
     }
 
@@ -643,6 +1017,100 @@ router.get(
         });
       }
 
+      const myOnboardings = await db.query<{
+        id: number;
+        request_no: string;
+        candidate_name: string;
+        position: string;
+        status: string;
+        current_step: number;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+      }>(
+        `SELECT ob.id, ob.request_no, ob.candidate_name, ob.position, ob.status, ob.current_step,
+                ob.created_at, ob.updated_at, h.name AS hotel_name
+         FROM onboarding_requests ob
+         JOIN hotels h ON h.id = ob.hotel_id
+         WHERE ob.applicant_id = ?
+         ORDER BY ob.id DESC
+         LIMIT 10`,
+        [user.id]
+      );
+      for (const ob of myOnboardings) {
+        const steps = await getWorkflowStepsWithActors(db, 'ONBOARDING', ob.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        list.push({
+          biz_type: 'ONBOARDING',
+          biz_id: ob.id,
+          code: ob.request_no,
+          title: `入职申请：${ob.candidate_name}（${ob.position}）`,
+          hotel_name: ob.hotel_name,
+          applicant_name: user.display_name,
+          amount: null,
+          status: ob.status,
+          status_detail: buildStatusDetail({
+            bizType: 'ONBOARDING',
+            status: ob.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: ob.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: 'NORMAL',
+          created_at: ob.created_at,
+          updated_at: ob.updated_at,
+        });
+      }
+
+      const myOffboardings = await db.query<{
+        id: number;
+        request_no: string;
+        status: string;
+        current_step: number;
+        created_at: string;
+        updated_at: string;
+        employee_name: string;
+        employee_position: string;
+        hotel_name: string;
+        applicant_name: string;
+      }>(
+        `SELECT off.id, off.request_no, off.status, off.current_step, off.created_at, off.updated_at,
+                e.name AS employee_name, e.position AS employee_position,
+                h.name AS hotel_name, u.display_name AS applicant_name
+         FROM offboarding_requests off
+         JOIN employees e ON e.id = off.employee_id
+         JOIN hotels h ON h.id = off.hotel_id
+         JOIN users u ON u.id = off.applicant_id
+         WHERE off.applicant_id = ? OR off.employee_id = ?
+         ORDER BY off.id DESC
+         LIMIT 10`,
+        [user.id, user.employee_id ?? -1]
+      );
+      for (const off of myOffboardings) {
+        const steps = await getWorkflowStepsWithActors(db, 'OFFBOARDING', off.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        list.push({
+          biz_type: 'OFFBOARDING',
+          biz_id: off.id,
+          code: off.request_no,
+          title: `离职申请：${off.employee_name}（${off.employee_position}）`,
+          hotel_name: off.hotel_name,
+          applicant_name: off.applicant_name,
+          amount: null,
+          status: off.status,
+          status_detail: buildStatusDetail({
+            bizType: 'OFFBOARDING',
+            status: off.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: off.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: 'NORMAL',
+          created_at: off.created_at,
+          updated_at: off.updated_at,
+        });
+      }
+
       list.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.biz_id - a.biz_id);
       return list.slice(0, 20);
     };
@@ -916,6 +1384,110 @@ router.get(
           my_acted_at: act.my_acted_at,
           created_at: c.created_at,
           updated_at: c.updated_at,
+        });
+      }
+
+      const handledOnboardings = await db.query<{
+        id: number;
+        request_no: string;
+        candidate_name: string;
+        position: string;
+        status: string;
+        current_step: number;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+        applicant_name: string;
+      }>(
+        `SELECT ob.id, ob.request_no, ob.candidate_name, ob.position, ob.status, ob.current_step,
+                ob.created_at, ob.updated_at, h.name AS hotel_name, u.display_name AS applicant_name
+         FROM onboarding_requests ob
+         JOIN hotels h ON h.id = ob.hotel_id
+         JOIN users u ON u.id = ob.applicant_id
+         WHERE EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'ONBOARDING' AND s.biz_id = ob.id AND s.acted_by = ?)
+            OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'ONBOARDING' AND l.biz_id = ob.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'REJECT'))
+         ORDER BY ob.id DESC
+         LIMIT 10`,
+        [user.id, user.id]
+      );
+      for (const ob of handledOnboardings) {
+        const steps = await getWorkflowStepsWithActors(db, 'ONBOARDING', ob.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        const act = await getUserLastHandledAction(db, 'ONBOARDING', ob.id, user.id);
+        list.push({
+          biz_type: 'ONBOARDING',
+          biz_id: ob.id,
+          code: ob.request_no,
+          title: `入职申请：${ob.candidate_name}（${ob.position}）`,
+          hotel_name: ob.hotel_name,
+          applicant_name: ob.applicant_name,
+          amount: null,
+          status: ob.status,
+          status_detail: buildStatusDetail({
+            bizType: 'ONBOARDING',
+            status: ob.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: ob.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: 'NORMAL',
+          my_action: act.my_last_action,
+          my_acted_at: act.my_acted_at,
+          created_at: ob.created_at,
+          updated_at: ob.updated_at,
+        });
+      }
+
+      const handledOffboardings = await db.query<{
+        id: number;
+        request_no: string;
+        status: string;
+        current_step: number;
+        created_at: string;
+        updated_at: string;
+        employee_name: string;
+        employee_position: string;
+        hotel_name: string;
+        applicant_name: string;
+      }>(
+        `SELECT off.id, off.request_no, off.status, off.current_step, off.created_at, off.updated_at,
+                e.name AS employee_name, e.position AS employee_position,
+                h.name AS hotel_name, u.display_name AS applicant_name
+         FROM offboarding_requests off
+         JOIN employees e ON e.id = off.employee_id
+         JOIN hotels h ON h.id = off.hotel_id
+         JOIN users u ON u.id = off.applicant_id
+         WHERE EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'OFFBOARDING' AND s.biz_id = off.id AND s.acted_by = ?)
+            OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'OFFBOARDING' AND l.biz_id = off.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'REJECT'))
+         ORDER BY off.id DESC
+         LIMIT 10`,
+        [user.id, user.id]
+      );
+      for (const off of handledOffboardings) {
+        const steps = await getWorkflowStepsWithActors(db, 'OFFBOARDING', off.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        const act = await getUserLastHandledAction(db, 'OFFBOARDING', off.id, user.id);
+        list.push({
+          biz_type: 'OFFBOARDING',
+          biz_id: off.id,
+          code: off.request_no,
+          title: `离职申请：${off.employee_name}（${off.employee_position}）`,
+          hotel_name: off.hotel_name,
+          applicant_name: off.applicant_name,
+          amount: null,
+          status: off.status,
+          status_detail: buildStatusDetail({
+            bizType: 'OFFBOARDING',
+            status: off.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: off.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: 'NORMAL',
+          my_action: act.my_last_action,
+          my_acted_at: act.my_acted_at,
+          created_at: off.created_at,
+          updated_at: off.updated_at,
         });
       }
 

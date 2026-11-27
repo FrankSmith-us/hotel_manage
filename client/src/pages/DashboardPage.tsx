@@ -96,6 +96,15 @@ const BIZ_ROUTE: Record<string, string> = {
   LEAVE: '/leaves',
   HEADCOUNT: '/recruitment',
   HOTEL_CLOSURE: '/organization',
+  OFFBOARDING: '/employees?tab=offboarding',
+  ONBOARDING: '/employees?tab=onboarding',
+  EMPLOYEE_CHANGE: '/employees',
+  CONTRACT_RENEWAL: '/employees',
+  OVERTIME: '/leaves',
+  ATTENDANCE_CORRECTION: '/schedules',
+  SHIFT_SWAP: '/schedules',
+  PAYROLL_BATCH: '/payroll',
+  VENDOR_PAYMENT: '/finance',
 };
 
 const BIZ_LABEL: Record<string, string> = {
@@ -104,6 +113,15 @@ const BIZ_LABEL: Record<string, string> = {
   LEAVE: '请假/加班',
   HEADCOUNT: '门店补编',
   HOTEL_CLOSURE: '门店关闭审批',
+  OFFBOARDING: '员工离职',
+  ONBOARDING: '员工入职',
+  EMPLOYEE_CHANGE: '人事异动',
+  CONTRACT_RENEWAL: '合同续签',
+  OVERTIME: '加班申请',
+  ATTENDANCE_CORRECTION: '考勤补卡',
+  SHIFT_SWAP: '换班申请',
+  PAYROLL_BATCH: '薪资批次',
+  VENDOR_PAYMENT: '对公付款',
 };
 
 export function DashboardPage() {
@@ -179,7 +197,7 @@ export function DashboardPage() {
                 含 {data.kpis.urgentOtherCount} 项紧急人事/补编审批
               </span>
             ) : (
-              '请假加班 / 门店补编申请'
+              '请假加班 / 入离职 / 门店补编与关店审批'
             )
           }
           icon={<CheckSquare className="w-5 h-5" />}
