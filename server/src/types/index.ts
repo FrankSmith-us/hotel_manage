@@ -31,7 +31,8 @@ export type BizType =
   | 'OFFBOARDING'
   | 'PAYROLL_BATCH'
   | 'EMPLOYEE_CHANGE'
-  | 'SHIFT_SWAP';
+  | 'SHIFT_SWAP'
+  | 'ATTENDANCE_CORRECTION';
 export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL' | 'USER';
 
 export type ExpenseCategory =

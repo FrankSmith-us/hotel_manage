@@ -172,14 +172,26 @@ export async function calculateMonthlyPayroll(
     const effEndMs = Date.parse(`${effEnd}T00:00:00Z`);
     const proratedDays = effEndMs >= effStartMs ? Math.round((effEndMs - effStartMs) / 86_400_000) + 1 : 0;
 
-    // Count night shifts in this month
-    const nightRow = await db.queryOne<{ cnt: number }>(
-      `SELECT COUNT(*) AS cnt
-       FROM shift_schedules
-       WHERE employee_id = ? AND shift_type = 'NIGHT' AND shift_date >= ? AND shift_date <= ?`,
+    // Count night shifts in this month: prefer attendance_records if present, else shift_schedules
+    const attStats = await db.queryOne<{ total_cnt: number; night_cnt: number }>(
+      `SELECT COUNT(*) AS total_cnt,
+              COALESCE(SUM(CASE WHEN is_night_shift = 1 THEN 1 ELSE 0 END), 0) AS night_cnt
+       FROM attendance_records
+       WHERE employee_id = ? AND attendance_date >= ? AND attendance_date <= ?`,
       [emp.id, monthStart, monthEnd]
     );
-    const nightShifts = Number(nightRow?.cnt || 0);
+    let nightShifts = 0;
+    if (attStats && Number(attStats.total_cnt) > 0) {
+      nightShifts = Number(attStats.night_cnt || 0);
+    } else {
+      const nightRow = await db.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt
+         FROM shift_schedules
+         WHERE employee_id = ? AND shift_type = 'NIGHT' AND shift_date >= ? AND shift_date <= ?`,
+        [emp.id, monthStart, monthEnd]
+      );
+      nightShifts = Number(nightRow?.cnt || 0);
+    }
 
     // Approved leave & overtime in this month (prorate cross-month leave days by overlap)
     const leaves = await db.query<{

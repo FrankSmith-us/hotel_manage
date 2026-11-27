@@ -763,4 +763,43 @@ CREATE TABLE IF NOT EXISTS holiday_calendar (
   created_at VARCHAR(32) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS attendance_records (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  employee_id BIGINT NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  attendance_date VARCHAR(16) NOT NULL,
+  scheduled_shift VARCHAR(24) NULL,
+  check_in_time VARCHAR(16) NULL,
+  check_out_time VARCHAR(16) NULL,
+  work_hours DECIMAL(5, 2) NOT NULL DEFAULT 8.00,
+  is_night_shift TINYINT(1) NOT NULL DEFAULT 0,
+  status VARCHAR(24) NOT NULL DEFAULT 'NORMAL',
+  is_locked TINYINT(1) NOT NULL DEFAULT 0,
+  source VARCHAR(24) NOT NULL DEFAULT 'CSV_IMPORT',
+  remark VARCHAR(255) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_att_emp_date (employee_id, attendance_date),
+  INDEX idx_att_hotel_date (hotel_id, attendance_date),
+  CONSTRAINT fk_att_emp FOREIGN KEY (employee_id) REFERENCES employees(id),
+  CONSTRAINT fk_att_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS attendance_corrections (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  employee_id BIGINT NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  attendance_date VARCHAR(16) NOT NULL,
+  check_type VARCHAR(24) NOT NULL DEFAULT 'CHECK_IN',
+  corrected_time VARCHAR(16) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  CONSTRAINT fk_att_corr_emp FOREIGN KEY (employee_id) REFERENCES employees(id),
+  CONSTRAINT fk_att_corr_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

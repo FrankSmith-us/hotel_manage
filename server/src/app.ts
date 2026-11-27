@@ -9,6 +9,7 @@ import { errorHandler } from './middleware/errorHandler';
 import { UPLOADS_DIR } from './middleware/upload';
 import { hasUserActedOnBiz } from './services/workflowEngine';
 import advancesRouter from './routes/advances';
+import attendanceRouter from './routes/attendance';
 import authRouter from './routes/auth';
 import budgetsRouter from './routes/budgets';
 import dashboardRouter from './routes/dashboard';
@@ -95,6 +96,7 @@ export function createApp() {
   app.use('/api/employees', employeesRouter);
   app.use('/api/hr-flows', hrFlowsRouter);
   app.use('/api/schedules', schedulesRouter);
+  app.use('/api/attendance', attendanceRouter);
   app.use('/api/leaves', leavesRouter);
   app.use('/api/payroll', payrollRouter);
   app.use('/api/recruitment', recruitmentRouter);

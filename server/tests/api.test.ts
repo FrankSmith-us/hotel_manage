@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 40 tables', () => {
+  it('MySQL and SQLite schemas define identical 42 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 40);
+    assert.equal(mysqlTables.length, 42);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2522,5 +2522,90 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
 
     // Init balances by HR
     assert.equal((await req('POST', '/api/leaves/balances/init', { token: hrToken, body: { year: 2027 } })).status, 200);
+  });
+
+  it('T2-04: attendance import, correction approval, month lock, and payroll night-shift link', async () => {
+    const hrToken = await loginAs('hr');
+    const mgrToken = await loginAs('mgr_sh');
+    const staffToken = await loginAs('staff_sh');
+    const emp2List = await req('GET', '/api/employees?hotelId=2', { token: mgrToken });
+    const staffEmpId = emp2List.data.employees.find((e: any) => e.name === '陆子轩').id;
+
+    // 1. Staff cannot import attendance -> 403
+    assert.equal(
+      (
+        await req('POST', '/api/attendance/import', {
+          token: staffToken,
+          body: { records: [{ employee_id: staffEmpId, attendance_date: '2026-09-01', status: 'NORMAL' }] },
+        })
+      ).status,
+      403
+    );
+
+    // 2. Import attendance with 1 night shift & 1 late record in 2026-09
+    const impRes = await req('POST', '/api/attendance/import', {
+      token: mgrToken,
+      body: {
+        records: [
+          {
+            employee_id: staffEmpId,
+            attendance_date: '2026-09-01',
+            scheduled_shift: 'NIGHT',
+            check_in_time: '23:00',
+            check_out_time: '07:00',
+            work_hours: 8,
+            is_night_shift: true,
+            status: 'NORMAL',
+          },
+          {
+            employee_id: staffEmpId,
+            attendance_date: '2026-09-02',
+            scheduled_shift: 'MORNING',
+            check_in_time: '08:25',
+            check_out_time: '16:00',
+            work_hours: 7.5,
+            is_night_shift: false,
+            status: 'LATE',
+          },
+        ],
+      },
+    });
+    assert.equal(impRes.status, 200);
+    assert.equal(impRes.data.importedCount, 2);
+
+    // 3. Correction request for 2026-09-02 -> manager approves -> status becomes NORMAL
+    const corrRes = await req('POST', '/api/attendance/corrections', {
+      token: staffToken,
+      body: { attendance_date: '2026-09-02', check_type: 'CHECK_IN', corrected_time: '07:58', reason: '打卡机故障补卡' },
+    });
+    assert.equal(corrRes.status, 201);
+    const corrId = corrRes.data.correction.id;
+    assert.equal(
+      (await req('POST', `/api/attendance/corrections/${corrId}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+
+    const recList = await req('GET', '/api/attendance/records?yearMonth=2026-09&hotelId=2', { token: mgrToken });
+    const day2 = recList.data.records.find((r: any) => r.employee_id === staffEmpId && r.attendance_date === '2026-09-02');
+    assert.equal(day2.status, 'NORMAL');
+    assert.equal(day2.check_in_time, '07:58');
+
+    // 4. Payroll calculation uses attendance night shift count (1 night shift)
+    assert.equal((await req('POST', '/api/payroll/calculate', { token: hrToken, body: { yearMonth: '2026-09', hotelId: 2 } })).status, 200);
+    const payList = await req('GET', '/api/payroll?yearMonth=2026-09&hotelId=2', { token: hrToken });
+    const staffPay = payList.data.records.find((r: any) => r.employee_id === staffEmpId);
+    assert.equal(staffPay.night_shifts, 1);
+
+    // 5. Lock 2026-09 -> re-import fails 400
+    assert.equal((await req('POST', '/api/attendance/lock', { token: mgrToken, body: { hotel_id: 2, year_month: '2026-09' } })).status, 200);
+    assert.equal(
+      (
+        await req('POST', '/api/attendance/import', {
+          token: mgrToken,
+          body: { records: [{ employee_id: staffEmpId, attendance_date: '2026-09-01', status: 'NORMAL' }] },
+        })
+      ).status,
+      400
+    );
   });
 });

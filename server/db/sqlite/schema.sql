@@ -708,3 +708,38 @@ CREATE TABLE IF NOT EXISTS holiday_calendar (
   year INTEGER NOT NULL,
   created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS attendance_records (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  attendance_date TEXT NOT NULL,
+  scheduled_shift TEXT,
+  check_in_time TEXT,
+  check_out_time TEXT,
+  work_hours REAL NOT NULL DEFAULT 8.0,
+  is_night_shift INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'NORMAL',
+  is_locked INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'CSV_IMPORT',
+  remark TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(employee_id, attendance_date)
+);
+CREATE INDEX IF NOT EXISTS idx_att_hotel_date ON attendance_records(hotel_id, attendance_date);
+
+CREATE TABLE IF NOT EXISTS attendance_corrections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  attendance_date TEXT NOT NULL,
+  check_type TEXT NOT NULL DEFAULT 'CHECK_IN',
+  corrected_time TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
