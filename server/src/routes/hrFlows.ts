@@ -73,17 +73,26 @@ router.get(
     } else if (tab !== 'pending') {
       if (scope.type === 'REGION') {
         if (scope.hotelIds.length === 0) {
-          res.json({ requests: [] });
-          return;
+          conditions.push(
+            `(ob.applicant_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'ONBOARDING' AND s.biz_id = ob.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+          );
+          params.push(user.id, user.id, user.id);
+        } else {
+          conditions.push(
+            `(ob.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')}) OR ob.applicant_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'ONBOARDING' AND s.biz_id = ob.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+          );
+          params.push(...scope.hotelIds, user.id, user.id, user.id);
         }
-        conditions.push(`ob.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
-        params.push(...scope.hotelIds);
       } else if (scope.type === 'HOTEL') {
-        conditions.push('ob.hotel_id = ?');
-        params.push(scope.hotelId);
+        conditions.push(
+          `(ob.hotel_id = ? OR ob.applicant_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'ONBOARDING' AND s.biz_id = ob.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+        );
+        params.push(scope.hotelId, user.id, user.id, user.id);
       } else if (scope.type === 'SELF') {
-        conditions.push('ob.applicant_id = ?');
-        params.push(user.id);
+        conditions.push(
+          `(ob.applicant_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'ONBOARDING' AND s.biz_id = ob.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+        );
+        params.push(user.id, user.id, user.id);
       }
     }
 
@@ -514,17 +523,26 @@ router.get(
     } else if (tab !== 'pending') {
       if (scope.type === 'REGION') {
         if (scope.hotelIds.length === 0) {
-          res.json({ requests: [] });
-          return;
+          conditions.push(
+            `(off.applicant_id = ? OR off.employee_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'OFFBOARDING' AND s.biz_id = off.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+          );
+          params.push(user.id, user.employee_id ?? -1, user.id, user.id);
+        } else {
+          conditions.push(
+            `(off.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')}) OR off.applicant_id = ? OR off.employee_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'OFFBOARDING' AND s.biz_id = off.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+          );
+          params.push(...scope.hotelIds, user.id, user.employee_id ?? -1, user.id, user.id);
         }
-        conditions.push(`off.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
-        params.push(...scope.hotelIds);
       } else if (scope.type === 'HOTEL') {
-        conditions.push('off.hotel_id = ?');
-        params.push(scope.hotelId);
+        conditions.push(
+          `(off.hotel_id = ? OR off.applicant_id = ? OR off.employee_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'OFFBOARDING' AND s.biz_id = off.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+        );
+        params.push(scope.hotelId, user.id, user.employee_id ?? -1, user.id, user.id);
       } else if (scope.type === 'SELF') {
-        conditions.push('(off.applicant_id = ? OR off.employee_id = ?)');
-        params.push(user.id, user.employee_id ?? -1);
+        conditions.push(
+          `(off.applicant_id = ? OR off.employee_id = ? OR EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'OFFBOARDING' AND s.biz_id = off.id AND (s.approver_user_id = ? OR s.acted_by = ?)))`
+        );
+        params.push(user.id, user.employee_id ?? -1, user.id, user.id);
       }
     }
 
@@ -580,17 +598,28 @@ router.get(
               [r.id]
             )
           : null;
+      const isSelfTarget = Boolean(user.employee_id && Number(user.employee_id) === Number(r.employee_id));
       const canApprove =
-        r.status === 'PENDING_APPROVAL' && pendingRaw
+        r.status === 'PENDING_APPROVAL' && pendingRaw && !isSelfTarget
           ? await canUserActOnStep(db, user, pendingRaw.approver_role, r.hotel_id, r.applicant_id, {
               approverUserId: pendingRaw.approver_user_id,
               bizType: 'OFFBOARDING',
             })
           : false;
       if (tab === 'pending' && !canApprove) continue;
+      const targetUserRow = await db.queryOne<{ role: UserRole }>('SELECT role FROM users WHERE employee_id = ?', [
+        r.employee_id,
+      ]);
+      const targetRole: UserRole = targetUserRow?.role || 'STAFF';
       const canComplete =
         r.status === 'APPROVED' &&
-        ['HQ_ADMIN', 'HR_MANAGER', 'STORE_MANAGER'].includes(user.role) &&
+        !isSelfTarget &&
+        ((['HQ_ADMIN', 'HR_MANAGER', 'GENERAL_MANAGER'].includes(user.role) && (await canAccessHotel(user, r.hotel_id))) ||
+          (user.role === 'STORE_MANAGER' && targetRole === 'STAFF' && (await canAccessHotel(user, r.hotel_id))));
+      const canClear =
+        r.status === 'APPROVED' &&
+        !isSelfTarget &&
+        ['HQ_ADMIN', 'HR_MANAGER', 'FINANCE', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'].includes(user.role) &&
         (await canAccessHotel(user, r.hotel_id));
 
       // Check unsettled cash advances for this employee
@@ -615,6 +644,7 @@ router.get(
         steps,
         canApprove,
         canComplete,
+        canClear,
         status_detail: buildStatusDetail({
           bizType: 'OFFBOARDING',
           status: r.status,
@@ -654,7 +684,7 @@ router.post(
 
     const isSelf = user.employee_id && Number(user.employee_id) === Number(emp.id);
     if (!isSelf) {
-      if (!['HQ_ADMIN', 'HR_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'].includes(user.role)) {
+      if (!['HQ_ADMIN', 'HR_MANAGER', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'].includes(user.role)) {
         throw new AppError(403, '仅本人或授权管理人员可发起离职申请');
       }
       if (!(await canAccessHotel(user, emp.hotel_id))) {
@@ -668,9 +698,12 @@ router.post(
     );
     if (dup) throw new AppError(409, '该员工已有正在处理中的离职申请');
 
+    const hotelRow = await db.queryOne<{ is_hq: number }>('SELECT is_hq FROM hotels WHERE id = ?', [emp.hotel_id]);
+    const isHq = Boolean(hotelRow?.is_hq);
     const targetUser = await db.queryOne<{ id: number; role: UserRole }>('SELECT id, role FROM users WHERE employee_id = ?', [emp.id]);
     const targetRole: UserRole = targetUser?.role || 'STAFF';
-    const plannedSteps = buildOffboardingRoute({ targetRole });
+    const plannedSteps = buildOffboardingRoute({ targetRole, isHq, initiatorRole: user.role });
+    const excludeUserIds = Array.from(new Set([user.id, ...(targetUser ? [targetUser.id] : [])]));
 
     let unsettledAdvanceAmount = 0;
     let pendingReimbursementCount = 0;
@@ -725,17 +758,34 @@ router.post(
         ]
       );
 
+      const handoverRole: UserRole =
+        targetRole === 'STAFF' && !isHq
+          ? 'STORE_MANAGER'
+          : targetRole === 'STORE_MANAGER'
+            ? 'REGIONAL_MANAGER'
+            : targetRole === 'GENERAL_MANAGER'
+              ? 'HQ_ADMIN'
+              : 'GENERAL_MANAGER';
+      const assetRole: UserRole =
+        targetRole === 'STAFF' && !isHq
+          ? 'STORE_MANAGER'
+          : targetRole === 'STORE_MANAGER'
+            ? 'REGIONAL_MANAGER'
+            : 'HQ_ADMIN';
+      const financeRole: UserRole = targetRole === 'FINANCE' ? 'GENERAL_MANAGER' : 'FINANCE';
+      const hrRole: UserRole = targetRole === 'HR_MANAGER' ? 'GENERAL_MANAGER' : 'HR_MANAGER';
+
       const clearanceDefs = [
-        { key: 'WORK_HANDOVER', label: '工作交接与客户资料移交', role: 'STORE_MANAGER', status: 'PENDING', remark: null },
-        { key: 'ASSETS_RETURN', label: '工牌、钥匙及门店资产归还', role: 'STORE_MANAGER', status: 'PENDING', remark: null },
+        { key: 'WORK_HANDOVER', label: '工作交接与客户资料移交', role: handoverRole, status: 'PENDING', remark: null },
+        { key: 'ASSETS_RETURN', label: '工牌、钥匙及公司资产归还', role: assetRole, status: 'PENDING', remark: null },
         {
           key: 'ADVANCE_SETTLE',
           label: '财务备用金与在途报销清账',
-          role: 'FINANCE',
+          role: financeRole,
           status: unsettledAdvanceAmount > 0 ? 'BLOCKED' : 'PENDING',
           remark: unsettledAdvanceAmount > 0 ? `尚有未结清借款 ¥${unsettledAdvanceAmount.toFixed(2)}` : null,
         },
-        { key: 'HR_ARCHIVE', label: '人事档案核对与社保停缴确认', role: 'HR_MANAGER', status: 'PENDING', remark: null },
+        { key: 'HR_ARCHIVE', label: '人事档案核对与社保停缴确认', role: hrRole, status: 'PENDING', remark: null },
       ];
       for (const item of clearanceDefs) {
         await tx.execute(
@@ -746,7 +796,10 @@ router.post(
         );
       }
 
-      const resolved = await resolveApprovalRoute(tx, emp.hotel_id, plannedSteps);
+      const resolved = await resolveApprovalRoute(tx, emp.hotel_id, plannedSteps, user.id, { excludeUserIds });
+      if (resolved.steps.length === 0) {
+        throw new AppError(400, '未能解析出有效的离职审批人，请检查组织审批配置');
+      }
       await replaceApprovalSteps(tx, 'OFFBOARDING', ins.insertId, resolved.steps);
       await logApprovalAction(tx, {
         bizType: 'OFFBOARDING',
@@ -755,6 +808,15 @@ router.post(
         actor: user,
         comment: `发起离职申请：${emp.name}（最后工作日 ${body.last_working_date}）`,
       });
+      if (resolved.skippedRegionalManager && resolved.skipReason) {
+        await logApprovalAction(tx, {
+          bizType: 'OFFBOARDING',
+          bizId: ins.insertId,
+          action: 'AUTO_SKIP',
+          actor: user,
+          comment: resolved.skipReason,
+        });
+      }
       return ins.insertId;
     });
 
@@ -770,38 +832,50 @@ router.post(
     const body = flowActionSchema.parse(req.body);
     const db = getDb();
     const user = req.user!;
-
-    const off = await db.queryOne<{ id: number; hotel_id: number; applicant_id: number; status: string; current_step: number }>(
-      'SELECT * FROM offboarding_requests WHERE id = ?',
-      [id]
-    );
-    if (!off) throw new AppError(404, '离职申请不存在');
-    if (off.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
-
-    const stepRow = await db.queryOne<{ approver_role: UserRole; approver_user_id: number | null }>(
-      `SELECT approver_role, approver_user_id FROM approval_steps WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND step_order = ?`,
-      [id, off.current_step]
-    );
-    const canAct = stepRow
-      ? await canUserActOnStep(db, user, stepRow.approver_role, off.hotel_id, off.applicant_id, {
-          approverUserId: stepRow.approver_user_id,
-          bizType: 'OFFBOARDING',
-        })
-      : false;
-    if (!canAct) throw new AppError(403, '当前审批节点无权操作');
-
     const ts = nowIso();
+
     await db.transaction(async (tx) => {
+      const off = await tx.queryOne<{
+        id: number;
+        employee_id: number;
+        hotel_id: number;
+        applicant_id: number;
+        status: string;
+        current_step: number;
+      }>(`SELECT id, employee_id, hotel_id, applicant_id, status, current_step FROM offboarding_requests WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!off) throw new AppError(404, '离职申请不存在');
+      if (off.status !== 'PENDING_APPROVAL') throw new AppError(409, '单据状态已变化，请刷新后重试');
+      if (user.employee_id && Number(user.employee_id) === Number(off.employee_id)) {
+        throw new AppError(403, '离职员工本人不可审批自己的离职申请');
+      }
+
+      const stepRow = await tx.queryOne<{ approver_role: UserRole; approver_user_id: number | null }>(
+        `SELECT approver_role, approver_user_id FROM approval_steps WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND step_order = ? AND status = 'PENDING'`,
+        [id, off.current_step]
+      );
+      const canAct = stepRow
+        ? await canUserActOnStep(tx, user, stepRow.approver_role, off.hotel_id, off.applicant_id, {
+            approverUserId: stepRow.approver_user_id,
+            bizType: 'OFFBOARDING',
+          })
+        : false;
+      if (!canAct) throw new AppError(403, '当前审批节点无权操作');
+
       if (body.action === 'REJECT') {
         await tx.execute(
           `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ?
            WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND step_order = ?`,
           [user.id, ts, body.comment || '驳回离职申请', id, off.current_step]
         );
-        await tx.execute(`UPDATE offboarding_requests SET status = 'REJECTED', updated_at = ? WHERE id = ?`, [
-          ts,
-          id,
-        ]);
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'CANCELLED' WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND status = 'WAITING'`,
+          [id]
+        );
+        const upd = await tx.execute(
+          `UPDATE offboarding_requests SET status = 'REJECTED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+          [ts, id]
+        );
+        if (upd.affectedRows !== 1) throw new AppError(409, '单据状态已变化，请刷新后重试');
       } else {
         await tx.execute(
           `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ?
@@ -817,16 +891,17 @@ router.post(
             `UPDATE approval_steps SET status = 'PENDING' WHERE biz_type = 'OFFBOARDING' AND biz_id = ? AND step_order = ?`,
             [id, nextStep.step_order]
           );
-          await tx.execute(`UPDATE offboarding_requests SET current_step = ?, updated_at = ? WHERE id = ?`, [
-            nextStep.step_order,
-            ts,
-            id,
-          ]);
+          const upd = await tx.execute(
+            `UPDATE offboarding_requests SET current_step = ?, updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [nextStep.step_order, ts, id]
+          );
+          if (upd.affectedRows !== 1) throw new AppError(409, '单据状态已变化，请刷新后重试');
         } else {
-          await tx.execute(`UPDATE offboarding_requests SET status = 'APPROVED', updated_at = ? WHERE id = ?`, [
-            ts,
-            id,
-          ]);
+          const upd = await tx.execute(
+            `UPDATE offboarding_requests SET status = 'APPROVED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [ts, id]
+          );
+          if (upd.affectedRows !== 1) throw new AppError(409, '单据状态已变化，请刷新后重试');
         }
       }
       await logApprovalAction(tx, {
@@ -868,7 +943,7 @@ router.get(
 
 router.post(
   '/offboarding/:id/clearance/:itemId',
-  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'FINANCE', 'STORE_MANAGER', 'REGIONAL_MANAGER'),
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'FINANCE', 'GENERAL_MANAGER', 'STORE_MANAGER', 'REGIONAL_MANAGER'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const itemId = Number(req.params.itemId);
@@ -886,6 +961,9 @@ router.post(
       [id]
     );
     if (!off) throw new AppError(404, '离职申请不存在');
+    if (req.user!.employee_id && Number(req.user!.employee_id) === Number(off.employee_id)) {
+      throw new AppError(403, '离职员工本人不可确认自己的离职清查项');
+    }
     if (!(await canAccessHotel(req.user!, off.hotel_id))) {
       throw new AppError(403, '无权操作其他门店离职清查');
     }
@@ -945,7 +1023,7 @@ const completeOffboardingSchema = z.object({
 
 router.post(
   '/offboarding/:id/complete',
-  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'STORE_MANAGER'),
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'GENERAL_MANAGER', 'STORE_MANAGER'),
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const body = completeOffboardingSchema.parse(req.body || {});
@@ -966,6 +1044,16 @@ router.post(
 
     if (!off) throw new AppError(404, '离职申请不存在');
     if (off.status !== 'APPROVED') throw new AppError(400, '仅审批通过的离职申请可办理离职并归档');
+    if (user.employee_id && Number(user.employee_id) === Number(off.employee_id)) {
+      throw new AppError(403, '离职员工本人不可办结自己的离职流程');
+    }
+    const targetUserRoleRow = await db.queryOne<{ role: UserRole }>('SELECT role FROM users WHERE employee_id = ?', [
+      off.employee_id,
+    ]);
+    const targetRole: UserRole = targetUserRoleRow?.role || 'STAFF';
+    if (user.role === 'STORE_MANAGER' && targetRole !== 'STAFF') {
+      throw new AppError(403, '门店店长仅可办结普通员工离职');
+    }
     if (!(await canAccessHotel(user, off.hotel_id))) {
       throw new AppError(403, '无权办理该门店员工离职');
     }

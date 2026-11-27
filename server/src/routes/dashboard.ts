@@ -332,6 +332,7 @@ router.get(
         const o = await db.queryOne<{
           id: number;
           request_no: string;
+          employee_id: number;
           hotel_id: number;
           applicant_id: number;
           created_at: string;
@@ -340,7 +341,7 @@ router.get(
           hotel_name: string;
           applicant_name: string;
         }>(
-          `SELECT off.id, off.request_no, off.hotel_id, off.applicant_id, off.created_at,
+          `SELECT off.id, off.request_no, off.employee_id, off.hotel_id, off.applicant_id, off.created_at,
                   e.name AS employee_name, e.position AS employee_position,
                   h.name AS hotel_name, u.display_name AS applicant_name
            FROM offboarding_requests off
@@ -350,8 +351,10 @@ router.get(
            WHERE off.id = ? AND off.status = 'PENDING_APPROVAL'`,
           [st.biz_id]
         );
+        const isSelfOffboardingTarget = Boolean(user.employee_id && o && Number(user.employee_id) === Number(o.employee_id));
         if (
           o &&
+          !isSelfOffboardingTarget &&
           (await canUserActOnStep(db, user, st.approver_role, o.hotel_id, o.applicant_id, {
             approverUserId: st.approver_user_id,
             bizType: 'OFFBOARDING',

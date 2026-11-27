@@ -60,19 +60,45 @@ export function buildOnboardingRoute(params: { applicantRole: UserRole }): Plann
   }));
 }
 
-export function buildOffboardingRoute(params: { targetRole: UserRole }): PlannedStep[] {
+export function buildOffboardingRoute(params: {
+  targetRole: UserRole;
+  isHq?: boolean;
+  initiatorRole?: UserRole;
+}): PlannedStep[] {
+  const { targetRole, isHq = false, initiatorRole } = params;
   const steps: { stepName: string; approverRole: UserRole }[] = [];
-  if (params.targetRole === 'STAFF') {
-    steps.push({ stepName: '门店店长审批', approverRole: 'STORE_MANAGER' });
-    steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
-  } else if (params.targetRole === 'STORE_MANAGER') {
+
+  if (targetRole === 'STAFF') {
+    if (isHq) {
+      steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
+      steps.push({ stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+    } else {
+      steps.push({ stepName: '门店店长审批', approverRole: 'STORE_MANAGER' });
+      steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
+    }
+  } else if (targetRole === 'STORE_MANAGER') {
     steps.push({ stepName: '区域经理审批', approverRole: 'REGIONAL_MANAGER' });
     steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
-  } else if (params.targetRole === 'HR_MANAGER') {
+  } else if (targetRole === 'REGIONAL_MANAGER' || targetRole === 'FINANCE' || targetRole === 'HQ_ADMIN') {
     steps.push({ stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+    steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
+  } else if (targetRole === 'HR_MANAGER') {
+    if (initiatorRole === 'GENERAL_MANAGER') {
+      steps.push({ stepName: '集团系统管理复核', approverRole: 'HQ_ADMIN' });
+      steps.push({ stepName: '董事长终审', approverRole: 'CHAIRMAN' });
+    } else {
+      steps.push({ stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' });
+    }
+  } else if (targetRole === 'GENERAL_MANAGER') {
+    steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
+    steps.push({ stepName: '董事长终审', approverRole: 'CHAIRMAN' });
+  } else if (targetRole === 'CHAIRMAN') {
+    steps.push({ stepName: '集团总经理复核', approverRole: 'GENERAL_MANAGER' });
+    steps.push({ stepName: '集团HR离职备案', approverRole: 'HR_MANAGER' });
   } else {
     steps.push({ stepName: '集团HR离职复核', approverRole: 'HR_MANAGER' });
   }
+
   return steps.map((s, idx) => ({
     stepOrder: idx + 1,
     stepName: s.stepName,
@@ -284,14 +310,20 @@ export async function resolveApprover(
   db: DbQueryRunner,
   role: UserRole,
   hotelId: number,
-  applicantUserId?: number | null
+  applicantUserId?: number | null,
+  excludeUserIds?: number[]
 ): Promise<{ userId: number | null; resolvedRole: UserRole; stepName: string | null; skipReason: string | null }> {
   let curRole: UserRole | undefined = role;
   const reasons: string[] = [];
+  const excluded = new Set<number>();
+  if (applicantUserId) excluded.add(Number(applicantUserId));
+  for (const id of excludeUserIds || []) {
+    if (id) excluded.add(Number(id));
+  }
 
   for (let depth = 0; depth < 5 && curRole; depth++) {
     const candidate = await findActiveUserForRole(db, curRole, hotelId);
-    if (candidate && (!applicantUserId || Number(candidate.id) !== Number(applicantUserId))) {
+    if (candidate && !excluded.has(Number(candidate.id))) {
       return {
         userId: Number(candidate.id),
         resolvedRole: curRole,
@@ -301,7 +333,7 @@ export async function resolveApprover(
     }
     const reasonText = !candidate
       ? `${curRole}岗位暂无在职审批人，已自动上推`
-      : `审批人与申请人同为 ${candidate.display_name}，已自动上推`;
+      : `审批人与申请人/当事人为同一人（${candidate.display_name}），已自动上推`;
     reasons.push(reasonText);
     curRole = ESCALATION_CHAIN[curRole];
   }
@@ -318,7 +350,8 @@ export async function resolveApprovalRoute(
   db: DbQueryRunner,
   hotelId: number,
   rawSteps: PlannedStep[],
-  applicantUserId?: number | null
+  applicantUserId?: number | null,
+  opts?: { excludeUserIds?: number[] }
 ): Promise<{
   steps: PlannedStep[];
   skippedRegionalManager: boolean;
@@ -352,7 +385,7 @@ export async function resolveApprovalRoute(
   // Resolve concrete approver_user_id with fallback escalation
   const resolvedCandidates: Array<PlannedStep & { approverUserId: number | null; skipReason: string | null }> = [];
   for (const s of workingSteps) {
-    const res = await resolveApprover(db, s.approverRole, hotelId, applicantUserId);
+    const res = await resolveApprover(db, s.approverRole, hotelId, applicantUserId, opts?.excludeUserIds);
     resolvedCandidates.push({
       stepOrder: s.stepOrder,
       stepName: res.stepName || s.stepName,
@@ -644,6 +677,8 @@ export interface WorkflowStepSummary {
   step_order: number;
   step_name: string;
   approver_role: UserRole;
+  approver_user_id: number | null;
+  approver_name: string | null;
   status: string;
   actor_name: string | null;
   acted_at: string | null;
@@ -655,9 +690,11 @@ export async function getWorkflowStepsWithActors(
   bizId: number
 ): Promise<WorkflowStepSummary[]> {
   return db.query<WorkflowStepSummary>(
-    `SELECT s.step_order, s.step_name, s.approver_role, s.status,
+    `SELECT s.step_order, s.step_name, s.approver_role, s.approver_user_id,
+            au.display_name AS approver_name, s.status,
             u.display_name AS actor_name, s.acted_at
      FROM approval_steps s
+     LEFT JOIN users au ON au.id = s.approver_user_id
      LEFT JOIN users u ON u.id = s.acted_by
      WHERE s.biz_type = ? AND s.biz_id = ?
      ORDER BY s.step_order ASC`,

@@ -106,16 +106,21 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!user) return;
-    apiFetch<{
-      kpis: {
-        pendingExpenseCount: number;
-        urgentExpenseCount: number;
-        pendingOtherCount: number;
-        urgentOtherCount: number;
-      };
-    }>('/api/dashboard/summary')
-      .then((d) => setAlertCounts(d.kpis))
-      .catch(() => {});
+    const fetchSummary = () => {
+      apiFetch<{
+        kpis: {
+          pendingExpenseCount: number;
+          urgentExpenseCount: number;
+          pendingOtherCount: number;
+          urgentOtherCount: number;
+        };
+      }>('/api/dashboard/summary')
+        .then((d) => setAlertCounts(d.kpis))
+        .catch(() => {});
+    };
+    fetchSummary();
+    window.addEventListener('dashboard-refresh', fetchSummary);
+    return () => window.removeEventListener('dashboard-refresh', fetchSummary);
   }, [user?.id, location.pathname]);
 
   useEffect(() => {
@@ -256,7 +261,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <span>当前身份：{user?.role_label}</span>
               {alertCounts.pendingExpenseCount > 0 && (
                 <button
-                  onClick={() => navigate('/reimbursements')}
+                  onClick={() => navigate('/?focus=expense-inbox')}
                   className={`px-2.5 py-1 rounded-full border font-semibold transition-colors ${
                     alertCounts.urgentExpenseCount > 0
                       ? 'bg-red-50 border-red-200 text-red-600'
@@ -269,7 +274,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               )}
               {alertCounts.pendingOtherCount > 0 && (
                 <button
-                  onClick={() => navigate('/leaves')}
+                  onClick={() => navigate('/?focus=other-inbox')}
                   className={`px-2.5 py-1 rounded-full border font-semibold transition-colors ${
                     alertCounts.urgentOtherCount > 0
                       ? 'bg-red-50 border-red-200 text-red-600'

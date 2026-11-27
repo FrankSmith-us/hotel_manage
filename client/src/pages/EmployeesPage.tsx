@@ -60,6 +60,15 @@ interface OnboardingRequestRow {
   applicant_name: string;
   employee_id: number | null;
   remarks: string | null;
+  steps?: Array<{
+    step_order: number;
+    step_name: string;
+    approver_role: string;
+    approver_name?: string | null;
+    status: string;
+    actor_name?: string | null;
+    acted_at?: string | null;
+  }>;
   canApprove?: boolean;
   canComplete?: boolean;
 }
@@ -99,8 +108,18 @@ interface OffboardingRequestRow {
   status_detail?: string;
   applicant_name: string;
   archive_id: number | null;
+  steps?: Array<{
+    step_order: number;
+    step_name: string;
+    approver_role: string;
+    approver_name?: string | null;
+    status: string;
+    actor_name?: string | null;
+    acted_at?: string | null;
+  }>;
   canApprove?: boolean;
   canComplete?: boolean;
+  canClear?: boolean;
 }
 
 interface ArchiveListRow {
@@ -161,17 +180,25 @@ export function EmployeesPage() {
   );
 
   const initialTabParam = searchParams.get('tab');
+  const initialFilterParam = searchParams.get('filter');
   const validTabs = new Set(['roster', 'onboarding', 'offboarding', 'archives']);
   const [mainTab, setMainTab] = useState<'roster' | 'onboarding' | 'offboarding' | 'archives'>(
     initialTabParam && validTabs.has(initialTabParam)
       ? (initialTabParam as 'roster' | 'onboarding' | 'offboarding' | 'archives')
       : 'roster'
   );
+  const [flowFilter, setFlowFilter] = useState<'all' | 'pending' | 'complete'>(
+    initialFilterParam === 'pending' || initialFilterParam === 'complete' ? initialFilterParam : 'all'
+  );
 
   useEffect(() => {
     const t = searchParams.get('tab');
+    const f = searchParams.get('filter');
     if (t && validTabs.has(t)) {
       setMainTab(t as 'roster' | 'onboarding' | 'offboarding' | 'archives');
+    }
+    if (f === 'pending' || f === 'complete' || f === 'all') {
+      setFlowFilter(f);
     }
   }, [searchParams]);
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE_ONLY' | 'RESIGNED'>('ALL');
@@ -359,6 +386,7 @@ export function EmployeesPage() {
         body: JSON.stringify({ action }),
       });
       showToast(action === 'APPROVE' ? '已审批通过' : '已驳回申请');
+      window.dispatchEvent(new Event('dashboard-refresh'));
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '审批失败', 'error');
@@ -372,6 +400,7 @@ export function EmployeesPage() {
         body: JSON.stringify({ checklist: { contract_signed: true, badge_issued: true } }),
       });
       showToast(`入职建档完成（工号 ${res.empNo}${res.username ? `，账号 ${res.username}` : ''}）`);
+      window.dispatchEvent(new Event('dashboard-refresh'));
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '办结失败', 'error');
@@ -397,6 +426,7 @@ export function EmployeesPage() {
       setOffReasonDetail('');
       setOffHandoverNotes('');
       setMainTab('offboarding');
+      window.dispatchEvent(new Event('dashboard-refresh'));
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '提交离职申请失败', 'error');
@@ -428,6 +458,7 @@ export function EmployeesPage() {
         body: JSON.stringify({ checklist: { work_handover: true, assets_returned: true, finance_settled: true } }),
       });
       showToast('离职手续已办结，人员状态已更新为「已离职」并完成档案归档');
+      window.dispatchEvent(new Event('dashboard-refresh'));
       await load();
     } catch (err) {
       showToast(err instanceof Error ? err.message : '办结离职失败', 'error');
@@ -635,8 +666,32 @@ export function EmployeesPage() {
         </>
       )}
 
-      {mainTab === 'onboarding' && (
+      {mainTab === 'onboarding' && (() => {
+        const filteredOnboarding = onboardingList.filter((r) =>
+          flowFilter === 'pending' ? Boolean(r.canApprove) : flowFilter === 'complete' ? Boolean(r.canComplete) : true
+        );
+        return (
         <div className="bg-white rounded-2xl border border-stone-200/90 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-stone-200 bg-stone-50/70 flex items-center gap-2 flex-wrap">
+            {[
+              { key: 'all', label: `全部 (${onboardingList.length})` },
+              { key: 'pending', label: `待我审批 (${onboardingList.filter((x) => x.canApprove).length})` },
+              { key: 'complete', label: `待入职建档 (${onboardingList.filter((x) => x.canComplete).length})` },
+            ].map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setFlowFilter(f.key as typeof flowFilter)}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold border ${
+                  flowFilter === f.key
+                    ? 'bg-brand-600 text-white border-brand-600'
+                    : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-100'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
               <thead className="bg-stone-50 border-b border-stone-200 text-xs text-stone-500">
@@ -650,14 +705,14 @@ export function EmployeesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
-                {onboardingList.length === 0 ? (
+                {filteredOnboarding.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-5 py-10 text-center text-sm text-stone-400">
-                      暂无入职审批申请
+                      暂无符合条件的入职审批申请
                     </td>
                   </tr>
                 ) : (
-                  onboardingList.map((r) => (
+                  filteredOnboarding.map((r) => (
                     <tr key={r.id} className="hover:bg-stone-50/70">
                       <td className="px-5 py-3.5">
                         <div className="font-semibold text-stone-900">{r.candidate_name}</div>
@@ -672,6 +727,27 @@ export function EmployeesPage() {
                       <td className="px-4 py-3.5">
                         <StatusBadge status={r.status} />
                         {r.status_detail && <div className="text-[11px] text-stone-400 mt-0.5">{r.status_detail}</div>}
+                        {r.steps && r.steps.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {r.steps.map((st) => (
+                              <span
+                                key={st.step_order}
+                                className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                  st.status === 'APPROVED'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : st.status === 'REJECTED'
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : st.status === 'PENDING'
+                                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                        : 'bg-stone-50 text-stone-500 border-stone-200'
+                                }`}
+                              >
+                                {st.step_order}.{st.step_name}
+                                {st.approver_name ? `(${st.approver_name})` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td className="px-5 py-3.5 text-right space-x-2">
                         {r.canApprove && (
@@ -706,10 +782,35 @@ export function EmployeesPage() {
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
 
-      {mainTab === 'offboarding' && (
+      {mainTab === 'offboarding' && (() => {
+        const filteredOffboarding = offboardingList.filter((r) =>
+          flowFilter === 'pending' ? Boolean(r.canApprove) : flowFilter === 'complete' ? Boolean(r.canComplete) : true
+        );
+        return (
         <div className="bg-white rounded-2xl border border-stone-200/90 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-stone-200 bg-stone-50/70 flex items-center gap-2 flex-wrap">
+            {[
+              { key: 'all', label: `全部 (${offboardingList.length})` },
+              { key: 'pending', label: `待我审批 (${offboardingList.filter((x) => x.canApprove).length})` },
+              { key: 'complete', label: `待办结归档 (${offboardingList.filter((x) => x.canComplete).length})` },
+            ].map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setFlowFilter(f.key as typeof flowFilter)}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold border ${
+                  flowFilter === f.key
+                    ? 'bg-brand-600 text-white border-brand-600'
+                    : 'bg-white text-stone-600 border-stone-200 hover:bg-stone-100'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
               <thead className="bg-stone-50 border-b border-stone-200 text-xs text-stone-500">
@@ -723,14 +824,14 @@ export function EmployeesPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
-                {offboardingList.length === 0 ? (
+                {filteredOffboarding.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="px-5 py-10 text-center text-sm text-stone-400">
-                      暂无离职审批申请
+                      暂无符合条件的离职审批申请
                     </td>
                   </tr>
                 ) : (
-                  offboardingList.map((r) => (
+                  filteredOffboarding.map((r) => (
                     <tr key={r.id} className="hover:bg-stone-50/70">
                       <td className="px-5 py-3.5">
                         <div className="font-semibold text-stone-900">{r.employee_name}</div>
@@ -768,7 +869,7 @@ export function EmployeesPage() {
                               >
                                 {ci.item_label}:{' '}
                                 {ci.status === 'CLEARED' ? '已清' : ci.status === 'BLOCKED' ? '阻塞' : '待清'}
-                                {ci.status !== 'CLEARED' && r.status === 'APPROVED' && (
+                                {ci.status !== 'CLEARED' && r.status === 'APPROVED' && r.canClear && (
                                   <button
                                     type="button"
                                     onClick={() => handleClearanceItem(r.id, ci.id, ci.item_key === 'ADVANCE_SETTLE')}
@@ -786,6 +887,27 @@ export function EmployeesPage() {
                       <td className="px-4 py-3.5">
                         <StatusBadge status={r.status} />
                         {r.status_detail && <div className="text-[11px] text-stone-400 mt-0.5">{r.status_detail}</div>}
+                        {r.steps && r.steps.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {r.steps.map((st) => (
+                              <span
+                                key={st.step_order}
+                                className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                                  st.status === 'APPROVED'
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : st.status === 'REJECTED'
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : st.status === 'PENDING'
+                                        ? 'bg-amber-50 text-amber-800 border-amber-200'
+                                        : 'bg-stone-50 text-stone-500 border-stone-200'
+                                }`}
+                              >
+                                {st.step_order}.{st.step_name}
+                                {st.approver_name ? `(${st.approver_name})` : ''}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                       </td>
                       <td className="px-5 py-3.5 text-right space-x-2">
                         {r.canApprove && (
@@ -828,7 +950,8 @@ export function EmployeesPage() {
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {mainTab === 'archives' && (
         <div className="bg-white rounded-2xl border border-stone-200/90 shadow-sm overflow-hidden">
@@ -1359,6 +1482,11 @@ export function EmployeesPage() {
                 className="w-full px-3 py-2 rounded-xl border border-stone-300 text-sm bg-white disabled:bg-stone-50"
                 required
               >
+                {user?.employee_id && !employees.some((e) => Number(e.id) === Number(user.employee_id)) && (
+                  <option value={user.employee_id}>
+                    {user.display_name}（本人 · {user.role_label}）
+                  </option>
+                )}
                 {employees
                   .filter((e) => e.status !== 'RESIGNED')
                   .map((e) => (

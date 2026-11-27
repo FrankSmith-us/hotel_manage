@@ -3348,9 +3348,10 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     );
   });
 
-  it('Store manager offboarding (GM acting as regional manager) appears in GM dashboard inbox and can be approved by GM', async () => {
+  it('Store manager offboarding (GM acting as regional manager) appears in GM and HR dashboard inbox and completes cleanly', async () => {
     const mgrSzToken = await loginAs('mgr_sz');
     const gmToken = await loginAs('gm');
+    const hrToken = await loginAs('hr');
 
     const meRes = await req('GET', '/api/auth/me', { token: mgrSzToken });
     assert.equal(meRes.status, 200);
@@ -3369,19 +3370,12 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(offRes.status, 201);
     const offId = offRes.data.request.id;
 
-    // GM dashboard summary must include this OFFBOARDING item in otherInbox
+    // Step 1: GM dashboard summary must include this OFFBOARDING item in otherInbox
     const dashRes = await req('GET', '/api/dashboard/summary', { token: gmToken });
     assert.equal(dashRes.status, 200);
     const hit = dashRes.data.otherInbox.find((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId));
     assert.ok(hit, 'Expected OFFBOARDING item in GM otherInbox');
     assert.ok(dashRes.data.kpis.pendingOtherCount >= 1);
-
-    // GM offboarding list shows canApprove = true
-    const listRes = await req('GET', '/api/hr-flows/offboarding', { token: gmToken });
-    assert.equal(listRes.status, 200);
-    const offItem = listRes.data.requests.find((r: any) => Number(r.id) === Number(offId));
-    assert.ok(offItem);
-    assert.equal(offItem.canApprove, true);
 
     // GM approves step 1
     const actRes = await req('POST', `/api/hr-flows/offboarding/${offId}/action`, {
@@ -3390,15 +3384,182 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     });
     assert.equal(actRes.status, 200);
 
-    // Disappears from GM otherInbox and appears in myHandledApprovals
+    // Disappears from GM otherInbox and appears in GM myHandledApprovals
     const dashAfter = await req('GET', '/api/dashboard/summary', { token: gmToken });
     assert.equal(dashAfter.status, 200);
     assert.ok(!dashAfter.data.otherInbox.some((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId)));
     assert.ok(dashAfter.data.myHandledApprovals.some((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId)));
 
-    // Appears in applicant's myApplications
+    // Step 2: HR Manager MUST see this OFFBOARDING item in Dashboard otherInbox AND ?tab=pending!
+    const hrDash = await req('GET', '/api/dashboard/summary', { token: hrToken });
+    assert.equal(hrDash.status, 200);
+    assert.ok(
+      hrDash.data.otherInbox.some((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId)),
+      'Expected OFFBOARDING item in HR otherInbox'
+    );
+    const hrPending = await req('GET', '/api/hr-flows/offboarding?tab=pending', { token: hrToken });
+    assert.equal(hrPending.status, 200);
+    const hrItem = hrPending.data.requests.find((r: any) => Number(r.id) === Number(offId));
+    assert.ok(hrItem);
+    assert.equal(hrItem.canApprove, true);
+
+    // HR approves step 2 -> APPROVED
+    const hrAct = await req('POST', `/api/hr-flows/offboarding/${offId}/action`, {
+      token: hrToken,
+      body: { action: 'APPROVE', comment: '集团HR离职复核通过' },
+    });
+    assert.equal(hrAct.status, 200);
+
+    // Resigning store manager cannot self-complete (403)
+    const selfComplete = await req('POST', `/api/hr-flows/offboarding/${offId}/complete`, {
+      token: mgrSzToken,
+      body: {},
+    });
+    assert.equal(selfComplete.status, 403);
+
+    // Appears in applicant's myApplications before final offboarding completion
     const mgrDash = await req('GET', '/api/dashboard/summary', { token: mgrSzToken });
     assert.equal(mgrDash.status, 200);
     assert.ok(mgrDash.data.myApplications.some((x: any) => x.biz_type === 'OFFBOARDING' && Number(x.biz_id) === Number(offId)));
+
+    // HR completes offboarding -> employee RESIGNED & login disabled (401)
+    const hrComp = await req('POST', `/api/hr-flows/offboarding/${offId}/complete`, {
+      token: hrToken,
+      body: {},
+    });
+    assert.equal(hrComp.status, 200);
+
+    const mgrAfter = await req('GET', '/api/dashboard/summary', { token: mgrSzToken });
+    assert.equal(mgrAfter.status, 401);
+  });
+
+  it('Multi-role offboarding routing: manager-initiated staff anti-deadlock, regional manager, finance, HR, and GM', async () => {
+    const mgrShToken = await loginAs('mgr_sh');
+    const regEastToken = await loginAs('region_east');
+    const gmToken = await loginAs('gm');
+    const hrToken = await loginAs('hr');
+    const finToken = await loginAs('finance');
+
+    // 1. Store Manager initiates Staff offboarding -> Step 1 must escalate to region_east (not mgr_sh)
+    const empShRes = await req('GET', '/api/employees?hotelId=2', { token: mgrShToken });
+    const engStaff = empShRes.data.employees.find((e: any) => e.emp_no === 'YQ-1004');
+    assert.ok(engStaff);
+    const staffOff = await req('POST', '/api/hr-flows/offboarding', {
+      token: mgrShToken,
+      body: {
+        employee_id: engStaff.id,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: '店长代为发起员工离职',
+        last_working_date: todayStr(),
+      },
+    });
+    assert.equal(staffOff.status, 201);
+    const staffOffId = staffOff.data.request.id;
+
+    // mgr_sh cannot approve own initiated offboarding (403); region_east sees it in pending
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${staffOffId}/action`, { token: mgrShToken, body: { action: 'APPROVE' } })).status,
+      403
+    );
+    const regPending = await req('GET', '/api/hr-flows/offboarding?tab=pending', { token: regEastToken });
+    assert.ok(regPending.data.requests.some((r: any) => Number(r.id) === Number(staffOffId) && r.canApprove));
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${staffOffId}/action`, { token: regEastToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${staffOffId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+
+    // 2. Regional Manager self-resign -> GM -> HR
+    const regMe = await req('GET', '/api/auth/me', { token: regEastToken });
+    const regOff = await req('POST', '/api/hr-flows/offboarding', {
+      token: regEastToken,
+      body: {
+        employee_id: regMe.data.user.employee_id,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: '区域经理离职申请',
+        last_working_date: todayStr(),
+      },
+    });
+    assert.equal(regOff.status, 201);
+    const regOffId = regOff.data.request.id;
+    // Regional manager can view own request
+    const regList = await req('GET', '/api/hr-flows/offboarding', { token: regEastToken });
+    assert.ok(regList.data.requests.some((r: any) => Number(r.id) === Number(regOffId)));
+    // GM approves -> HR approves
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${regOffId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${regOffId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+
+    // 3. Finance self-resign -> GM -> HR
+    const finMe = await req('GET', '/api/auth/me', { token: finToken });
+    const finOff = await req('POST', '/api/hr-flows/offboarding', {
+      token: finToken,
+      body: {
+        employee_id: finMe.data.user.employee_id,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: '财务负责人离职申请',
+        last_working_date: todayStr(),
+      },
+    });
+    assert.equal(finOff.status, 201);
+    const finOffId = finOff.data.request.id;
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${finOffId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${finOffId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+
+    // 4. HR Manager self-resign -> GM (1 step); HR cannot self-complete (403)
+    const hrMe = await req('GET', '/api/auth/me', { token: hrToken });
+    const hrOff = await req('POST', '/api/hr-flows/offboarding', {
+      token: hrToken,
+      body: {
+        employee_id: hrMe.data.user.employee_id,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: 'HR总监离职申请',
+        last_working_date: todayStr(),
+      },
+    });
+    assert.equal(hrOff.status, 201);
+    const hrOffId = hrOff.data.request.id;
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${hrOffId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      200
+    );
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${hrOffId}/complete`, { token: hrToken, body: {} })).status,
+      403
+    );
+
+    // 5. General Manager self-resign -> HR (with offline Chairman note); GM cannot self-approve (403)
+    const gmMe = await req('GET', '/api/auth/me', { token: gmToken });
+    const gmOff = await req('POST', '/api/hr-flows/offboarding', {
+      token: gmToken,
+      body: {
+        employee_id: gmMe.data.user.employee_id,
+        resign_reason_code: 'PERSONAL_DEV',
+        resign_reason_detail: '总经理离职申请',
+        last_working_date: todayStr(),
+      },
+    });
+    assert.equal(gmOff.status, 201);
+    const gmOffId = gmOff.data.request.id;
+    assert.equal(
+      (await req('POST', `/api/hr-flows/offboarding/${gmOffId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      403
+    );
+    const hrSeeGm = await req('GET', '/api/hr-flows/offboarding?tab=pending', { token: hrToken });
+    assert.ok(hrSeeGm.data.requests.some((r: any) => Number(r.id) === Number(gmOffId) && r.canApprove));
   });
 });

@@ -39,6 +39,7 @@ export async function completeOffboardingTx(
   ]);
   await tx.execute(`UPDATE users SET is_active = 0 WHERE employee_id = ?`, [off.employee_id]);
   for (const u of empUsers) {
+    await tx.execute(`UPDATE regions SET manager_user_id = NULL WHERE manager_user_id = ?`, [u.id]);
     await reassignPendingSteps(tx, u.id);
   }
 

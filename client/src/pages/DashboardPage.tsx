@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   ArrowRight,
@@ -96,8 +96,8 @@ const BIZ_ROUTE: Record<string, string> = {
   LEAVE: '/leaves',
   HEADCOUNT: '/recruitment',
   HOTEL_CLOSURE: '/organization',
-  OFFBOARDING: '/employees?tab=offboarding',
-  ONBOARDING: '/employees?tab=onboarding',
+  OFFBOARDING: '/employees?tab=offboarding&filter=pending',
+  ONBOARDING: '/employees?tab=onboarding&filter=pending',
   EMPLOYEE_CHANGE: '/employees',
   CONTRACT_RENEWAL: '/employees',
   OVERTIME: '/leaves',
@@ -127,9 +127,15 @@ const BIZ_LABEL: Record<string, string> = {
 export function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [trackTab, setTrackTab] = useState<'mine' | 'handled'>('mine');
+
+  const scrollToSection = (id: string) => {
+    const el = document.getElementById(id);
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
 
   useEffect(() => {
     setLoading(true);
@@ -137,6 +143,14 @@ export function DashboardPage() {
       .then(setData)
       .finally(() => setLoading(false));
   }, [user?.id]);
+
+  useEffect(() => {
+    if (loading || !data) return;
+    const focus = searchParams.get('focus');
+    if (focus === 'other-inbox' || focus === 'expense-inbox') {
+      scrollToSection(focus);
+    }
+  }, [loading, data, searchParams]);
 
   if (loading || !data) {
     return <div className="py-16 text-center text-sm text-stone-500">正在加载运营工作台数据...</div>;
@@ -186,7 +200,7 @@ export function DashboardPage() {
           }
           icon={<Receipt className="w-5 h-5" />}
           accent={data.kpis.urgentExpenseCount > 0 ? 'rose' : 'amber'}
-          onClick={() => navigate('/reimbursements')}
+          onClick={() => scrollToSection('expense-inbox')}
         />
         <KpiCard
           title="待办其他业务审批"
@@ -202,7 +216,7 @@ export function DashboardPage() {
           }
           icon={<CheckSquare className="w-5 h-5" />}
           accent={data.kpis.urgentOtherCount > 0 ? 'rose' : 'stone'}
-          onClick={() => navigate('/leaves')}
+          onClick={() => scrollToSection('other-inbox')}
         />
         <KpiCard
           title="本月累计报销金额"
@@ -224,7 +238,7 @@ export function DashboardPage() {
 
       {/* Separated Approval Reminders: Expense Approvals FIRST, then Other Business Approvals */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-6 bg-white rounded-2xl border-2 border-brand-200/80 p-5 shadow-sm">
+        <div id="expense-inbox" className="lg:col-span-6 bg-white rounded-2xl border-2 border-brand-200/80 p-5 shadow-sm scroll-mt-20">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-base font-semibold text-stone-900 flex items-center gap-2">
@@ -304,14 +318,14 @@ export function DashboardPage() {
           )}
         </div>
 
-        <div className="lg:col-span-6 bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm">
+        <div id="other-inbox" className="lg:col-span-6 bg-white rounded-2xl border border-stone-200/90 p-5 shadow-sm scroll-mt-20">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-base font-semibold text-stone-900 flex items-center gap-2">
                 <Users className="w-4 h-4 text-stone-600" />
                 <span>其他业务审批提醒</span>
               </h2>
-              <p className="text-xs text-stone-500">请假、调休、加班及门店补编审批</p>
+              <p className="text-xs text-stone-500">请假加班、入离职、人事异动、门店补编与关店审批</p>
             </div>
             <div className="flex items-center gap-1.5">
               {data.kpis.urgentOtherCount > 0 && (
