@@ -9,6 +9,7 @@ import {
   isOwnHotel,
   requireRoles,
 } from '../middleware/auth';
+import { BUSINESS_RULES } from '../config/businessRules';
 import { addDays, getMondayOfCurrentWeek, isoDateSchema, nowIso } from '../utils/numbers';
 
 const router = Router();
@@ -104,8 +105,17 @@ router.put(
 
     await db.transaction(async (tx) => {
       for (const item of body.assignments) {
-        const emp = await tx.queryOne<{ id: number; hotel_id: number }>(
-          'SELECT id, hotel_id FROM employees WHERE id = ?',
+        const emp = await tx.queryOne<{
+          id: number;
+          name: string;
+          hotel_id: number;
+          health_cert_expiry: string | null;
+          dept_category: string | null;
+        }>(
+          `SELECT e.id, e.name, e.hotel_id, e.health_cert_expiry, d.category AS dept_category
+           FROM employees e
+           JOIN departments d ON d.id = e.department_id
+           WHERE e.id = ?`,
           [item.employee_id]
         );
         if (!emp) throw new AppError(404, `员工 ${item.employee_id} 不存在`);
@@ -114,6 +124,18 @@ router.put(
         }
         if (!(await canAccessHotel(user, emp.hotel_id))) {
           throw new AppError(403, '无权限调整其他门店员工排班');
+        }
+        if (
+          item.shift_type !== 'OFF' &&
+          emp.dept_category &&
+          BUSINESS_RULES.healthCert.requiredDeptCategories.includes(emp.dept_category)
+        ) {
+          if (!emp.health_cert_expiry || emp.health_cert_expiry < item.shift_date) {
+            throw new AppError(
+              400,
+              `员工 ${emp.name} 所属部门(${emp.dept_category})必须持有效健康证方可排班（当前健康证：${emp.health_cert_expiry || '未登记'}）`
+            );
+          }
         }
 
         const assignedHotelId = item.assigned_hotel_id ?? emp.hotel_id;

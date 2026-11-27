@@ -431,6 +431,7 @@ router.post(
       .object({
         username: z.string().min(3).optional(),
         hire_date: isoDateSchema.default(todayStr),
+        id_card_last4: z.string().max(8).optional().default(''),
         health_cert_expiry: isoDateSchema.optional().nullable(),
       })
       .parse(req.body || {});
@@ -465,8 +466,8 @@ router.post(
         throw new AppError(400, '仅已发放 Offer 的候选人可办理一键入职');
       }
       if (cand.headcount_request_id) {
-        const hc = await tx.queryOne<{ id: number; hotel_id: number; status: string }>(
-          'SELECT id, hotel_id, status FROM headcount_requests WHERE id = ?',
+        const hc = await tx.queryOne<{ id: number; hotel_id: number; status: string; headcount: number }>(
+          'SELECT id, hotel_id, status, headcount FROM headcount_requests WHERE id = ?',
           [cand.headcount_request_id]
         );
         if (!hc || hc.status !== 'APPROVED') {
@@ -474,6 +475,13 @@ router.post(
         }
         if (Number(hc.hotel_id) !== Number(cand.hotel_id)) {
           throw new AppError(400, '候选人门店与关联补编单门店不一致');
+        }
+        const hiredRow = await tx.queryOne<{ cnt: number }>(
+          `SELECT COUNT(*) AS cnt FROM candidates WHERE headcount_request_id = ? AND stage = 'HIRED'`,
+          [cand.headcount_request_id]
+        );
+        if (Number(hiredRow?.cnt || 0) >= Number(hc.headcount)) {
+          throw new AppError(400, `该补编申请名额已满（限 ${hc.headcount} 人），禁止超编录用`);
         }
       }
       if (!(await canAccessHotel(req.user!, cand.hotel_id))) {
@@ -489,18 +497,19 @@ router.post(
           emp_no, name, gender, phone, id_card_last4, hotel_id, department_id, position,
           employment_type, status, hire_date, probation_end_date, contract_end_date,
           health_cert_expiry, base_salary, night_allowance_rate, created_at, updated_at
-        ) VALUES (?, ?, 'M', ?, '6666', ?, ?, ?, 'FULL_TIME', 'PROBATION', ?, ?, ?, ?, ?, 80, ?, ?)`,
+        ) VALUES (?, ?, 'M', ?, ?, ?, ?, ?, 'FULL_TIME', 'PROBATION', ?, ?, ?, ?, ?, 80, ?, ?)`,
         [
           empNo,
           cand.name,
           cand.phone,
+          body.id_card_last4,
           cand.hotel_id,
           cand.department_id,
           cand.position,
           body.hire_date,
           addDays(body.hire_date, 90),
           addDays(body.hire_date, 730),
-          body.health_cert_expiry ?? addDays(body.hire_date, 365),
+          body.health_cert_expiry ?? null,
           cand.expected_salary,
           ts,
           ts,

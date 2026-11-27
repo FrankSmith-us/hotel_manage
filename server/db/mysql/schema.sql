@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS employees (
   gender VARCHAR(12) NOT NULL DEFAULT 'M',
   phone VARCHAR(32) NOT NULL,
   email VARCHAR(120) NULL,
-  id_card_last4 VARCHAR(8) NOT NULL DEFAULT '0000',
+  id_card_last4 VARCHAR(8) NOT NULL DEFAULT '',
   hotel_id BIGINT NOT NULL,
   department_id BIGINT NOT NULL,
   position_id BIGINT NULL,

@@ -343,6 +343,7 @@ router.post(
 const completeOnboardingSchema = z.object({
   checklist: z.record(z.string(), z.boolean()).optional(),
   hire_date: isoDateSchema.optional(),
+  id_card_last4: z.string().max(8).optional().default(''),
 });
 
 router.post(
@@ -400,13 +401,14 @@ router.post(
           position_id, position, education, marital_status, political_status,
           employment_type, status, hire_date, probation_end_date, contract_end_date,
           health_cert_expiry, base_salary, night_allowance_rate, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, '8888', ?, ?, ?, ?, ?, ?, ?, ?, 'PROBATION', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PROBATION', ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           empNo,
           ob.candidate_name,
           ob.gender,
           ob.phone,
           ob.email,
+          body.id_card_last4,
           ob.hotel_id,
           ob.department_id,
           ob.position_id,

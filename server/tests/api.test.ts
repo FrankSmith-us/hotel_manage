@@ -2225,4 +2225,63 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(myPayslips.status, 200);
     assert.ok(myPayslips.data.payslips.some((p: any) => p.year_month === ym && p.status === 'PAID'));
   });
+
+  it('T1-10: onboarding removes fake defaults, enforces headcount quota, and blocks FB/HOUSEKEEPING shift without valid health cert', async () => {
+    const hrToken = await loginAs('hr');
+    const mgrToken = await loginAs('mgr_sh');
+    const gmToken = await loginAs('gm');
+    const regToken = await loginAs('region_east');
+
+    // 1. Headcount request for 1 person in HOUSEKEEPING on hotel 2
+    const empListRes = await req('GET', '/api/employees?hotelId=2', { token: mgrToken });
+    const hkDeptId = empListRes.data.employees.find((e: any) => e.name === '赵小燕').department_id;
+    const hcRes = await req('POST', '/api/recruitment/headcounts', {
+      token: mgrToken,
+      body: { hotel_id: 2, department_id: hkDeptId, position: '客房服务员', headcount: 1, salary_range: '4500-5500', reason: '旺季补编' },
+    });
+    assert.equal(hcRes.status, 201);
+    const hcId = hcRes.data.headcount.id;
+    assert.equal((await req('POST', `/api/recruitment/headcounts/${hcId}/action`, { token: regToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/recruitment/headcounts/${hcId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status, 200);
+
+    // Create 2 offered candidates tied to same headcount (limit = 1)
+    const c1 = await req('POST', '/api/recruitment/candidates', {
+      token: hrToken,
+      body: { headcount_request_id: hcId, hotel_id: 2, department_id: hkDeptId, name: '客房甲', phone: '13900001101', position: '客房服务员', expected_salary: 4500 },
+    });
+    const c2 = await req('POST', '/api/recruitment/candidates', {
+      token: hrToken,
+      body: { headcount_request_id: hcId, hotel_id: 2, department_id: hkDeptId, name: '客房乙', phone: '13900001102', position: '客房服务员', expected_salary: 4500 },
+    });
+    assert.equal(c1.status, 201);
+    assert.equal(c2.status, 201);
+    await req('PATCH', `/api/recruitment/candidates/${c1.data.candidate.id}/stage`, { token: hrToken, body: { stage: 'OFFERED' } });
+    await req('PATCH', `/api/recruitment/candidates/${c2.data.candidate.id}/stage`, { token: hrToken, body: { stage: 'OFFERED' } });
+
+    // Hire c1 without health cert or id_card -> succeeds, no fake defaults
+    const hire1 = await req('POST', `/api/recruitment/candidates/${c1.data.candidate.id}/hire`, { token: hrToken, body: {} });
+    assert.equal(hire1.status, 201);
+    const emp1Id = hire1.data.employeeId;
+    const emp1Detail = await req('GET', `/api/employees/${emp1Id}`, { token: hrToken });
+    assert.equal(emp1Detail.data.employee.id_card_last4, '');
+    assert.equal(emp1Detail.data.employee.health_cert_expiry, null);
+
+    // Hire c2 on same headcount -> 400 quota full
+    const hire2 = await req('POST', `/api/recruitment/candidates/${c2.data.candidate.id}/hire`, { token: hrToken, body: {} });
+    assert.equal(hire2.status, 400);
+
+    // 2. Scheduling MORNING shift for HOUSEKEEPING employee without health cert -> 400; OFF -> 200
+    const monday = getMondayOfCurrentWeek();
+    const badShift = await req('PUT', '/api/schedules/assign', {
+      token: mgrToken,
+      body: { assignments: [{ employee_id: emp1Id, shift_date: monday, shift_type: 'MORNING' }] },
+    });
+    assert.equal(badShift.status, 400);
+
+    const offShift = await req('PUT', '/api/schedules/assign', {
+      token: mgrToken,
+      body: { assignments: [{ employee_id: emp1Id, shift_date: monday, shift_type: 'OFF' }] },
+    });
+    assert.equal(offShift.status, 200);
+  });
 });
