@@ -3192,4 +3192,18 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const csvText = await csvRes.text();
     assert.match(csvText, /业务类型/);
   });
+
+  it('T3-07: core composite indexes exist in both SQLite and MySQL schemas', () => {
+    const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
+    const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
+    for (const idxName of [
+      'idx_steps_status_biz',
+      'idx_logs_biz_created',
+      'idx_reimb_app_status',
+      'idx_payroll_emp_ym',
+    ]) {
+      assert.ok(mysqlSql.includes(idxName), `MySQL schema missing ${idxName}`);
+      assert.ok(sqliteSql.includes(idxName), `SQLite schema missing ${idxName}`);
+    }
+  });
 });

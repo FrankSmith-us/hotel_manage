@@ -889,3 +889,9 @@ CREATE TABLE IF NOT EXISTS vendor_payments (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vendor_pay_hotel ON vendor_payments(hotel_id, status);
+
+-- T3-07: Core composite indexes
+CREATE INDEX IF NOT EXISTS idx_steps_status_biz ON approval_steps(status, biz_type, biz_id);
+CREATE INDEX IF NOT EXISTS idx_logs_biz_created ON approval_logs(biz_type, biz_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_reimb_app_status ON reimbursements(applicant_id, status);
+CREATE INDEX IF NOT EXISTS idx_payroll_emp_ym ON payroll_records(employee_id, `year_month`);
