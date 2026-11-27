@@ -95,6 +95,7 @@ const BIZ_ROUTE: Record<string, string> = {
   CASH_ADVANCE: '/advances',
   LEAVE: '/leaves',
   HEADCOUNT: '/recruitment',
+  HOTEL_CLOSURE: '/organization',
 };
 
 const BIZ_LABEL: Record<string, string> = {
@@ -102,6 +103,7 @@ const BIZ_LABEL: Record<string, string> = {
   CASH_ADVANCE: '备用金借款',
   LEAVE: '请假/加班',
   HEADCOUNT: '门店补编',
+  HOTEL_CLOSURE: '门店关闭审批',
 };
 
 export function DashboardPage() {

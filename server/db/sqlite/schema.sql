@@ -895,3 +895,18 @@ CREATE INDEX IF NOT EXISTS idx_steps_status_biz ON approval_steps(status, biz_ty
 CREATE INDEX IF NOT EXISTS idx_logs_biz_created ON approval_logs(biz_type, biz_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_reimb_app_status ON reimbursements(applicant_id, status);
 CREATE INDEX IF NOT EXISTS idx_payroll_emp_ym ON payroll_records(employee_id, `year_month`);
+
+CREATE TABLE IF NOT EXISTS hotel_closure_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  reason TEXT NOT NULL,
+  applicant_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  total_steps INTEGER NOT NULL DEFAULT 2,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hotel_closure_hotel ON hotel_closure_requests(hotel_id, status);

@@ -976,4 +976,21 @@ CREATE INDEX idx_logs_biz_created ON approval_logs(biz_type, biz_id, created_at)
 CREATE INDEX idx_reimb_app_status ON reimbursements(applicant_id, status);
 CREATE INDEX idx_payroll_emp_ym ON payroll_records(employee_id, `year_month`);
 
+CREATE TABLE IF NOT EXISTS hotel_closure_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  hotel_id BIGINT NOT NULL,
+  reason TEXT NOT NULL,
+  applicant_id BIGINT NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  total_steps INT NOT NULL DEFAULT 2,
+  closed_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_hotel_closure_hotel (hotel_id, status),
+  CONSTRAINT fk_hc_req_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_hc_req_applicant FOREIGN KEY (applicant_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

@@ -288,6 +288,46 @@ router.get(
             created_at: hc.created_at,
           });
         }
+      } else if (st.biz_type === 'HOTEL_CLOSURE') {
+        const c = await db.queryOne<{
+          id: number;
+          request_no: string;
+          hotel_id: number;
+          applicant_id: number;
+          reason: string;
+          created_at: string;
+          hotel_name: string;
+          applicant_name: string;
+        }>(
+          `SELECT c.id, c.request_no, c.hotel_id, c.applicant_id, c.reason, c.created_at,
+                  h.name AS hotel_name, u.display_name AS applicant_name
+           FROM hotel_closure_requests c
+           JOIN hotels h ON h.id = c.hotel_id
+           JOIN users u ON u.id = c.applicant_id
+           WHERE c.id = ? AND c.status = 'PENDING_APPROVAL'`,
+          [st.biz_id]
+        );
+        if (
+          c &&
+          (await canUserActOnStep(db, user, st.approver_role, c.hotel_id, c.applicant_id, {
+            approverUserId: st.approver_user_id,
+            bizType: 'HOTEL_CLOSURE',
+          }))
+        ) {
+          otherInbox.push({
+            biz_type: 'HOTEL_CLOSURE',
+            biz_id: c.id,
+            code: c.request_no,
+            title: `关闭门店：${c.hotel_name}`,
+            hotel_name: c.hotel_name,
+            applicant_name: c.applicant_name,
+            amount: null,
+            step_name: st.step_name,
+            risk_flags: '',
+            urgency: 'NORMAL',
+            created_at: c.created_at,
+          });
+        }
       }
     }
 
@@ -561,6 +601,48 @@ router.get(
         });
       }
 
+      const myClosures = await db.query<{
+        id: number;
+        request_no: string;
+        status: string;
+        current_step: number;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+      }>(
+        `SELECT c.id, c.request_no, c.status, c.current_step, c.created_at, c.updated_at, h.name AS hotel_name
+         FROM hotel_closure_requests c
+         JOIN hotels h ON h.id = c.hotel_id
+         WHERE c.applicant_id = ?
+         ORDER BY c.id DESC
+         LIMIT 10`,
+        [user.id]
+      );
+      for (const c of myClosures) {
+        const steps = await getWorkflowStepsWithActors(db, 'HOTEL_CLOSURE', c.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        list.push({
+          biz_type: 'HOTEL_CLOSURE',
+          biz_id: c.id,
+          code: c.request_no,
+          title: `关闭门店：${c.hotel_name}`,
+          hotel_name: c.hotel_name,
+          applicant_name: user.display_name,
+          amount: null,
+          status: c.status,
+          status_detail: buildStatusDetail({
+            bizType: 'HOTEL_CLOSURE',
+            status: c.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: c.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: 'NORMAL',
+          created_at: c.created_at,
+          updated_at: c.updated_at,
+        });
+      }
+
       list.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.biz_id - a.biz_id);
       return list.slice(0, 20);
     };
@@ -785,6 +867,55 @@ router.get(
           my_acted_at: act.my_acted_at,
           created_at: hc.created_at,
           updated_at: hc.updated_at,
+        });
+      }
+
+      const handledClosures = await db.query<{
+        id: number;
+        request_no: string;
+        status: string;
+        current_step: number;
+        created_at: string;
+        updated_at: string;
+        hotel_name: string;
+        applicant_name: string;
+      }>(
+        `SELECT c.id, c.request_no, c.status, c.current_step, c.created_at, c.updated_at,
+                h.name AS hotel_name, u.display_name AS applicant_name
+         FROM hotel_closure_requests c
+         JOIN hotels h ON h.id = c.hotel_id
+         JOIN users u ON u.id = c.applicant_id
+         WHERE EXISTS (SELECT 1 FROM approval_steps s WHERE s.biz_type = 'HOTEL_CLOSURE' AND s.biz_id = c.id AND s.acted_by = ?)
+            OR EXISTS (SELECT 1 FROM approval_logs l WHERE l.biz_type = 'HOTEL_CLOSURE' AND l.biz_id = c.id AND l.actor_id = ? AND l.action IN ('APPROVE', 'REJECT'))
+         ORDER BY c.id DESC
+         LIMIT 10`,
+        [user.id, user.id]
+      );
+      for (const c of handledClosures) {
+        const steps = await getWorkflowStepsWithActors(db, 'HOTEL_CLOSURE', c.id);
+        const pendingStep = steps.find((s) => s.status === 'PENDING');
+        const act = await getUserLastHandledAction(db, 'HOTEL_CLOSURE', c.id, user.id);
+        list.push({
+          biz_type: 'HOTEL_CLOSURE',
+          biz_id: c.id,
+          code: c.request_no,
+          title: `关闭门店：${c.hotel_name}`,
+          hotel_name: c.hotel_name,
+          applicant_name: c.applicant_name,
+          amount: null,
+          status: c.status,
+          status_detail: buildStatusDetail({
+            bizType: 'HOTEL_CLOSURE',
+            status: c.status,
+            currentStepName: pendingStep?.step_name ?? null,
+            currentStep: c.current_step,
+            totalSteps: steps.length,
+          }),
+          urgency: 'NORMAL',
+          my_action: act.my_last_action,
+          my_acted_at: act.my_acted_at,
+          created_at: c.created_at,
+          updated_at: c.updated_at,
         });
       }
 

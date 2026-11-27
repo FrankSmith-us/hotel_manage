@@ -117,6 +117,13 @@ export function buildHeadcountRoute(params: { headcount: number; urgency: string
   }));
 }
 
+export function buildHotelClosureRoute(): PlannedStep[] {
+  return [
+    { stepOrder: 1, stepName: '区域总审批', approverRole: 'REGIONAL_MANAGER' },
+    { stepOrder: 2, stepName: '集团总经理终审', approverRole: 'GENERAL_MANAGER' },
+  ];
+}
+
 export function buildCashAdvanceRoute(params: {
   applicantRole: UserRole;
   amount: number;
@@ -525,6 +532,10 @@ export async function reassignPendingSteps(db: DbQueryRunner, oldUserId: number)
       const r = await db.queryOne<{ hotel_id: number; applicant_id: number }>('SELECT hotel_id, applicant_id FROM offboarding_requests WHERE id = ?', [st.biz_id]);
       hotelId = r?.hotel_id ?? null;
       applicantId = r?.applicant_id ?? null;
+    } else if (st.biz_type === 'HOTEL_CLOSURE') {
+      const r = await db.queryOne<{ hotel_id: number; applicant_id: number }>('SELECT hotel_id, applicant_id FROM hotel_closure_requests WHERE id = ?', [st.biz_id]);
+      hotelId = r?.hotel_id ?? null;
+      applicantId = r?.applicant_id ?? null;
     }
     if (!hotelId) continue;
     const res = await resolveApprover(db, st.approver_role, hotelId, applicantId);
@@ -752,6 +763,8 @@ export function buildStatusDetail(params: {
   } else if (bizType === 'OFFBOARDING') {
     if (status === 'APPROVED') return '审批已通过 · 待办理离职并归档';
     if (status === 'COMPLETED') return '已离职并完成档案归档';
+  } else if (bizType === 'HOTEL_CLOSURE') {
+    if (status === 'APPROVED') return '区域总及集团总经理已批准 · 门店已关闭';
   }
   return status;
 }

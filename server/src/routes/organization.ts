@@ -3,7 +3,15 @@ import { z } from 'zod';
 import { getDb } from '../../db';
 import { AppError, asyncHandler, authenticate, canAccessHotel, getScopeFilter, requireRoles } from '../middleware/auth';
 import { logApprovalAction } from '../services/auditService';
-import { currentYearMonth, nowIso, offsetYearMonth, todayStr } from '../utils/numbers';
+import {
+  buildHotelClosureRoute,
+  buildStatusDetail,
+  canUserActOnStep,
+  getWorkflowStepsWithActors,
+  replaceApprovalSteps,
+  resolveApprovalRoute,
+} from '../services/workflowEngine';
+import { currentYearMonth, generateCode, nowIso, offsetYearMonth, todayStr } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -269,6 +277,9 @@ router.post(
     }
 
     const hotelStatus = body.status.toUpperCase();
+    if (hotelStatus === 'CLOSED') {
+      throw new AppError(400, '新建门店状态不可直接设置为关闭');
+    }
     const validStatusRow = await db.queryOne<{ code: string }>(
       `SELECT code FROM master_dict_items WHERE dict_type = 'HOTEL_STATUS' AND code = ? AND is_active = 1`,
       [hotelStatus]
@@ -374,10 +385,17 @@ router.patch(
     const id = Number(req.params.id);
     const { status } = z.object({ status: z.string().trim().min(2).max(24) }).parse(req.body);
     const nextStatus = status.toUpperCase();
+    if (nextStatus === 'CLOSED') {
+      throw new AppError(400, '门店状态不能直接设置为关闭，须全部员工为离职状态并经区域总及集团总经理批准');
+    }
     const db = getDb();
-    const hotel = await db.queryOne<{ id: number; is_hq: number }>('SELECT id, is_hq FROM hotels WHERE id = ?', [id]);
+    const hotel = await db.queryOne<{ id: number; is_hq: number; status: string }>(
+      'SELECT id, is_hq, status FROM hotels WHERE id = ?',
+      [id]
+    );
     if (!hotel) throw new AppError(404, '门店不存在');
     if (hotel.is_hq) throw new AppError(400, '集团总部状态不可变更');
+    if (hotel.status === 'CLOSED') throw new AppError(400, '已关闭门店不可直接变更状态');
 
     const validStatusRow = await db.queryOne<{ code: string }>(
       `SELECT code FROM master_dict_items WHERE dict_type = 'HOTEL_STATUS' AND code = ? AND is_active = 1`,
@@ -481,6 +499,296 @@ router.put(
 
     const plan = await db.queryOne('SELECT * FROM hotel_staffing_plans WHERE id = ?', [planId]);
     res.json({ plan });
+  })
+);
+
+router.get(
+  '/closure-requests',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const scope = await getScopeFilter(req.user!);
+    const conditions = ['1=1'];
+    const params: unknown[] = [];
+
+    if (scope.type === 'REGION') {
+      if (scope.hotelIds.length === 0) {
+        res.json({ requests: [] });
+        return;
+      }
+      conditions.push(`c.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
+      params.push(...scope.hotelIds);
+    } else if (scope.type === 'HOTEL') {
+      conditions.push('c.hotel_id = ?');
+      params.push(scope.hotelId);
+    } else if (scope.type === 'SELF') {
+      conditions.push('c.applicant_id = ?');
+      params.push(req.user!.id);
+    }
+
+    const rows = await db.query<any>(
+      `SELECT c.*, h.name AS hotel_name, h.code AS hotel_code, r.name AS region_name, u.display_name AS applicant_name
+       FROM hotel_closure_requests c
+       JOIN hotels h ON h.id = c.hotel_id
+       JOIN regions r ON r.id = h.region_id
+       JOIN users u ON u.id = c.applicant_id
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY c.id DESC`,
+      params
+    );
+
+    const requests = [];
+    for (const row of rows) {
+      const empRow = await db.queryOne<{ cnt: number }>(
+        `SELECT COUNT(*) AS cnt FROM employees WHERE hotel_id = ? AND status != 'RESIGNED'`,
+        [row.hotel_id]
+      );
+      const steps = await getWorkflowStepsWithActors(db, 'HOTEL_CLOSURE', row.id);
+      const pendingStep = steps.find((s) => s.status === 'PENDING');
+      const pendingRaw =
+        row.status === 'PENDING_APPROVAL'
+          ? await db.queryOne<{ approver_role: any; approver_user_id: number | null }>(
+              `SELECT approver_role, approver_user_id FROM approval_steps WHERE biz_type = 'HOTEL_CLOSURE' AND biz_id = ? AND status = 'PENDING' ORDER BY step_order ASC LIMIT 1`,
+              [row.id]
+            )
+          : null;
+      const canApprove =
+        row.status === 'PENDING_APPROVAL' && pendingRaw
+          ? await canUserActOnStep(db, req.user!, pendingRaw.approver_role, row.hotel_id, row.applicant_id, {
+              approverUserId: pendingRaw.approver_user_id,
+              bizType: 'HOTEL_CLOSURE',
+            })
+          : false;
+
+      requests.push({
+        ...row,
+        non_resigned_employee_count: Number(empRow?.cnt || 0),
+        steps,
+        status_detail: buildStatusDetail({
+          bizType: 'HOTEL_CLOSURE',
+          status: row.status,
+          currentStepName: pendingStep?.step_name ?? null,
+          currentStep: row.current_step,
+          totalSteps: steps.length,
+        }),
+        can_approve: canApprove,
+      });
+    }
+
+    res.json({ requests });
+  })
+);
+
+router.post(
+  '/hotels/:id/closure-requests',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const hotelId = Number(req.params.id);
+    const { reason } = z.object({ reason: z.string().trim().min(2).max(500) }).parse(req.body);
+
+    if (!(await canAccessHotel(req.user!, hotelId))) {
+      throw new AppError(403, '无权申请关闭该门店');
+    }
+
+    const db = getDb();
+    const hotel = await db.queryOne<{ id: number; name: string; is_hq: number; status: string }>(
+      'SELECT id, name, is_hq, status FROM hotels WHERE id = ?',
+      [hotelId]
+    );
+    if (!hotel) throw new AppError(404, '门店不存在');
+    if (hotel.is_hq) throw new AppError(400, '集团总部不可关闭');
+    if (hotel.status === 'CLOSED') throw new AppError(400, '该门店已处于关闭状态');
+
+    const nonResigned = await db.queryOne<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM employees WHERE hotel_id = ? AND status != 'RESIGNED'`,
+      [hotelId]
+    );
+    const activeCount = Number(nonResigned?.cnt || 0);
+    if (activeCount > 0) {
+      throw new AppError(400, `该门店仍有 ${activeCount} 名未离职员工，须所有员工为离职状态后方可申请关闭`);
+    }
+
+    const dup = await db.queryOne<{ id: number }>(
+      `SELECT id FROM hotel_closure_requests WHERE hotel_id = ? AND status = 'PENDING_APPROVAL'`,
+      [hotelId]
+    );
+    if (dup) {
+      throw new AppError(409, '该门店已有审批中的关店申请，请勿重复提交');
+    }
+
+    const resolved = await resolveApprovalRoute(db, hotelId, buildHotelClosureRoute(), req.user!.id);
+    const ts = nowIso();
+    const requestNo = generateCode('CLS');
+
+    const reqId = await db.transaction(async (tx) => {
+      const ins = await tx.execute(
+        `INSERT INTO hotel_closure_requests (
+          request_no, hotel_id, reason, applicant_id, status, current_step, total_steps, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?, ?)`,
+        [requestNo, hotelId, reason, req.user!.id, resolved.steps.length, ts, ts]
+      );
+      await replaceApprovalSteps(tx, 'HOTEL_CLOSURE', ins.insertId, resolved.steps);
+      await logApprovalAction(tx, {
+        bizType: 'HOTEL_CLOSURE',
+        bizId: ins.insertId,
+        action: 'SUBMIT',
+        actor: req.user!,
+        comment: `申请关闭门店 ${hotel.name}：${reason}`,
+      });
+      if (resolved.skippedRegionalManager && resolved.skipReason) {
+        await logApprovalAction(tx, {
+          bizType: 'HOTEL_CLOSURE',
+          bizId: ins.insertId,
+          action: 'AUTO_SKIP',
+          actor: req.user!,
+          comment: resolved.skipReason,
+        });
+      }
+      return ins.insertId;
+    });
+
+    const request = await db.queryOne('SELECT * FROM hotel_closure_requests WHERE id = ?', [reqId]);
+    res.status(201).json({ request });
+  })
+);
+
+router.post(
+  '/closure-requests/:id/action',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const { action, comment } = z
+      .object({
+        action: z.enum(['APPROVE', 'REJECT']),
+        comment: z.string().optional().default(''),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const ts = nowIso();
+
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx.queryOne<any>(
+        `SELECT * FROM hotel_closure_requests WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!row) throw new AppError(404, '关店申请不存在');
+      if (row.status !== 'PENDING_APPROVAL') {
+        throw new AppError(409, '单据状态已变化，请刷新后重试');
+      }
+
+      const step = await tx.queryOne<any>(
+        `SELECT * FROM approval_steps
+         WHERE biz_type = 'HOTEL_CLOSURE' AND biz_id = ? AND step_order = ? AND status = 'PENDING'`,
+        [id, row.current_step]
+      );
+      if (!step) throw new AppError(409, '未找到当前待审批节点');
+
+      const allowed = await canUserActOnStep(tx, req.user!, step.approver_role, row.hotel_id, row.applicant_id, {
+        approverUserId: step.approver_user_id,
+        bizType: 'HOTEL_CLOSURE',
+      });
+      if (!allowed) {
+        throw new AppError(403, '当前节点仅限指定区域总或集团总经理审批');
+      }
+
+      await tx.execute(
+        `UPDATE approval_steps SET status = ?, acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+        [action === 'APPROVE' ? 'APPROVED' : 'REJECTED', req.user!.id, ts, comment || null, step.id]
+      );
+
+      if (action === 'REJECT') {
+        const upd = await tx.execute(
+          `UPDATE hotel_closure_requests SET status = 'REJECTED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+          [ts, id]
+        );
+        if (upd.affectedRows !== 1) throw new AppError(409, '单据状态已变化，请刷新后重试');
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'CANCELLED' WHERE biz_type = 'HOTEL_CLOSURE' AND biz_id = ? AND status = 'WAITING'`,
+          [id]
+        );
+      } else {
+        const nextStep = await tx.queryOne<any>(
+          `SELECT * FROM approval_steps
+           WHERE biz_type = 'HOTEL_CLOSURE' AND biz_id = ? AND step_order = ?`,
+          [id, Number(row.current_step) + 1]
+        );
+        if (nextStep) {
+          await tx.execute(`UPDATE approval_steps SET status = 'PENDING' WHERE id = ?`, [nextStep.id]);
+          const upd = await tx.execute(
+            `UPDATE hotel_closure_requests SET current_step = ?, updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [Number(row.current_step) + 1, ts, id]
+          );
+          if (upd.affectedRows !== 1) throw new AppError(409, '单据状态已变化，请刷新后重试');
+        } else {
+          const nonResigned = await tx.queryOne<{ cnt: number }>(
+            `SELECT COUNT(*) AS cnt FROM employees WHERE hotel_id = ? AND status != 'RESIGNED'`,
+            [row.hotel_id]
+          );
+          const activeCount = Number(nonResigned?.cnt || 0);
+          if (activeCount > 0) {
+            throw new AppError(409, `该门店仍有 ${activeCount} 名未离职员工，无法完成关店，请先办理全部员工离职`);
+          }
+          const upd = await tx.execute(
+            `UPDATE hotel_closure_requests SET status = 'APPROVED', closed_at = ?, updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+            [ts, ts, id]
+          );
+          if (upd.affectedRows !== 1) throw new AppError(409, '单据状态已变化，请刷新后重试');
+          await tx.execute(`UPDATE hotels SET status = 'CLOSED' WHERE id = ?`, [row.hotel_id]);
+        }
+      }
+
+      await logApprovalAction(tx, {
+        bizType: 'HOTEL_CLOSURE',
+        bizId: id,
+        action,
+        actor: req.user!,
+        comment,
+      });
+
+      return tx.queryOne('SELECT * FROM hotel_closure_requests WHERE id = ?', [id]);
+    });
+
+    res.json({ request: updated });
+  })
+);
+
+router.post(
+  '/closure-requests/:id/cancel',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const db = getDb();
+    const ts = nowIso();
+
+    const updated = await db.transaction(async (tx) => {
+      const row = await tx.queryOne<any>(
+        `SELECT * FROM hotel_closure_requests WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!row) throw new AppError(404, '关店申请不存在');
+      if (row.status !== 'PENDING_APPROVAL') throw new AppError(409, '仅审批中的关店申请可撤销');
+      if (Number(row.applicant_id) !== Number(req.user!.id) && req.user!.role !== 'HQ_ADMIN') {
+        throw new AppError(403, '仅申请人或集团管理员可撤销关店申请');
+      }
+
+      const upd = await tx.execute(
+        `UPDATE hotel_closure_requests SET status = 'CANCELLED', updated_at = ? WHERE id = ? AND status = 'PENDING_APPROVAL'`,
+        [ts, id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '单据状态已变化，请刷新后重试');
+      await tx.execute(
+        `UPDATE approval_steps SET status = 'CANCELLED' WHERE biz_type = 'HOTEL_CLOSURE' AND biz_id = ? AND status IN ('PENDING', 'WAITING')`,
+        [id]
+      );
+      await logApprovalAction(tx, {
+        bizType: 'HOTEL_CLOSURE',
+        bizId: id,
+        action: 'CANCEL',
+        actor: req.user!,
+        comment: '申请人撤销关店申请',
+      });
+      return tx.queryOne('SELECT * FROM hotel_closure_requests WHERE id = ?', [id]);
+    });
+
+    res.json({ request: updated });
   })
 );
 

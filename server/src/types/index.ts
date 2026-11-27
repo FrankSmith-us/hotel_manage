@@ -35,7 +35,8 @@ export type BizType =
   | 'ATTENDANCE_CORRECTION'
   | 'OVERTIME'
   | 'CONTRACT_RENEWAL'
-  | 'VENDOR_PAYMENT';
+  | 'VENDOR_PAYMENT'
+  | 'HOTEL_CLOSURE';
 export type AuditBizType = BizType | 'EMPLOYEE' | 'REGION' | 'BUDGET' | 'PAYROLL' | 'USER';
 
 export type ExpenseCategory =

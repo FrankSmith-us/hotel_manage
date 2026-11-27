@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 52 tables', () => {
+  it('MySQL and SQLite schemas define identical 53 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 52);
+    assert.equal(mysqlTables.length, 53);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -3205,5 +3205,145 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       assert.ok(mysqlSql.includes(idxName), `MySQL schema missing ${idxName}`);
       assert.ok(sqliteSql.includes(idxName), `SQLite schema missing ${idxName}`);
     }
+  });
+
+  it('Store closure requires all employees RESIGNED plus Regional Manager and General Manager approval', async () => {
+    const hrToken = await loginAs('hr');
+    const adminToken = await loginAs('admin');
+    const regToken = await loginAs('region_east');
+    const gmToken = await loginAs('gm');
+
+    // 1. Direct PATCH to CLOSED -> 400
+    const directPatch = await req('PATCH', '/api/organization/hotels/2/status', {
+      token: adminToken,
+      body: { status: 'CLOSED' },
+    });
+    assert.equal(directPatch.status, 400);
+
+    // 2. Direct POST hotel with status CLOSED -> 400
+    const directCreate = await req('POST', '/api/organization/hotels', {
+      token: hrToken,
+      body: {
+        code: 'SH-CLS-BAD',
+        name: '禁止直接关闭店',
+        region_id: 2,
+        city: '上海',
+        status: 'CLOSED',
+        address: '上海市静安区测试路1号',
+        phone: '021-55550000',
+        room_count: 50,
+      },
+    });
+    assert.equal(directCreate.status, 400);
+
+    // 3. Store 2 has active employees -> closure request blocked (400)
+    const blockedStore2 = await req('POST', '/api/organization/hotels/2/closure-requests', {
+      token: hrToken,
+      body: { reason: '测试在职员工拦截' },
+    });
+    assert.equal(blockedStore2.status, 400);
+
+    // 4. Create a fresh store under East Region (region 2)
+    const createHotel = await req('POST', '/api/organization/hotels', {
+      token: hrToken,
+      body: {
+        code: 'SH-CLS-OK',
+        name: '上海待关闭测试店',
+        region_id: 2,
+        city: '上海',
+        status: 'SUSPENDED',
+        address: '上海市静安区测试路99号',
+        phone: '021-55559999',
+        room_count: 60,
+      },
+    });
+    assert.equal(createHotel.status, 201);
+    const testHotelId = createHotel.data.hotel.id;
+
+    // Add 1 active employee to test store -> closure request must be blocked (400)
+    const deptsRes = await req('GET', `/api/organization/hotels?hotelId=${testHotelId}`, { token: hrToken });
+    const dept = deptsRes.data.departments.find((d: any) => Number(d.hotel_id) === Number(testHotelId));
+    const empRes = await req('POST', '/api/employees', {
+      token: hrToken,
+      body: {
+        emp_no: 'EMP-CLS-01',
+        name: '关店测试员工',
+        phone: '13800001234',
+        hotel_id: testHotelId,
+        department_id: dept.id,
+        position: '前厅接待员',
+        hire_date: todayStr(),
+        base_salary: 5000,
+        status: 'ACTIVE',
+      },
+    });
+    assert.equal(empRes.status, 201);
+    const empId = empRes.data.employee.id;
+
+    const blockedNewHotel = await req('POST', `/api/organization/hotels/${testHotelId}/closure-requests`, {
+      token: hrToken,
+      body: { reason: '存在在职员工测试' },
+    });
+    assert.equal(blockedNewHotel.status, 400);
+
+    // Resign the employee -> now all employees are RESIGNED
+    const resignRes = await req('POST', `/api/employees/${empId}/lifecycle`, {
+      token: hrToken,
+      body: { event_type: 'RESIGN', effective_date: todayStr(), reason: '门店关闭前人员离职' },
+    });
+    assert.equal(resignRes.status, 200);
+
+    // 5. Submit closure request -> 201 (PENDING_APPROVAL)
+    const submitRes = await req('POST', `/api/organization/hotels/${testHotelId}/closure-requests`, {
+      token: hrToken,
+      body: { reason: '租约到期闭店' },
+    });
+    assert.equal(submitRes.status, 201);
+    const reqId = submitRes.data.request.id;
+    assert.equal(submitRes.data.request.status, 'PENDING_APPROVAL');
+
+    // Admin and GM cannot bypass Step 1 (Regional Manager) -> 403
+    assert.equal(
+      (await req('POST', `/api/organization/closure-requests/${reqId}/action`, { token: adminToken, body: { action: 'APPROVE' } })).status,
+      403
+    );
+    assert.equal(
+      (await req('POST', `/api/organization/closure-requests/${reqId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      403
+    );
+
+    // Regional Manager approves Step 1 -> still PENDING_APPROVAL, hotel NOT closed yet
+    const step1Res = await req('POST', `/api/organization/closure-requests/${reqId}/action`, {
+      token: regToken,
+      body: { action: 'APPROVE', comment: '区域总同意关店' },
+    });
+    assert.equal(step1Res.status, 200);
+    assert.equal(step1Res.data.request.status, 'PENDING_APPROVAL');
+
+    const hotelsMid = await req('GET', '/api/organization/hotels', { token: hrToken });
+    const midHotel = hotelsMid.data.hotels.find((h: any) => Number(h.id) === Number(testHotelId));
+    assert.notEqual(midHotel.status, 'CLOSED');
+
+    // GM approves Step 2 -> APPROVED and hotel status becomes CLOSED
+    const step2Res = await req('POST', `/api/organization/closure-requests/${reqId}/action`, {
+      token: gmToken,
+      body: { action: 'APPROVE', comment: '集团总经理批准关店' },
+    });
+    assert.equal(step2Res.status, 200);
+    assert.equal(step2Res.data.request.status, 'APPROVED');
+
+    const hotelsAfter = await req('GET', '/api/organization/hotels', { token: hrToken });
+    const closedHotel = hotelsAfter.data.hotels.find((h: any) => Number(h.id) === Number(testHotelId));
+    assert.equal(closedHotel.status, 'CLOSED');
+
+    // Re-approving -> 409; duplicate closure on closed store -> 400
+    assert.equal(
+      (await req('POST', `/api/organization/closure-requests/${reqId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status,
+      409
+    );
+    assert.equal(
+      (await req('POST', `/api/organization/hotels/${testHotelId}/closure-requests`, { token: hrToken, body: { reason: '重复申请' } })).status,
+      400
+    );
   });
 });
