@@ -3138,4 +3138,33 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       409
     );
   });
+
+  it('T3-05: operating labor-cost, expense-summary, and summary CSV export', async () => {
+    const finToken = await loginAs('finance');
+    const staffToken = await loginAs('staff_sh');
+    const ym = currentYearMonth();
+
+    const laborRes = await req('GET', `/api/reports/labor-cost?yearMonth=${ym}`, { token: finToken });
+    assert.equal(laborRes.status, 200);
+    assert.ok(Array.isArray(laborRes.data.labor_costs));
+    assert.ok(laborRes.data.labor_costs.length >= 1);
+
+    const expRes = await req('GET', `/api/reports/expense-summary?yearMonth=${ym}`, { token: finToken });
+    assert.equal(expRes.status, 200);
+    assert.ok(Array.isArray(expRes.data.summary));
+    assert.ok(expRes.data.summary.length >= 1);
+
+    // Staff cannot export operating summary -> 403
+    const forbid = await req('GET', `/api/reports/summary/export?yearMonth=${ym}`, { token: staffToken });
+    assert.equal(forbid.status, 403);
+
+    // Finance exports CSV
+    const csvRes = await fetch(`${baseUrl}/api/reports/summary/export?yearMonth=${ym}`, {
+      headers: { Authorization: `Bearer ${finToken}` },
+    });
+    assert.equal(csvRes.status, 200);
+    assert.match(csvRes.headers.get('content-type') || '', /text\/csv/);
+    const csvText = await csvRes.text();
+    assert.match(csvText, /门店/);
+  });
 });

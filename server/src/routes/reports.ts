@@ -134,4 +134,142 @@ router.get(
   })
 );
 
+async function queryOperatingSummary(user: Express.Request['user'], yearMonth: string) {
+  const db = getDb();
+  const scope = await getScopeFilter(user!);
+  const hotelScope = buildHotelScopeSql(scope, 'h.id');
+
+  const hotels = await db.query<{ id: number; name: string }>(
+    `SELECT h.id, h.name FROM hotels h WHERE ${hotelScope.sql} ORDER BY h.id ASC`,
+    hotelScope.params
+  );
+
+  const budgets = await db.query<{ hotel_id: number; total_amount: number }>(
+    `SELECT hotel_id, COALESCE(SUM(budget_amount), 0) AS total_amount
+     FROM store_budgets WHERE \`year_month\` = ? GROUP BY hotel_id`,
+    [yearMonth]
+  );
+  const reimbs = await db.query<{ hotel_id: number; total_amount: number }>(
+    `SELECT hotel_id, COALESCE(SUM(total_amount), 0) AS total_amount
+     FROM reimbursements
+     WHERE expense_month = ? AND status IN ('PENDING_APPROVAL', 'APPROVED', 'PAID')
+     GROUP BY hotel_id`,
+    [yearMonth]
+  );
+  const vps = await db.query<{ hotel_id: number; total_amount: number }>(
+    `SELECT hotel_id, COALESCE(SUM(amount), 0) AS total_amount
+     FROM vendor_payments
+     WHERE expense_month = ? AND status IN ('PENDING_APPROVAL', 'APPROVED', 'PAID')
+     GROUP BY hotel_id`,
+    [yearMonth]
+  );
+  const payrolls = await db.query<{
+    hotel_id: number;
+    headcount: number;
+    gross_salary: number;
+    social_security: number;
+    income_tax: number;
+    net_salary: number;
+  }>(
+    `SELECT hotel_id, COUNT(*) AS headcount,
+            COALESCE(SUM(gross_pay), 0) AS gross_salary,
+            COALESCE(SUM(social_security), 0) AS social_security,
+            COALESCE(SUM(income_tax), 0) AS income_tax,
+            COALESCE(SUM(net_pay), 0) AS net_salary
+     FROM payroll_records WHERE \`year_month\` = ? GROUP BY hotel_id`,
+    [yearMonth]
+  );
+
+  const budgetMap = new Map(budgets.map((b) => [Number(b.hotel_id), roundMoney(Number(b.total_amount))]));
+  const reimbMap = new Map(reimbs.map((r) => [Number(r.hotel_id), roundMoney(Number(r.total_amount))]));
+  const vpMap = new Map(vps.map((v) => [Number(v.hotel_id), roundMoney(Number(v.total_amount))]));
+  const payMap = new Map(payrolls.map((p) => [Number(p.hotel_id), p]));
+
+  return hotels.map((h) => {
+    const budgetAmount = budgetMap.get(Number(h.id)) ?? 0;
+    const reimbAmount = reimbMap.get(Number(h.id)) ?? 0;
+    const vpAmount = vpMap.get(Number(h.id)) ?? 0;
+    const totalExpense = roundMoney(reimbAmount + vpAmount);
+    const pay = payMap.get(Number(h.id));
+    return {
+      hotel_id: h.id,
+      hotel_name: h.name,
+      budget_amount: budgetAmount,
+      reimbursement_amount: reimbAmount,
+      vendor_payment_amount: vpAmount,
+      total_expense: totalExpense,
+      budget_utilization_pct: budgetAmount > 0 ? roundMoney((totalExpense / budgetAmount) * 100) : null,
+      headcount: pay ? Number(pay.headcount) : 0,
+      gross_salary: pay ? roundMoney(Number(pay.gross_salary)) : 0,
+      social_security: pay ? roundMoney(Number(pay.social_security)) : 0,
+      income_tax: pay ? roundMoney(Number(pay.income_tax)) : 0,
+      net_salary: pay ? roundMoney(Number(pay.net_salary)) : 0,
+    };
+  });
+}
+
+router.get(
+  '/labor-cost',
+  asyncHandler(async (req, res) => {
+    const yearMonth = String(req.query.yearMonth || currentYearMonth());
+    const rows = await queryOperatingSummary(req.user, yearMonth);
+    res.json({
+      yearMonth,
+      labor_costs: rows.map((r) => ({
+        hotel_id: r.hotel_id,
+        hotel_name: r.hotel_name,
+        headcount: r.headcount,
+        gross_salary: r.gross_salary,
+        social_security: r.social_security,
+        income_tax: r.income_tax,
+        net_salary: r.net_salary,
+      })),
+    });
+  })
+);
+
+router.get(
+  '/expense-summary',
+  asyncHandler(async (req, res) => {
+    const yearMonth = String(req.query.yearMonth || currentYearMonth());
+    const rows = await queryOperatingSummary(req.user, yearMonth);
+    res.json({
+      yearMonth,
+      summary: rows.map((r) => ({
+        hotel_id: r.hotel_id,
+        hotel_name: r.hotel_name,
+        budget_amount: r.budget_amount,
+        reimbursement_amount: r.reimbursement_amount,
+        vendor_payment_amount: r.vendor_payment_amount,
+        total_expense: r.total_expense,
+        budget_utilization_pct: r.budget_utilization_pct,
+      })),
+    });
+  })
+);
+
+router.get(
+  '/summary/export',
+  requireRoles('HQ_ADMIN', 'FINANCE', 'GENERAL_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const yearMonth = String(req.query.yearMonth || currentYearMonth());
+    const rows = await queryOperatingSummary(req.user, yearMonth);
+    const csv = buildCsv(
+      ['月份', '门店', '月度预算', '报销支出', '对公付款', '费用合计', '人力成本(实发)'],
+      rows.map((r) => [
+        yearMonth,
+        r.hotel_name,
+        r.budget_amount,
+        r.reimbursement_amount,
+        r.vendor_payment_amount,
+        r.total_expense,
+        r.net_salary,
+      ])
+    );
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="operating-summary-${yearMonth}.csv"`);
+    res.send(csv);
+  })
+);
+
 export default router;
