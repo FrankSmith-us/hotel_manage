@@ -694,4 +694,51 @@ CREATE TABLE IF NOT EXISTS employee_change_requests (
   CONSTRAINT fk_emp_chg_app FOREIGN KEY (applicant_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS shift_definitions (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  hotel_id BIGINT NOT NULL DEFAULT 0,
+  code VARCHAR(32) NOT NULL,
+  name VARCHAR(64) NOT NULL,
+  start_time VARCHAR(10) NOT NULL,
+  end_time VARCHAR(10) NOT NULL,
+  work_hours DECIMAL(5, 2) NOT NULL DEFAULT 8.00,
+  is_night TINYINT(1) NOT NULL DEFAULT 0,
+  allowance_amount DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  is_active TINYINT(1) NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_shift_def_hotel_code (hotel_id, code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS schedule_publications (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  hotel_id BIGINT NOT NULL,
+  week_start VARCHAR(16) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
+  published_by BIGINT NULL,
+  published_at VARCHAR(32) NULL,
+  locked_by BIGINT NULL,
+  locked_at VARCHAR(32) NULL,
+  UNIQUE KEY uk_sched_pub_hotel_week (hotel_id, week_start),
+  CONSTRAINT fk_sched_pub_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS shift_swap_requests (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  hotel_id BIGINT NOT NULL,
+  requester_emp_id BIGINT NOT NULL,
+  target_emp_id BIGINT NOT NULL,
+  requester_shift_date VARCHAR(16) NOT NULL,
+  target_shift_date VARCHAR(16) NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_TARGET',
+  current_step INT NOT NULL DEFAULT 1,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_shift_swap_hotel (hotel_id, status),
+  CONSTRAINT fk_swap_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_swap_req_emp FOREIGN KEY (requester_emp_id) REFERENCES employees(id),
+  CONSTRAINT fk_swap_tgt_emp FOREIGN KEY (target_emp_id) REFERENCES employees(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

@@ -37,6 +37,9 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
   if (options.reset) {
     const tables = [
+      'shift_swap_requests',
+      'schedule_publications',
+      'shift_definitions',
       'employee_change_requests',
       'payroll_batches',
       'city_social_security_rules',
@@ -2125,6 +2128,21 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
           unemployment_rate, housing_fund_rate, total_personal_rate, updated_by, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [city, yr, minB, maxB, pR, mR, uR, hR, totR, userIds['admin'], ts]
+      );
+    }
+
+    const defaultShifts = [
+      ['MORNING', '早班', '08:00', '16:00', 8, 0, 0],
+      ['AFTERNOON', '中班', '14:00', '22:00', 8, 0, 0],
+      ['EVENING', '晚班', '16:00', '00:00', 8, 0, 0],
+      ['NIGHT', '夜审/夜班', '23:00', '07:00', 8, 1, 80],
+      ['OFF', '休息', '00:00', '00:00', 0, 0, 0],
+    ] as const;
+    for (const [code, name, st, et, hrs, isNight, allow] of defaultShifts) {
+      await tx.execute(
+        `INSERT INTO shift_definitions (hotel_id, code, name, start_time, end_time, work_hours, is_night, allowance_amount, is_active, created_at)
+         VALUES (0, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
+        [code, name, st, et, hrs, isNight, allow, ts]
       );
     }
   });

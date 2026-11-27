@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 35 tables', () => {
+  it('MySQL and SQLite schemas define identical 38 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 35);
+    assert.equal(mysqlTables.length, 38);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2363,5 +2363,101 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const runRes = await req('POST', '/api/hr-flows/run-scheduled', { token: hrToken });
     assert.equal(runRes.status, 200);
     assert.equal(runRes.data.executedChanges, 0);
+  });
+
+  it('T2-03: shift definitions, leave conflict guard, week publish/lock, and shift swap workflow', async () => {
+    const mgrToken = await loginAs('mgr_sh');
+    const hrToken = await loginAs('hr');
+    const staff1Token = await loginAs('staff_sh');
+    const staff2Token = await loginAs('staff_sh_eng');
+    const emp2List = await req('GET', '/api/employees?hotelId=2', { token: mgrToken });
+    const emp1Id = emp2List.data.employees.find((e: any) => e.name === '陆子轩').id;
+    const emp2Id = emp2List.data.employees.find((e: any) => e.name === '孙伟强').id;
+    const monday = getMondayOfCurrentWeek();
+    const tuesday = (() => {
+      const d = new Date(Date.parse(`${monday}T00:00:00Z`) + 86400 * 1000);
+      return d.toISOString().slice(0, 10);
+    })();
+    const wednesday = (() => {
+      const d = new Date(Date.parse(`${monday}T00:00:00Z`) + 2 * 86400 * 1000);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    // 1. Definitions list & create
+    const defsRes = await req('GET', '/api/schedules/definitions?hotelId=2', { token: mgrToken });
+    assert.equal(defsRes.status, 200);
+    assert.ok(defsRes.data.definitions.length >= 5);
+
+    // 2. Leave conflict: staff_sh (emp1Id) has approved leave on wednesday -> scheduling non-OFF fails 400
+    const lvRes = await req('POST', '/api/leaves', {
+      token: staff1Token,
+      body: { leave_type: 'PERSONAL', start_date: wednesday, end_date: wednesday, days: 1, reason: '私事请假' },
+    });
+    assert.equal(lvRes.status, 201);
+    const lvId = lvRes.data.leave.id;
+    assert.equal((await req('POST', `/api/leaves/${lvId}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status, 200);
+
+    const conflictShift = await req('PUT', '/api/schedules/assign', {
+      token: mgrToken,
+      body: { assignments: [{ employee_id: emp1Id, shift_date: wednesday, shift_type: 'MORNING' }] },
+    });
+    assert.equal(conflictShift.status, 400);
+
+    // 3. Assign tuesday shifts for emp1Id (MORNING) and emp2Id (EVENING), then swap
+    assert.equal(
+      (
+        await req('PUT', '/api/schedules/assign', {
+          token: mgrToken,
+          body: {
+            assignments: [
+              { employee_id: emp1Id, shift_date: tuesday, shift_type: 'MORNING' },
+              { employee_id: emp2Id, shift_date: tuesday, shift_type: 'EVENING' },
+            ],
+          },
+        })
+      ).status,
+      200
+    );
+
+    const swapRes = await req('POST', '/api/schedules/swaps', {
+      token: staff1Token,
+      body: { requester_shift_date: tuesday, target_emp_id: emp2Id, target_shift_date: tuesday, reason: '周二换班' },
+    });
+    assert.equal(swapRes.status, 201);
+    const swapId = swapRes.data.swap.id;
+
+    // Target accepts -> manager approves -> shifts swapped
+    assert.equal((await req('POST', `/api/schedules/swaps/${swapId}/respond`, { token: staff2Token, body: { accept: true } })).status, 200);
+    assert.equal((await req('POST', `/api/schedules/swaps/${swapId}/approve`, { token: mgrToken, body: { action: 'APPROVE' } })).status, 200);
+
+    const schedAfterSwap = await req('GET', `/api/schedules?hotelId=2&weekStart=${monday}`, { token: mgrToken });
+    const emp1Tue = schedAfterSwap.data.shifts.find((s: any) => s.employee_id === emp1Id && s.shift_date === tuesday);
+    const emp2Tue = schedAfterSwap.data.shifts.find((s: any) => s.employee_id === emp2Id && s.shift_date === tuesday);
+    assert.equal(emp1Tue.shift_type, 'EVENING');
+    assert.equal(emp2Tue.shift_type, 'MORNING');
+
+    // 4. Lock week -> store manager blocked (400), HR with override_lock succeeds (200)
+    assert.equal(
+      (await req('POST', '/api/schedules/publish', { token: mgrToken, body: { hotel_id: 2, week_start: monday, action: 'LOCK' } })).status,
+      200
+    );
+    assert.equal(
+      (
+        await req('PUT', '/api/schedules/assign', {
+          token: mgrToken,
+          body: { assignments: [{ employee_id: emp2Id, shift_date: tuesday, shift_type: 'AFTERNOON' }] },
+        })
+      ).status,
+      400
+    );
+    assert.equal(
+      (
+        await req('PUT', '/api/schedules/assign', {
+          token: hrToken,
+          body: { override_lock: true, assignments: [{ employee_id: emp2Id, shift_date: tuesday, shift_type: 'AFTERNOON' }] },
+        })
+      ).status,
+      200
+    );
   });
 });

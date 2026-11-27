@@ -644,3 +644,46 @@ CREATE TABLE IF NOT EXISTS employee_change_requests (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_emp_change_status ON employee_change_requests(status, effective_date);
+
+CREATE TABLE IF NOT EXISTS shift_definitions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hotel_id INTEGER NOT NULL DEFAULT 0,
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  work_hours REAL NOT NULL DEFAULT 8.0,
+  is_night INTEGER NOT NULL DEFAULT 0,
+  allowance_amount REAL NOT NULL DEFAULT 0.00,
+  is_active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  UNIQUE(hotel_id, code)
+);
+
+CREATE TABLE IF NOT EXISTS schedule_publications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  week_start TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  published_by INTEGER,
+  published_at TEXT,
+  locked_by INTEGER,
+  locked_at TEXT,
+  UNIQUE(hotel_id, week_start)
+);
+
+CREATE TABLE IF NOT EXISTS shift_swap_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  requester_emp_id INTEGER NOT NULL REFERENCES employees(id),
+  target_emp_id INTEGER NOT NULL REFERENCES employees(id),
+  requester_shift_date TEXT NOT NULL,
+  target_shift_date TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING_TARGET',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shift_swap_hotel ON shift_swap_requests(hotel_id, status);
