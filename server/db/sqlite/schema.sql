@@ -796,3 +796,13 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notif_user_read ON notifications(user_id, is_read);
+
+CREATE TABLE IF NOT EXISTS reimbursement_allocations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reimbursement_id INTEGER NOT NULL REFERENCES reimbursements(id) ON DELETE CASCADE,
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  ratio_pct REAL NOT NULL,
+  amount REAL NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_reimb_alloc_claim ON reimbursement_allocations(reimbursement_id);

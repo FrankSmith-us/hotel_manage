@@ -108,6 +108,11 @@ const itemSchema = z.object({
   attachment_name: z.string().max(120).optional().nullable(),
 });
 
+const allocationSchema = z.object({
+  hotel_id: z.number().int().positive(),
+  ratio_pct: z.number().positive().max(100),
+});
+
 const claimPayloadSchema = z.object({
   title: z.string().min(2, '请填写报销单标题'),
   hotel_id: z.number().int().positive(),
@@ -123,7 +128,41 @@ const claimPayloadSchema = z.object({
   urgency: z.enum(['NORMAL', 'URGENT']).default('NORMAL'),
   submit: z.boolean().default(false),
   items: z.array(itemSchema).min(1, '至少添加一条费用明细'),
+  allocations: z.array(allocationSchema).optional(),
 });
+
+async function replaceReimbursementAllocations(
+  tx: DbQueryRunner,
+  reimbursementId: number,
+  totalAmount: number,
+  allocations: Array<{ hotel_id: number; ratio_pct: number }> | undefined,
+  ts: string
+): Promise<void> {
+  await tx.execute('DELETE FROM reimbursement_allocations WHERE reimbursement_id = ?', [reimbursementId]);
+  if (!allocations || allocations.length === 0) return;
+
+  const ratioSum = roundMoney(allocations.reduce((s, a) => s + Number(a.ratio_pct), 0));
+  if (Math.abs(ratioSum - 100) > 0.01) {
+    throw new AppError(400, `跨店分摊比例之和必须等于 100%（当前为 ${ratioSum}%）`);
+  }
+
+  let allocatedSum = 0;
+  for (let i = 0; i < allocations.length; i++) {
+    const a = allocations[i];
+    const h = await tx.queryOne<{ id: number }>('SELECT id FROM hotels WHERE id = ?', [a.hotel_id]);
+    if (!h) throw new AppError(400, `分摊门店 ${a.hotel_id} 不存在`);
+    const amt =
+      i === allocations.length - 1
+        ? roundMoney(totalAmount - allocatedSum)
+        : roundMoney((totalAmount * Number(a.ratio_pct)) / 100);
+    allocatedSum = roundMoney(allocatedSum + amt);
+    await tx.execute(
+      `INSERT INTO reimbursement_allocations (reimbursement_id, hotel_id, ratio_pct, amount, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      [reimbursementId, a.hotel_id, roundMoney(a.ratio_pct), amt, ts]
+    );
+  }
+}
 
 // List saved payee accounts (populated automatically after Finance completes payout, scoped by role/hotel/self)
 router.get(
@@ -594,6 +633,15 @@ router.get(
       ? await db.queryOne('SELECT * FROM cash_advances WHERE id = ?', [claim.cash_advance_id])
       : null;
 
+    const allocations = await db.query(
+      `SELECT a.*, h.name AS hotel_name, h.code AS hotel_code
+       FROM reimbursement_allocations a
+       JOIN hotels h ON h.id = a.hotel_id
+       WHERE a.reimbursement_id = ?
+       ORDER BY a.id ASC`,
+      [id]
+    );
+
     const budgetImpact = await getStoreBudgetSummary(db, {
       hotelId: claim.hotel_id,
       yearMonth: claim.expense_month,
@@ -641,6 +689,7 @@ router.get(
 
     res.json({
       claim,
+      allocations,
       items: items.map((it: Record<string, unknown>) => ({
         ...it,
         category_label: EXPENSE_CATEGORY_LABELS[it.category as ExpenseCategory] || it.category,
@@ -811,6 +860,8 @@ router.post(
           ]
         );
       }
+
+      await replaceReimbursementAllocations(tx, ins.insertId, totalAmount, body.allocations, ts);
 
       if (body.submit) {
         await replaceApprovalSteps(tx, 'REIMBURSEMENT', ins.insertId, route);
@@ -1099,6 +1150,8 @@ router.put(
           ]
         );
       }
+
+      await replaceReimbursementAllocations(tx, id, totalAmount, body.allocations, ts);
 
       if (body.submit) {
         await replaceApprovalSteps(tx, 'REIMBURSEMENT', id, route);

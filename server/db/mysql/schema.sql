@@ -861,4 +861,16 @@ CREATE TABLE IF NOT EXISTS notifications (
   CONSTRAINT fk_notif_user FOREIGN KEY (user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS reimbursement_allocations (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  reimbursement_id BIGINT NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  ratio_pct DECIMAL(6, 2) NOT NULL,
+  amount DECIMAL(12, 2) NOT NULL,
+  created_at VARCHAR(32) NOT NULL,
+  INDEX idx_reimb_alloc_claim (reimbursement_id),
+  CONSTRAINT fk_reimb_alloc_claim FOREIGN KEY (reimbursement_id) REFERENCES reimbursements(id) ON DELETE CASCADE,
+  CONSTRAINT fk_reimb_alloc_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

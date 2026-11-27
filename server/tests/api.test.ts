@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 45 tables', () => {
+  it('MySQL and SQLite schemas define identical 46 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 45);
+    assert.equal(mysqlTables.length, 46);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2842,5 +2842,59 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     assert.equal(cloneRes.status, 201);
     assert.equal(cloneRes.data.claim.status, 'DRAFT');
     assert.equal(cloneRes.data.claim.total_amount, 60);
+  });
+
+  it('T3-01a: cross-store reimbursement cost allocation validates 100% sum and splits amounts', async () => {
+    const regToken = await loginAs('region_east');
+    const ym = currentYearMonth();
+
+    // 1. Invalid ratio sum (!= 100%) -> 400
+    const badAlloc = await req('POST', '/api/reimbursements', {
+      token: regToken,
+      body: {
+        title: '跨店联合采购分摊失败测试',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '周志远',
+        payee_bank: '招商银行上海分行',
+        payee_account: '6225880100001004',
+        submit: false,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '联合采购', amount: 1000 }],
+        allocations: [
+          { hotel_id: 2, ratio_pct: 60 },
+          { hotel_id: 3, ratio_pct: 30 },
+        ],
+      },
+    });
+    assert.equal(badAlloc.status, 400);
+
+    // 2. Valid 60/40 allocation -> 201, splits 600 & 400
+    const okAlloc = await req('POST', '/api/reimbursements', {
+      token: regToken,
+      body: {
+        title: '华东双店联合采购分摊单',
+        hotel_id: 2,
+        expense_month: ym,
+        payment_type: 'PERSONAL',
+        payee_name: '周志远',
+        payee_bank: '招商银行上海分行',
+        payee_account: '6225880100001004',
+        submit: false,
+        items: [{ category: 'OTHER', expense_date: todayStr(), description: '联合采购', amount: 1000 }],
+        allocations: [
+          { hotel_id: 2, ratio_pct: 60 },
+          { hotel_id: 3, ratio_pct: 40 },
+        ],
+      },
+    });
+    assert.equal(okAlloc.status, 201);
+    const cid = okAlloc.data.claim.id;
+
+    const detail = await req('GET', `/api/reimbursements/${cid}`, { token: regToken });
+    assert.equal(detail.status, 200);
+    assert.equal(detail.data.allocations.length, 2);
+    assert.equal(detail.data.allocations[0].amount, 600);
+    assert.equal(detail.data.allocations[1].amount, 400);
   });
 });
