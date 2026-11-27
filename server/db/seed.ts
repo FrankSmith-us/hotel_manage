@@ -37,6 +37,8 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
 
   if (options.reset) {
     const tables = [
+      'holiday_calendar',
+      'leave_balances',
       'shift_swap_requests',
       'schedule_publications',
       'shift_definitions',
@@ -2143,6 +2145,43 @@ export async function seedDatabase(db: DbAdapter, options: { reset?: boolean } =
         `INSERT INTO shift_definitions (hotel_id, code, name, start_time, end_time, work_hours, is_night, allowance_amount, is_active, created_at)
          VALUES (0, ?, ?, ?, ?, ?, ?, ?, 1, ?)`,
         [code, name, st, et, hrs, isNight, allow, ts]
+      );
+    }
+
+    const holidays2026 = [
+      ['2026-01-01', '元旦', 'HOLIDAY'],
+      ['2026-02-17', '春节初一', 'HOLIDAY'],
+      ['2026-02-18', '春节初二', 'HOLIDAY'],
+      ['2026-02-19', '春节初三', 'HOLIDAY'],
+      ['2026-04-05', '清明节', 'HOLIDAY'],
+      ['2026-05-01', '劳动节', 'HOLIDAY'],
+      ['2026-06-19', '端午节', 'HOLIDAY'],
+      ['2026-09-25', '中秋节', 'HOLIDAY'],
+      ['2026-10-01', '国庆节', 'HOLIDAY'],
+      ['2026-10-02', '国庆节', 'HOLIDAY'],
+      ['2026-10-03', '国庆节', 'HOLIDAY'],
+    ] as const;
+    for (const [hd, hname, htype] of holidays2026) {
+      await tx.execute(
+        `INSERT INTO holiday_calendar (holiday_date, name, day_type, year, created_at)
+         VALUES (?, ?, ?, 2026, ?)`,
+        [hd, hname, htype, ts]
+      );
+    }
+
+    const seededEmps = await tx.query<{ id: number }>(
+      `SELECT id FROM employees WHERE status IN ('ACTIVE', 'PROBATION')`
+    );
+    for (const se of seededEmps) {
+      await tx.execute(
+        `INSERT INTO leave_balances (employee_id, year, leave_type, total_days, used_days, pending_days, updated_at)
+         VALUES (?, 2026, 'ANNUAL', 5, 0, 0, ?)`,
+        [se.id, ts]
+      );
+      await tx.execute(
+        `INSERT INTO leave_balances (employee_id, year, leave_type, total_days, used_days, pending_days, updated_at)
+         VALUES (?, 2026, 'COMP_OFF', 2, 0, 0, ?)`,
+        [se.id, ts]
       );
     }
   });

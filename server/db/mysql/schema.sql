@@ -741,4 +741,26 @@ CREATE TABLE IF NOT EXISTS shift_swap_requests (
   CONSTRAINT fk_swap_tgt_emp FOREIGN KEY (target_emp_id) REFERENCES employees(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS leave_balances (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  employee_id BIGINT NOT NULL,
+  year INT NOT NULL,
+  leave_type VARCHAR(24) NOT NULL,
+  total_days DECIMAL(6, 2) NOT NULL DEFAULT 0.00,
+  used_days DECIMAL(6, 2) NOT NULL DEFAULT 0.00,
+  pending_days DECIMAL(6, 2) NOT NULL DEFAULT 0.00,
+  updated_at VARCHAR(32) NOT NULL,
+  UNIQUE KEY uk_leave_bal (employee_id, year, leave_type),
+  CONSTRAINT fk_lb_emp FOREIGN KEY (employee_id) REFERENCES employees(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS holiday_calendar (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  holiday_date VARCHAR(16) NOT NULL UNIQUE,
+  name VARCHAR(80) NOT NULL,
+  day_type VARCHAR(16) NOT NULL DEFAULT 'HOLIDAY',
+  year INT NOT NULL,
+  created_at VARCHAR(32) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;

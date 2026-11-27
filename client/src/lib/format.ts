@@ -48,6 +48,10 @@ export const LEAVE_TYPE_MAP: Record<string, string> = {
   SICK: '病假',
   PERSONAL: '事假',
   COMP_OFF: '调休',
+  MARRIAGE: '婚假',
+  MATERNITY: '产假',
+  PATERNITY: '陪产假',
+  BEREAVEMENT: '丧假',
   OVERTIME: '加班申请',
 };
 

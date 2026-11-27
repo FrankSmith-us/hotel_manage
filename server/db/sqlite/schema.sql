@@ -687,3 +687,24 @@ CREATE TABLE IF NOT EXISTS shift_swap_requests (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_shift_swap_hotel ON shift_swap_requests(hotel_id, status);
+
+CREATE TABLE IF NOT EXISTS leave_balances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  year INTEGER NOT NULL,
+  leave_type TEXT NOT NULL,
+  total_days REAL NOT NULL DEFAULT 0.0,
+  used_days REAL NOT NULL DEFAULT 0.0,
+  pending_days REAL NOT NULL DEFAULT 0.0,
+  updated_at TEXT NOT NULL,
+  UNIQUE(employee_id, year, leave_type)
+);
+
+CREATE TABLE IF NOT EXISTS holiday_calendar (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  holiday_date TEXT NOT NULL UNIQUE,
+  name TEXT NOT NULL,
+  day_type TEXT NOT NULL DEFAULT 'HOLIDAY',
+  year INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);

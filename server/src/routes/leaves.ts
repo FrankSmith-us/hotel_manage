@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getDb } from '../../db';
-import { AppError, asyncHandler, authenticate, getScopeFilter } from '../middleware/auth';
+import { AppError, asyncHandler, authenticate, canAccessHotel, getScopeFilter, requireRoles } from '../middleware/auth';
+import { BUSINESS_RULES } from '../config/businessRules';
 import { logApprovalAction } from '../services/auditService';
 import {
   buildLeaveRoute,
@@ -13,7 +14,7 @@ import {
   resolveApprovalRoute,
 } from '../services/workflowEngine';
 import { UserRole } from '../types';
-import { generateCode, isoDateSchema, nowIso } from '../utils/numbers';
+import { generateCode, isoDateSchema, nowIso, roundMoney } from '../utils/numbers';
 
 const router = Router();
 router.use(authenticate);
@@ -149,7 +150,17 @@ router.get(
 );
 
 const createLeaveSchema = z.object({
-  leave_type: z.enum(['ANNUAL', 'SICK', 'PERSONAL', 'COMP_OFF', 'OVERTIME']),
+  leave_type: z.enum([
+    'ANNUAL',
+    'SICK',
+    'PERSONAL',
+    'COMP_OFF',
+    'MARRIAGE',
+    'MATERNITY',
+    'PATERNITY',
+    'BEREAVEMENT',
+    'OVERTIME',
+  ]),
   start_date: isoDateSchema,
   end_date: isoDateSchema,
   days: z.number().min(0).max(365).default(0),
@@ -190,10 +201,29 @@ router.post(
     const db = getDb();
     const ts = nowIso();
     const requestNo = generateCode('LV');
+    const leaveYear = Number(body.start_date.slice(0, 4));
+    const tracksBalance = body.leave_type === 'ANNUAL' || body.leave_type === 'COMP_OFF';
 
     // D-02: GENERAL_MANAGER leave uses filing/auto-approve mode
     if (user.role === 'GENERAL_MANAGER') {
       const leaveId = await db.transaction(async (tx) => {
+        if (tracksBalance) {
+          const bal = await tx.queryOne<{ id: number; total_days: number; used_days: number; pending_days: number }>(
+            `SELECT id, total_days, used_days, pending_days FROM leave_balances
+             WHERE employee_id = ? AND year = ? AND leave_type = ?`,
+            [user.employee_id, leaveYear, body.leave_type]
+          );
+          if (bal) {
+            const avail = roundMoney(Number(bal.total_days) - Number(bal.used_days) - Number(bal.pending_days));
+            if (effectiveDays > avail) {
+              throw new AppError(400, `剩余${body.leave_type === 'ANNUAL' ? '年假' : '调休'}额度不足（可用 ${avail} 天）`);
+            }
+            await tx.execute(
+              `UPDATE leave_balances SET used_days = ?, updated_at = ? WHERE id = ?`,
+              [roundMoney(Number(bal.used_days) + effectiveDays), ts, bal.id]
+            );
+          }
+        }
         const ins = await tx.execute(
           `INSERT INTO leave_requests (
             request_no, employee_id, hotel_id, leave_type, start_date, end_date,
@@ -238,6 +268,23 @@ router.post(
     const route = resolved.steps;
 
     const leaveId = await db.transaction(async (tx) => {
+      if (tracksBalance) {
+        const bal = await tx.queryOne<{ id: number; total_days: number; used_days: number; pending_days: number }>(
+          `SELECT id, total_days, used_days, pending_days FROM leave_balances
+           WHERE employee_id = ? AND year = ? AND leave_type = ?`,
+          [user.employee_id, leaveYear, body.leave_type]
+        );
+        if (bal) {
+          const avail = roundMoney(Number(bal.total_days) - Number(bal.used_days) - Number(bal.pending_days));
+          if (effectiveDays > avail) {
+            throw new AppError(400, `剩余${body.leave_type === 'ANNUAL' ? '年假' : '调休'}额度不足（可用 ${avail} 天）`);
+          }
+          await tx.execute(
+            `UPDATE leave_balances SET pending_days = ?, updated_at = ? WHERE id = ?`,
+            [roundMoney(Number(bal.pending_days) + effectiveDays), ts, bal.id]
+          );
+        }
+      }
       const ins = await tx.execute(
         `INSERT INTO leave_requests (
           request_no, employee_id, hotel_id, leave_type, start_date, end_date,
@@ -299,8 +346,15 @@ router.post(
     const ts = nowIso();
     if (action === 'CANCEL') {
       await db.transaction(async (tx) => {
-        const leave = await tx.queryOne<{ id: number; employee_id: number; status: string }>(
-          `SELECT id, employee_id, status FROM leave_requests WHERE id = ?${tx.forUpdateSuffix()}`,
+        const leave = await tx.queryOne<{
+          id: number;
+          employee_id: number;
+          leave_type: string;
+          start_date: string;
+          days: number;
+          status: string;
+        }>(
+          `SELECT id, employee_id, leave_type, start_date, days, status FROM leave_requests WHERE id = ?${tx.forUpdateSuffix()}`,
           [id]
         );
         if (!leave) throw new AppError(404, '请假/加班申请不存在');
@@ -315,6 +369,14 @@ router.post(
           [ts, id]
         );
         if (upd.affectedRows !== 1) throw new AppError(409, '申请状态已变更，请刷新后重试');
+        if (leave.leave_type === 'ANNUAL' || leave.leave_type === 'COMP_OFF') {
+          const yr = Number(leave.start_date.slice(0, 4));
+          await tx.execute(
+            `UPDATE leave_balances SET pending_days = MAX(0, pending_days - ?), updated_at = ?
+             WHERE employee_id = ? AND year = ? AND leave_type = ?`,
+            [leave.days, ts, leave.employee_id, yr, leave.leave_type]
+          );
+        }
         await logApprovalAction(tx, {
           bizType: 'LEAVE',
           bizId: id,
@@ -332,9 +394,16 @@ router.post(
         id: number;
         employee_id: number;
         hotel_id: number;
+        leave_type: string;
+        start_date: string;
+        days: number;
         status: string;
         current_step: number;
-      }>(`SELECT id, employee_id, hotel_id, status, current_step FROM leave_requests WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      }>(
+        `SELECT id, employee_id, hotel_id, leave_type, start_date, days, status, current_step
+         FROM leave_requests WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
       if (!leave) throw new AppError(404, '请假/加班申请不存在');
       if (leave.status !== 'PENDING_APPROVAL') {
         throw new AppError(400, '当前申请状态不可操作');
@@ -367,6 +436,9 @@ router.post(
       );
       if (!allowed) throw new AppError(403, '您无权审批当前节点');
 
+      const tracksBal = leave.leave_type === 'ANNUAL' || leave.leave_type === 'COMP_OFF';
+      const yr = Number(leave.start_date.slice(0, 4));
+
       if (action === 'REJECT') {
         const stepUpd = await tx.execute(
           `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
@@ -379,6 +451,13 @@ router.post(
           [user.id, comment || '驳回', ts, id]
         );
         if (lvUpd.affectedRows !== 1) throw new AppError(409, '申请状态已变更，请刷新后重试');
+        if (tracksBal) {
+          await tx.execute(
+            `UPDATE leave_balances SET pending_days = MAX(0, pending_days - ?), updated_at = ?
+             WHERE employee_id = ? AND year = ? AND leave_type = ?`,
+            [leave.days, ts, leave.employee_id, yr, leave.leave_type]
+          );
+        }
       } else {
         const stepUpd = await tx.execute(
           `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ? AND status = 'PENDING'`,
@@ -404,6 +483,14 @@ router.post(
             [user.id, comment || '同意', ts, ts, id]
           );
           if (lvUpd.affectedRows !== 1) throw new AppError(409, '申请状态已变更，请刷新后重试');
+          if (tracksBal) {
+            await tx.execute(
+              `UPDATE leave_balances
+               SET pending_days = MAX(0, pending_days - ?), used_days = used_days + ?, updated_at = ?
+               WHERE employee_id = ? AND year = ? AND leave_type = ?`,
+              [leave.days, leave.days, ts, leave.employee_id, yr, leave.leave_type]
+            );
+          }
         }
       }
       await logApprovalAction(tx, {
@@ -416,6 +503,191 @@ router.post(
     });
 
     res.json({ ok: true });
+  })
+);
+
+router.post(
+  '/:id/revoke',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const { reason } = z.object({ reason: z.string().optional().default('销假退还额度') }).parse(req.body || {});
+    const user = req.user!;
+    const db = getDb();
+    const ts = nowIso();
+
+    await db.transaction(async (tx) => {
+      const leave = await tx.queryOne<{
+        id: number;
+        employee_id: number;
+        hotel_id: number;
+        leave_type: string;
+        start_date: string;
+        days: number;
+        status: string;
+      }>(`SELECT * FROM leave_requests WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!leave) throw new AppError(404, '请假申请不存在');
+      if (leave.status !== 'APPROVED') throw new AppError(400, '仅已通过的请假申请可办理销假');
+
+      const isSelf = user.employee_id && Number(user.employee_id) === Number(leave.employee_id);
+      const isManager =
+        ['HQ_ADMIN', 'HR_MANAGER', 'STORE_MANAGER', 'REGIONAL_MANAGER'].includes(user.role) &&
+        (await canAccessHotel(user, leave.hotel_id));
+      if (!isSelf && !isManager) {
+        throw new AppError(403, '无权为该员工办理销假');
+      }
+
+      const upd = await tx.execute(
+        `UPDATE leave_requests SET status = 'REVOKED', approval_remark = ?, updated_at = ?
+         WHERE id = ? AND status = 'APPROVED'`,
+        [reason, ts, id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '请假单状态已变更，请刷新后重试');
+
+      if (leave.leave_type === 'ANNUAL' || leave.leave_type === 'COMP_OFF') {
+        const yr = Number(leave.start_date.slice(0, 4));
+        await tx.execute(
+          `UPDATE leave_balances SET used_days = MAX(0, used_days - ?), updated_at = ?
+           WHERE employee_id = ? AND year = ? AND leave_type = ?`,
+          [leave.days, ts, leave.employee_id, yr, leave.leave_type]
+        );
+      }
+
+      await logApprovalAction(tx, {
+        bizType: 'LEAVE',
+        bizId: id,
+        action: 'REVOKE',
+        actor: user,
+        comment: reason,
+      });
+    });
+
+    res.json({ ok: true, status: 'REVOKED' });
+  })
+);
+
+router.get(
+  '/balances',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const user = req.user!;
+    const year = Number(req.query.year || new Date().getFullYear());
+    const scope = await getScopeFilter(user);
+
+    const cond = ['lb.year = ?'];
+    const params: unknown[] = [year];
+    if (scope.type === 'SELF') {
+      cond.push('lb.employee_id = ?');
+      params.push(scope.employeeId ?? -1);
+    } else if (scope.type === 'HOTEL') {
+      cond.push('e.hotel_id = ?');
+      params.push(scope.hotelId);
+    } else if (scope.type === 'REGION') {
+      if (scope.hotelIds.length === 0) {
+        res.json({ balances: [] });
+        return;
+      }
+      cond.push(`e.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
+      params.push(...scope.hotelIds);
+    }
+
+    const balances = await db.query(
+      `SELECT lb.*, e.name AS emp_name, e.emp_no, h.name AS hotel_name
+       FROM leave_balances lb
+       JOIN employees e ON e.id = lb.employee_id
+       JOIN hotels h ON h.id = e.hotel_id
+       WHERE ${cond.join(' AND ')}
+       ORDER BY e.id ASC, lb.leave_type ASC`,
+      params
+    );
+    res.json({ balances });
+  })
+);
+
+router.post(
+  '/balances/init',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const { year } = z.object({ year: z.number().int().min(2020).max(2099) }).parse(req.body);
+    const db = getDb();
+    const ts = nowIso();
+    const employees = await db.query<{ id: number; hire_date: string }>(
+      `SELECT id, hire_date FROM employees WHERE status IN ('ACTIVE', 'PROBATION')`
+    );
+
+    let initialized = 0;
+    await db.transaction(async (tx) => {
+      for (const emp of employees) {
+        const hireYear = Number(emp.hire_date.slice(0, 4));
+        const tenureYears = Math.max(0, year - hireYear);
+        let annualDays = BUSINESS_RULES.annualLeave.under10Years;
+        if (tenureYears >= 20) annualDays = BUSINESS_RULES.annualLeave.over20Years;
+        else if (tenureYears >= 10) annualDays = BUSINESS_RULES.annualLeave.under20Years;
+
+        const existing = await tx.queryOne<{ id: number }>(
+          `SELECT id FROM leave_balances WHERE employee_id = ? AND year = ? AND leave_type = 'ANNUAL'`,
+          [emp.id, year]
+        );
+        if (!existing) {
+          await tx.execute(
+            `INSERT INTO leave_balances (employee_id, year, leave_type, total_days, used_days, pending_days, updated_at)
+             VALUES (?, ?, 'ANNUAL', ?, 0, 0, ?)`,
+            [emp.id, year, annualDays, ts]
+          );
+          initialized++;
+        }
+      }
+    });
+
+    res.json({ ok: true, year, initialized });
+  })
+);
+
+router.get(
+  '/holidays',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const year = Number(req.query.year || new Date().getFullYear());
+    const holidays = await db.query(
+      'SELECT * FROM holiday_calendar WHERE year = ? ORDER BY holiday_date ASC',
+      [year]
+    );
+    res.json({ holidays });
+  })
+);
+
+router.post(
+  '/holidays',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        holiday_date: isoDateSchema,
+        name: z.string().trim().min(1),
+        day_type: z.enum(['HOLIDAY', 'WORKDAY']).default('HOLIDAY'),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const ts = nowIso();
+    const year = Number(body.holiday_date.slice(0, 4));
+    const existing = await db.queryOne<{ id: number }>(
+      'SELECT id FROM holiday_calendar WHERE holiday_date = ?',
+      [body.holiday_date]
+    );
+    if (existing) {
+      await db.execute(
+        'UPDATE holiday_calendar SET name = ?, day_type = ?, year = ? WHERE id = ?',
+        [body.name, body.day_type, year, existing.id]
+      );
+    } else {
+      await db.execute(
+        `INSERT INTO holiday_calendar (holiday_date, name, day_type, year, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        [body.holiday_date, body.name, body.day_type, year, ts]
+      );
+    }
+    const holiday = await db.queryOne('SELECT * FROM holiday_calendar WHERE holiday_date = ?', [body.holiday_date]);
+    res.status(201).json({ holiday });
   })
 );
 

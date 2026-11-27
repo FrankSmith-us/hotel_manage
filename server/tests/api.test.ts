@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 38 tables', () => {
+  it('MySQL and SQLite schemas define identical 40 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 38);
+    assert.equal(mysqlTables.length, 40);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2459,5 +2459,68 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
       ).status,
       200
     );
+  });
+
+  it('T2-05: leave balances, statutory leave types, revoke refund, and holiday calendar', async () => {
+    const hrToken = await loginAs('hr');
+    const mgrToken = await loginAs('mgr_sh');
+    const staffToken = await loginAs('staff_sh');
+
+    // 1. Holidays query & maintenance RBAC
+    const holList = await req('GET', '/api/leaves/holidays?year=2026', { token: staffToken });
+    assert.equal(holList.status, 200);
+    assert.ok(holList.data.holidays.length >= 10);
+
+    assert.equal(
+      (
+        await req('POST', '/api/leaves/holidays', {
+          token: staffToken,
+          body: { holiday_date: '2026-12-31', name: '跨年调休', day_type: 'WORKDAY' },
+        })
+      ).status,
+      403
+    );
+
+    // 2. Statutory leave type (MARRIAGE) works
+    const marRes = await req('POST', '/api/leaves', {
+      token: staffToken,
+      body: { leave_type: 'MARRIAGE', start_date: '2026-08-01', end_date: '2026-08-03', days: 3, reason: '婚假' },
+    });
+    assert.equal(marRes.status, 201);
+
+    // 3. Annual leave balance: exceed 5 days -> 400; 2 days -> reserve pending -> approve used -> revoke refund
+    const overAnn = await req('POST', '/api/leaves', {
+      token: staffToken,
+      body: { leave_type: 'ANNUAL', start_date: '2026-08-10', end_date: '2026-08-15', days: 6, reason: '超额年假' },
+    });
+    assert.equal(overAnn.status, 400);
+
+    const annRes = await req('POST', '/api/leaves', {
+      token: staffToken,
+      body: { leave_type: 'ANNUAL', start_date: '2026-08-10', end_date: '2026-08-11', days: 2, reason: '年假旅游' },
+    });
+    assert.equal(annRes.status, 201);
+    const annId = annRes.data.leave.id;
+
+    let balRes = await req('GET', '/api/leaves/balances?year=2026', { token: staffToken });
+    let annBal = balRes.data.balances.find((b: any) => b.leave_type === 'ANNUAL');
+    assert.equal(annBal.pending_days, 2);
+    assert.equal(annBal.used_days, 0);
+
+    assert.equal((await req('POST', `/api/leaves/${annId}/action`, { token: mgrToken, body: { action: 'APPROVE' } })).status, 200);
+    balRes = await req('GET', '/api/leaves/balances?year=2026', { token: staffToken });
+    annBal = balRes.data.balances.find((b: any) => b.leave_type === 'ANNUAL');
+    assert.equal(annBal.pending_days, 0);
+    assert.equal(annBal.used_days, 2);
+
+    // Revoke approved leave -> used_days refunded back to 0
+    const revRes = await req('POST', `/api/leaves/${annId}/revoke`, { token: staffToken, body: { reason: '行程取消销假' } });
+    assert.equal(revRes.status, 200);
+    balRes = await req('GET', '/api/leaves/balances?year=2026', { token: staffToken });
+    annBal = balRes.data.balances.find((b: any) => b.leave_type === 'ANNUAL');
+    assert.equal(annBal.used_days, 0);
+
+    // Init balances by HR
+    assert.equal((await req('POST', '/api/leaves/balances/init', { token: hrToken, body: { year: 2027 } })).status, 200);
   });
 });
