@@ -1423,4 +1423,316 @@ router.post(
   })
 );
 
+// ==========================================
+// 5. Contract Renewals (/api/hr-flows/contracts) - T2-02
+// ==========================================
+router.get(
+  '/contracts',
+  asyncHandler(async (req, res) => {
+    const db = getDb();
+    const user = req.user!;
+    const scope = await getScopeFilter(user);
+    const cond = ['1=1'];
+    const params: unknown[] = [];
+
+    if (scope.type === 'SELF') {
+      cond.push('(cr.applicant_id = ? OR cr.employee_id = ?)');
+      params.push(user.id, scope.employeeId ?? -1);
+    } else if (scope.type === 'HOTEL') {
+      cond.push('cr.hotel_id = ?');
+      params.push(scope.hotelId);
+    } else if (scope.type === 'REGION') {
+      if (scope.hotelIds.length === 0) {
+        res.json({ contracts: [] });
+        return;
+      }
+      cond.push(`cr.hotel_id IN (${scope.hotelIds.map(() => '?').join(',')})`);
+      params.push(...scope.hotelIds);
+    }
+
+    const rows = await db.query<{
+      id: number;
+      request_no: string;
+      employee_id: number;
+      hotel_id: number;
+      current_end_date: string | null;
+      proposed_end_date: string | null;
+      contract_term_years: number;
+      contract_type: string;
+      proposed_salary: number | null;
+      remarks: string | null;
+      applicant_id: number;
+      status: string;
+      current_step: number;
+      signed_at: string | null;
+      emp_name: string;
+      emp_no: string;
+      hotel_name: string;
+    }>(
+      `SELECT cr.*, e.name AS emp_name, e.emp_no, h.name AS hotel_name
+       FROM contract_renewals cr
+       JOIN employees e ON e.id = cr.employee_id
+       JOIN hotels h ON h.id = cr.hotel_id
+       WHERE ${cond.join(' AND ')}
+       ORDER BY cr.id DESC`,
+      params
+    );
+
+    const contracts = [];
+    for (const r of rows) {
+      const steps = await getWorkflowStepsWithActors(db, 'CONTRACT_RENEWAL', r.id);
+      const pendingStep =
+        r.status === 'PENDING_APPROVAL'
+          ? await db.queryOne<{ approver_role: UserRole; approver_user_id: number | null }>(
+              `SELECT approver_role, approver_user_id FROM approval_steps
+               WHERE biz_type = 'CONTRACT_RENEWAL' AND biz_id = ? AND status = 'PENDING'
+               ORDER BY step_order ASC LIMIT 1`,
+              [r.id]
+            )
+          : null;
+      const canApprove = pendingStep
+        ? await canUserActOnStep(db, user, pendingStep.approver_role, r.hotel_id, r.applicant_id, {
+            approverUserId: pendingStep.approver_user_id,
+            bizType: 'CONTRACT_RENEWAL',
+          })
+        : false;
+      contracts.push({ ...r, steps, canApprove });
+    }
+    res.json({ contracts });
+  })
+);
+
+router.post(
+  '/contracts',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER', 'REGIONAL_MANAGER', 'STORE_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        employee_id: z.number().int().positive(),
+        contract_type: z.enum(['FIXED_TERM', 'OPEN_ENDED']).default('FIXED_TERM'),
+        contract_term_years: z.number().int().min(1).max(20).default(2),
+        proposed_end_date: isoDateSchema.optional().nullable(),
+        proposed_salary: z.number().min(0).max(1_000_000).optional().nullable(),
+        remarks: z.string().max(500).optional().nullable(),
+      })
+      .parse(req.body);
+
+    const db = getDb();
+    const user = req.user!;
+    const emp = await db.queryOne<{
+      id: number;
+      name: string;
+      hotel_id: number;
+      status: string;
+      contract_end_date: string | null;
+    }>('SELECT id, name, hotel_id, status, contract_end_date FROM employees WHERE id = ?', [body.employee_id]);
+    if (!emp) throw new AppError(404, '员工不存在');
+    if (emp.status === 'RESIGNED') throw new AppError(400, '已离职员工不可发起合同续签');
+    if (!(await canAccessHotel(user, emp.hotel_id))) {
+      throw new AppError(403, '无权为其他门店员工发起合同续签');
+    }
+
+    const proposedEnd =
+      body.contract_type === 'OPEN_ENDED'
+        ? null
+        : body.proposed_end_date ||
+          addDays(emp.contract_end_date || todayStr(), body.contract_term_years * 365);
+
+    const ts = nowIso();
+    const requestNo = generateCode('CTR');
+    const crId = await db.transaction(async (tx) => {
+      const ins = await tx.execute(
+        `INSERT INTO contract_renewals (
+          request_no, employee_id, hotel_id, current_end_date, proposed_end_date,
+          contract_term_years, contract_type, proposed_salary, remarks, applicant_id,
+          status, current_step, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_APPROVAL', 1, ?, ?)`,
+        [
+          requestNo,
+          emp.id,
+          emp.hotel_id,
+          emp.contract_end_date,
+          proposedEnd,
+          body.contract_term_years,
+          body.contract_type,
+          body.proposed_salary ?? null,
+          body.remarks ?? null,
+          user.id,
+          ts,
+          ts,
+        ]
+      );
+      const resolved = await resolveApprovalRoute(
+        tx,
+        emp.hotel_id,
+        [
+          { stepOrder: 1, stepName: '集团HR审批', approverRole: 'HR_MANAGER' },
+          { stepOrder: 2, stepName: '集团总经理审批', approverRole: 'GENERAL_MANAGER' },
+        ],
+        user.id
+      );
+      await replaceApprovalSteps(tx, 'CONTRACT_RENEWAL', ins.insertId, resolved.steps);
+      await logApprovalAction(tx, {
+        bizType: 'CONTRACT_RENEWAL',
+        bizId: ins.insertId,
+        action: 'SUBMIT',
+        actor: user,
+        comment: `发起劳动合同续签：${emp.name}（${body.contract_type}）`,
+      });
+      return ins.insertId;
+    });
+
+    const contract = await db.queryOne('SELECT * FROM contract_renewals WHERE id = ?', [crId]);
+    res.status(201).json({ contract });
+  })
+);
+
+router.post(
+  '/contracts/:id/action',
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = flowActionSchema.parse(req.body);
+    const db = getDb();
+    const user = req.user!;
+    const ts = nowIso();
+
+    await db.transaction(async (tx) => {
+      const cr = await tx.queryOne<{ id: number; hotel_id: number; applicant_id: number; status: string }>(
+        `SELECT id, hotel_id, applicant_id, status FROM contract_renewals WHERE id = ?${tx.forUpdateSuffix()}`,
+        [id]
+      );
+      if (!cr) throw new AppError(404, '续签申请不存在');
+      if (cr.status !== 'PENDING_APPROVAL') throw new AppError(400, '当前状态不可审批');
+
+      const step = await tx.queryOne<{ id: number; step_order: number; approver_role: UserRole; approver_user_id: number | null }>(
+        `SELECT id, step_order, approver_role, approver_user_id FROM approval_steps
+         WHERE biz_type = 'CONTRACT_RENEWAL' AND biz_id = ? AND status = 'PENDING'
+         ORDER BY step_order ASC LIMIT 1`,
+        [id]
+      );
+      if (!step) throw new AppError(400, '未找到待审批节点');
+      if (
+        !(await canUserActOnStep(tx, user, step.approver_role, cr.hotel_id, cr.applicant_id, {
+          approverUserId: step.approver_user_id,
+          bizType: 'CONTRACT_RENEWAL',
+        }))
+      ) {
+        throw new AppError(403, '无权审批该合同续签节点');
+      }
+
+      if (body.action === 'REJECT') {
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'REJECTED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+          [user.id, ts, body.comment || '驳回', step.id]
+        );
+        await tx.execute(`UPDATE contract_renewals SET status = 'REJECTED', updated_at = ? WHERE id = ?`, [ts, id]);
+      } else {
+        await tx.execute(
+          `UPDATE approval_steps SET status = 'APPROVED', acted_by = ?, acted_at = ?, comment = ? WHERE id = ?`,
+          [user.id, ts, body.comment || '同意', step.id]
+        );
+        const nextStep = await tx.queryOne<{ id: number; step_order: number }>(
+          `SELECT id, step_order FROM approval_steps
+           WHERE biz_type = 'CONTRACT_RENEWAL' AND biz_id = ? AND step_order > ?
+           ORDER BY step_order ASC LIMIT 1`,
+          [id, step.step_order]
+        );
+        if (nextStep) {
+          await tx.execute(`UPDATE approval_steps SET status = 'PENDING' WHERE id = ?`, [nextStep.id]);
+          await tx.execute(`UPDATE contract_renewals SET current_step = ?, updated_at = ? WHERE id = ?`, [
+            nextStep.step_order,
+            ts,
+            id,
+          ]);
+        } else {
+          await tx.execute(`UPDATE contract_renewals SET status = 'APPROVED', updated_at = ? WHERE id = ?`, [ts, id]);
+        }
+      }
+
+      await logApprovalAction(tx, {
+        bizType: 'CONTRACT_RENEWAL',
+        bizId: id,
+        action: body.action,
+        actor: user,
+        comment: body.comment || (body.action === 'APPROVE' ? '同意续签' : '驳回续签'),
+      });
+    });
+
+    res.json({ ok: true });
+  })
+);
+
+router.post(
+  '/contracts/:id/sign',
+  requireRoles('HQ_ADMIN', 'HR_MANAGER'),
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const db = getDb();
+    const user = req.user!;
+    const ts = nowIso();
+
+    await db.transaction(async (tx) => {
+      const cr = await tx.queryOne<{
+        id: number;
+        request_no: string;
+        employee_id: number;
+        hotel_id: number;
+        proposed_end_date: string | null;
+        proposed_salary: number | null;
+        contract_type: string;
+        status: string;
+      }>(`SELECT * FROM contract_renewals WHERE id = ?${tx.forUpdateSuffix()}`, [id]);
+      if (!cr) throw new AppError(404, '续签申请不存在');
+      if (cr.status !== 'APPROVED') throw new AppError(400, '仅审批通过的续签申请可确认签署');
+
+      const emp = await tx.queryOne<{ id: number; position: string; base_salary: number }>(
+        'SELECT id, position, base_salary FROM employees WHERE id = ?',
+        [cr.employee_id]
+      );
+      if (!emp) throw new AppError(404, '员工不存在');
+
+      const upd = await tx.execute(
+        `UPDATE contract_renewals SET status = 'SIGNED', signed_at = ?, updated_at = ? WHERE id = ? AND status = 'APPROVED'`,
+        [ts, ts, id]
+      );
+      if (upd.affectedRows !== 1) throw new AppError(409, '续签状态已变更，请刷新后重试');
+
+      await tx.execute(
+        `UPDATE employees
+         SET contract_end_date = ?, base_salary = COALESCE(?, base_salary), updated_at = ?
+         WHERE id = ?`,
+        [cr.proposed_end_date, cr.proposed_salary, ts, cr.employee_id]
+      );
+
+      await tx.execute(
+        `INSERT INTO employee_lifecycle_events (
+          employee_id, event_type, from_hotel_id, to_hotel_id, from_position, to_position,
+          effective_date, reason, operator_id, created_at
+        ) VALUES (?, 'CONTRACT_RENEW', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          cr.employee_id,
+          cr.hotel_id,
+          cr.hotel_id,
+          emp.position,
+          emp.position,
+          todayStr(),
+          `合同续签签署生效（${cr.request_no}，${cr.contract_type}）`,
+          user.id,
+          ts,
+        ]
+      );
+
+      await logApprovalAction(tx, {
+        bizType: 'CONTRACT_RENEWAL',
+        bizId: id,
+        action: 'SIGN',
+        actor: user,
+        comment: `完成合同签署，新到期日：${cr.proposed_end_date || '无固定期限'}`,
+      });
+    });
+
+    res.json({ ok: true });
+  })
+);
+
 export default router;

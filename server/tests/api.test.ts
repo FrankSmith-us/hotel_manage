@@ -71,14 +71,14 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     await closeDb();
   });
 
-  it('MySQL and SQLite schemas define identical 43 tables', () => {
+  it('MySQL and SQLite schemas define identical 44 tables', () => {
     const mysqlSql = fs.readFileSync(path.resolve(__dirname, '../db/mysql/schema.sql'), 'utf8');
     const sqliteSql = fs.readFileSync(path.resolve(__dirname, '../db/sqlite/schema.sql'), 'utf8');
     const extractTables = (sql: string) =>
       Array.from(sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z_]+)/gi)).map((m) => m[1]).sort();
     const mysqlTables = extractTables(mysqlSql);
     const sqliteTables = extractTables(sqliteSql);
-    assert.equal(mysqlTables.length, 43);
+    assert.equal(mysqlTables.length, 44);
     assert.deepEqual(mysqlTables, sqliteTables);
   });
 
@@ -2674,5 +2674,52 @@ describe('YueQi Hotel Ops API Integration Suite', () => {
     const staffPay = payList.data.records.find((r: any) => r.employee_id === staffEmpId);
     assert.equal(staffPay.overtime_hours, 4);
     assert.ok(staffPay.overtime_pay > 0);
+  });
+
+  it('T2-02: contract renewal approval workflow and sign updates employee contract_end_date', async () => {
+    const hrToken = await loginAs('hr');
+    const gmToken = await loginAs('gm');
+    const staffToken = await loginAs('staff_sh');
+    const mgrToken = await loginAs('mgr_sh');
+    const emp2List = await req('GET', '/api/employees?hotelId=2', { token: mgrToken });
+    const staffEmpId = emp2List.data.employees.find((e: any) => e.name === '陆子轩').id;
+
+    // 1. Staff cannot submit contract renewal -> 403
+    assert.equal(
+      (
+        await req('POST', '/api/hr-flows/contracts', {
+          token: staffToken,
+          body: { employee_id: staffEmpId, contract_type: 'FIXED_TERM', proposed_end_date: '2029-12-31' },
+        })
+      ).status,
+      403
+    );
+
+    // 2. Store manager submits renewal -> HR approves -> GM approves -> HR signs -> employee updated
+    const crRes = await req('POST', '/api/hr-flows/contracts', {
+      token: mgrToken,
+      body: {
+        employee_id: staffEmpId,
+        contract_type: 'FIXED_TERM',
+        contract_term_years: 3,
+        proposed_end_date: '2029-12-31',
+        remarks: '表现优秀续签三年',
+      },
+    });
+    assert.equal(crRes.status, 201);
+    const crId = crRes.data.contract.id;
+
+    // Cannot sign before approval -> 400
+    assert.equal((await req('POST', `/api/hr-flows/contracts/${crId}/sign`, { token: hrToken })).status, 400);
+
+    assert.equal((await req('POST', `/api/hr-flows/contracts/${crId}/action`, { token: hrToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/hr-flows/contracts/${crId}/action`, { token: gmToken, body: { action: 'APPROVE' } })).status, 200);
+    assert.equal((await req('POST', `/api/hr-flows/contracts/${crId}/sign`, { token: hrToken })).status, 200);
+
+    // Terminal sign -> 400
+    assert.equal((await req('POST', `/api/hr-flows/contracts/${crId}/sign`, { token: hrToken })).status, 400);
+
+    const empDetail = await req('GET', `/api/employees/${staffEmpId}`, { token: hrToken });
+    assert.equal(empDetail.data.employee.contract_end_date, '2029-12-31');
   });
 });

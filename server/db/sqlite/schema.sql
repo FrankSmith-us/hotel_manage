@@ -762,3 +762,23 @@ CREATE TABLE IF NOT EXISTS overtime_requests (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ot_emp_date ON overtime_requests(employee_id, overtime_date);
+
+CREATE TABLE IF NOT EXISTS contract_renewals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_no TEXT NOT NULL UNIQUE,
+  employee_id INTEGER NOT NULL REFERENCES employees(id),
+  hotel_id INTEGER NOT NULL REFERENCES hotels(id),
+  current_end_date TEXT,
+  proposed_end_date TEXT,
+  contract_term_years INTEGER NOT NULL DEFAULT 2,
+  contract_type TEXT NOT NULL DEFAULT 'FIXED_TERM',
+  proposed_salary REAL,
+  remarks TEXT,
+  applicant_id INTEGER NOT NULL REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INTEGER NOT NULL DEFAULT 1,
+  signed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contract_emp ON contract_renewals(employee_id, status);

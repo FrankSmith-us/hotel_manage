@@ -823,4 +823,27 @@ CREATE TABLE IF NOT EXISTS overtime_requests (
   CONSTRAINT fk_ot_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS contract_renewals (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  request_no VARCHAR(32) NOT NULL UNIQUE,
+  employee_id BIGINT NOT NULL,
+  hotel_id BIGINT NOT NULL,
+  current_end_date VARCHAR(16) NULL,
+  proposed_end_date VARCHAR(16) NULL,
+  contract_term_years INT NOT NULL DEFAULT 2,
+  contract_type VARCHAR(24) NOT NULL DEFAULT 'FIXED_TERM',
+  proposed_salary DECIMAL(12, 2) NULL,
+  remarks VARCHAR(500) NULL,
+  applicant_id BIGINT NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING_APPROVAL',
+  current_step INT NOT NULL DEFAULT 1,
+  signed_at VARCHAR(32) NULL,
+  created_at VARCHAR(32) NOT NULL,
+  updated_at VARCHAR(32) NOT NULL,
+  INDEX idx_contract_emp (employee_id, status),
+  CONSTRAINT fk_cr_emp FOREIGN KEY (employee_id) REFERENCES employees(id),
+  CONSTRAINT fk_cr_hotel FOREIGN KEY (hotel_id) REFERENCES hotels(id),
+  CONSTRAINT fk_cr_app FOREIGN KEY (applicant_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 SET FOREIGN_KEY_CHECKS = 1;
